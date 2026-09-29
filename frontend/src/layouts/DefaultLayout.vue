@@ -32,6 +32,7 @@ interface MenuNode {
   title: string
   icon: string
   path?: string
+  query?: Record<string, string>
   chevron?: boolean
   children?: MenuLeaf[]
 }
@@ -55,15 +56,9 @@ const menus = computed<MenuNode[]>(() => {
         ],
       },
       { title: '公告管理', icon: 'horn', path: '/admin/announcements', chevron: true },
-      {
-        title: '用户管理',
-        icon: 'userbox',
-        children: [
-          { title: '管理员信息', path: '/admin/users', query: { role: 'ADMIN' } },
-          { title: '教师信息', path: '/admin/users', query: { role: 'TEACHER' } },
-          { title: '学生信息', path: '/admin/users', query: { role: 'STUDENT' } },
-        ],
-      },
+      { title: '管理员信息', icon: 'userbox', path: '/admin/users', query: { role: 'ADMIN' } },
+      { title: '教师信息', icon: 'userbox', path: '/admin/users', query: { role: 'TEACHER' } },
+      { title: '学生信息', icon: 'userbox', path: '/admin/users', query: { role: 'STUDENT' } },
       { title: '系统设置', icon: 'gear', path: '/admin/settings', chevron: true },
       { title: '操作日志', icon: 'doc', path: '/admin/logs' },
     ]
@@ -124,6 +119,13 @@ function isLeafActive(leaf: MenuLeaf) {
 
 function containingGroup(node: MenuNode) {
   return node.children?.some(isLeafActive)
+}
+
+/* 顶层直链项需同时匹配 path 与 query（管理员/教师/学生信息共用一个路由） */
+function isExactActive(node: MenuNode) {
+  if (route.path !== node.path) return false
+  const want = node.query?.role
+  return want ? route.query.role === want : !route.query.role
 }
 
 // 首次加载展开所有分组(与设计图一致); 之后仅保证包含当前页面的分组展开
@@ -244,7 +246,7 @@ onUnmounted(() => {
             <div
               v-if="!node.children"
               class="menu-item"
-              :class="{ active: route.path === node.path }"
+              :class="{ active: isExactActive(node) }"
               @click="go(node.path!)"
             >
               <svg class="m-icon" viewBox="0 0 24 24" fill="currentColor" v-html="ICONS[node.icon]" />

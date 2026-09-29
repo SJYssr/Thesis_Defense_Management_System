@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { userAdminApi } from '@/api/common'
+import AdminInfoPanel from './AdminInfoPanel.vue'
 
 const route = useRoute()
+/* 设计稿将管理员/教师/学生信息管理拆为独立页面：ADMIN 用新版面板，其余暂用旧 Tab 版 */
+const isAdminView = computed(() => String(route.query.role || '').toUpperCase() === 'ADMIN')
 const activeTab = ref('STUDENT')
 const items = ref<any[]>([])
 const total = ref(0)
@@ -72,12 +75,25 @@ onMounted(() => {
   // 支持侧栏子菜单通过 /admin/users?role=TEACHER 直达对应标签
   const role = String(route.query.role || '').toUpperCase()
   if (['STUDENT', 'TEACHER', 'ADMIN'].includes(role)) activeTab.value = role
-  load()
+  if (!isAdminView.value) load()
+})
+
+/* 顶栏面包屑随角色视图切换 */
+watchEffect(() => {
+  const role = String(route.query.role || '').toUpperCase()
+  route.meta.title = role === 'ADMIN' ? '毕业设计管理 / 管理员信息管理'
+    : role === 'TEACHER' ? '毕业设计管理 / 教师信息管理'
+    : '毕业设计管理 / 学生信息管理'
+})
+
+watch(isAdminView, () => {
+  if (!isAdminView.value) load()
 })
 </script>
 
 <template>
-  <div class="page-card">
+  <AdminInfoPanel v-if="isAdminView" />
+  <div v-else class="page-card">
     <div class="page-header">
       <h3 class="page-title">用户管理</h3>
       <el-button type="primary" @click="openCreate">新增{{ activeTab === 'STUDENT' ? '学生' : activeTab === 'TEACHER' ? '教师' : '管理员' }}</el-button>
