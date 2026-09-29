@@ -1,18 +1,142 @@
+<template>
+  <div class="profile-page">
+    <!-- 左栏：个人信息卡 + 页签卡 -->
+    <div class="side-col">
+      <div class="profile-card">
+        <div class="avatar">
+          <svg viewBox="0 0 96 96">
+            <circle cx="48" cy="48" r="48" fill="#d7f0fe" />
+            <ellipse cx="48" cy="80" rx="30" ry="24" fill="#1d3557" />
+            <path d="M38 62l10 14 10-14-10-5z" fill="#fff" />
+            <path d="M45 66l3 10 3-10-3-3z" fill="#2e97fe" />
+            <ellipse cx="48" cy="40" rx="15" ry="17" fill="#f2c9a8" />
+            <path d="M33 36c0-9 7-14 15-14s15 5 15 14l-2-2c-1 4-4 4-7 3-5-2-12-2-16 1-2 1-3 2-5-2z" fill="#2c3e5d" />
+            <circle cx="42" cy="41" r="1.6" fill="#2c3e5d" />
+            <circle cx="54" cy="41" r="1.6" fill="#2c3e5d" />
+            <path d="M44 48c2 2 6 2 8 0" stroke="#c98850" stroke-width="1.4" fill="none" stroke-linecap="round" />
+          </svg>
+        </div>
+        <div class="p-name">{{ displayName }}</div>
+        <div class="p-role">{{ roleCn }}</div>
+        <div class="p-status"><i />在线</div>
+      </div>
+
+      <div class="nav-card">
+        <div class="nav-item" :class="{ active: tab === 'info' }" @click="switchTab('info')">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4.4 0-8 2.2-8 5v3h16v-3c0-2.8-3.6-5-8-5z"/></svg>
+          <span>个人信息</span>
+        </div>
+        <div class="nav-item" :class="{ active: tab === 'password' }" @click="switchTab('password')">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 9V7a5 5 0 0 0-10 0v2H5v13h14V9h-2zM9 7a3 3 0 0 1 6 0v2H9V7zm4 9.7V19h-2v-2.3a2 2 0 1 1 2 0z"/></svg>
+          <span>修改密码</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右栏：内容卡 -->
+    <div class="main-col">
+      <!-- 修改密码 -->
+      <div v-if="tab === 'password'" class="panel-card">
+        <div class="panel-head">
+          <div class="lock-badge">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 9V7a5 5 0 0 0-10 0v2H5v13h14V9h-2zM9 7a3 3 0 0 1 6 0v2H9V7zm4 9.7V19h-2v-2.3a2 2 0 1 1 2 0z"/></svg>
+          </div>
+          <div>
+            <div class="panel-title">修改密码</div>
+            <div class="panel-sub">为了您的账户安全，请定期修改密码</div>
+          </div>
+        </div>
+
+        <el-form label-position="left" label-width="96px" class="pwd-form">
+          <el-form-item required>
+            <template #label>原密码</template>
+            <el-input v-model="pwdForm.old_password" type="password" suffix-icon="View" placeholder="请输入原密码" />
+          </el-form-item>
+          <el-form-item required>
+            <template #label>新密码</template>
+            <el-input v-model="pwdForm.new_password" type="password" suffix-icon="View" placeholder="请输入新密码" />
+            <div class="pwd-tip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#1878fd" stroke-width="1.6"><circle cx="12" cy="12" r="9" /><path d="M12 11v5" stroke-linecap="round" /><circle cx="12" cy="8" r="0.8" fill="#1878fd" stroke="none" /></svg>
+              <span>密码长度8-20位，包含字母、数字和特殊字符中的至少两种</span>
+            </div>
+          </el-form-item>
+          <el-form-item required>
+            <template #label>确认新密码</template>
+            <el-input v-model="pwdForm.confirm" type="password" suffix-icon="View" placeholder="请再次输入新密码" />
+          </el-form-item>
+        </el-form>
+
+        <div class="panel-actions">
+          <el-button class="ghost-btn" @click="resetPwd">取 消</el-button>
+          <el-button type="primary" :loading="changing" @click="changePwd">确定修改</el-button>
+        </div>
+      </div>
+
+      <!-- 个人信息 -->
+      <div v-else class="panel-card">
+        <div class="panel-head">
+          <div class="lock-badge">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4.4 0-8 2.2-8 5v3h16v-3c0-2.8-3.6-5-8-5z"/></svg>
+          </div>
+          <div>
+            <div class="panel-title">个人信息</div>
+            <div class="panel-sub">维护您的基本资料与联系方式</div>
+          </div>
+        </div>
+
+        <el-form label-position="left" label-width="96px" class="pwd-form">
+          <el-form-item label="登录名">
+            <el-input :model-value="profile?.username || '-'" disabled />
+          </el-form-item>
+          <el-form-item required>
+            <template #label>姓名</template>
+            <el-input v-model="form.real_name" placeholder="请输入姓名" />
+          </el-form-item>
+          <el-form-item>
+            <template #label>手机号</template>
+            <el-input v-model="form.phone" placeholder="请输入手机号" />
+          </el-form-item>
+          <el-form-item>
+            <template #label>邮箱</template>
+            <el-input v-model="form.email" placeholder="请输入邮箱" />
+          </el-form-item>
+        </el-form>
+
+        <div class="panel-actions">
+          <el-button class="ghost-btn" @click="load">重 置</el-button>
+          <el-button type="primary" :loading="saving" @click="save">保存修改</el-button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { authApi } from '@/api/auth'
 import { useUserStore } from '@/stores/user'
-import { announcementApi } from '@/api/common'
 
+const route = useRoute()
+const router = useRouter()
 const userStore = useUserStore()
+
+const tab = computed(() => (route.query.tab === 'info' ? 'info' : 'password'))
+
+const ROLE_CN: Record<string, string> = { ADMIN: '系统管理员', TEACHER: '教师', STUDENT: '学生' }
+const roleCn = computed(() => ROLE_CN[userStore.role] || userStore.role || '系统管理员')
+const displayName = computed(() => (userStore.role === 'ADMIN' ? '管理员' : userStore.user?.real_name) || '管理员')
+
+function switchTab(t: string) {
+  router.replace({ query: { ...route.query, tab: t } })
+}
+
 const profile = ref<any>(null)
 const form = reactive({ real_name: '', phone: '', email: '' })
 const pwdForm = reactive({ old_password: '', new_password: '', confirm: '' })
 const saving = ref(false)
 const changing = ref(false)
-
-const ROLE_CN: Record<string, string> = { ADMIN: '管理员', TEACHER: '教师', STUDENT: '学生' }
 
 async function load() {
   const res = await authApi.getProfile()
@@ -21,6 +145,10 @@ async function load() {
 }
 
 async function save() {
+  if (!form.real_name.trim()) {
+    ElMessage.warning('请输入姓名')
+    return
+  }
   saving.value = true
   try {
     await authApi.updateProfile(form)
@@ -33,9 +161,17 @@ async function save() {
   }
 }
 
+function resetPwd() {
+  Object.assign(pwdForm, { old_password: '', new_password: '', confirm: '' })
+}
+
 async function changePwd() {
-  if (pwdForm.new_password.length < 6) {
-    ElMessage.warning('新密码至少 6 位')
+  if (!pwdForm.old_password) {
+    ElMessage.warning('请输入原密码')
+    return
+  }
+  if (pwdForm.new_password.length < 8 || pwdForm.new_password.length > 20) {
+    ElMessage.warning('密码长度8-20位')
     return
   }
   if (pwdForm.new_password !== pwdForm.confirm) {
@@ -55,98 +191,188 @@ async function changePwd() {
   }
 }
 
-// 公告详情抽屉
-const announcements = ref<any[]>([])
-const detailVisible = ref(false)
-const currentAnn = ref<any>(null)
-
-function viewAnn(a: any) {
-  currentAnn.value = a
-  detailVisible.value = true
-}
-
-onMounted(async () => {
-  await load()
-  const res = await announcementApi.list({ page: 1, page_size: 20 })
-  announcements.value = res.data.items
-})
+onMounted(load)
 </script>
 
-<template>
-  <el-row :gutter="16">
-    <el-col :span="8">
-      <div class="page-card" style="text-align: center; padding: 32px">
-        <el-avatar :size="80" style="background: #409eff; font-size: 32px">
-          {{ (profile?.real_name || '?').slice(0, 1) }}
-        </el-avatar>
-        <h3 style="margin: 12px 0 4px">{{ profile?.real_name }}</h3>
-        <el-tag>{{ ROLE_CN[profile?.role] || profile?.role }}</el-tag>
-        <div style="color: #909399; font-size: 13px; margin-top: 12px">
-          登录名: {{ profile?.username }}
-          <template v-if="profile?.student_no"> · 学号: {{ profile.student_no }}</template>
-          <template v-if="profile?.teacher_no"> · 工号: {{ profile.teacher_no }}</template>
-        </div>
-      </div>
-    </el-col>
+<style scoped>
+.profile-page {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+  min-height: calc(100vh - 96px);
+}
 
-    <el-col :span="16">
-      <div class="page-card">
-        <h3 style="margin: 0 0 16px">个人资料</h3>
-        <el-form label-width="80px" style="max-width: 420px">
-          <el-form-item label="姓名">
-            <el-input v-model="form.real_name" />
-          </el-form-item>
-          <el-form-item label="手机号">
-            <el-input v-model="form.phone" />
-          </el-form-item>
-          <el-form-item label="邮箱">
-            <el-input v-model="form.email" />
-          </el-form-item>
-          <el-button type="primary" :loading="saving" @click="save">保存</el-button>
-        </el-form>
+/* 左栏 */
+.side-col {
+  width: 300px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.profile-card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
+  padding: 30px 20px 24px;
+  text-align: center;
+}
+.avatar {
+  width: 84px;
+  height: 84px;
+  margin: 0 auto;
+}
+.avatar svg {
+  width: 100%;
+  height: 100%;
+}
+.p-name {
+  margin-top: 12px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1f2d3d;
+}
+.p-role {
+  margin-top: 4px;
+  font-size: 13px;
+  color: #8a97ad;
+}
+.p-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 3px 14px;
+  border-radius: 12px;
+  background: #e4f7ec;
+  color: #27ae60;
+  font-size: 12px;
+}
+.p-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #27ae60;
+}
 
-        <el-divider>修改密码</el-divider>
-        <el-form label-width="80px" style="max-width: 420px">
-          <el-form-item label="原密码">
-            <el-input v-model="pwdForm.old_password" type="password" show-password />
-          </el-form-item>
-          <el-form-item label="新密码">
-            <el-input v-model="pwdForm.new_password" type="password" show-password />
-          </el-form-item>
-          <el-form-item label="确认密码">
-            <el-input v-model="pwdForm.confirm" type="password" show-password />
-          </el-form-item>
-          <el-button type="warning" :loading="changing" @click="changePwd">修改密码</el-button>
-        </el-form>
-      </div>
-    </el-col>
+.nav-card {
+  flex: 1;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
+  padding: 8px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #3b4a5f;
+  cursor: pointer;
+}
+.nav-item svg {
+  width: 17px;
+  height: 17px;
+}
+.nav-item.active {
+  background: #e8f1fe;
+  color: #1878fd;
+  font-weight: 500;
+}
 
-    <el-col :span="24" style="margin-top: 16px">
-      <div class="page-card">
-        <h3 style="margin: 0 0 12px">系统公告</h3>
-        <el-table :data="announcements" border @row-click="viewAnn" style="cursor: pointer">
-          <el-table-column prop="title" label="标题" min-width="260" />
-          <el-table-column label="优先级" width="90">
-            <template #default="{ row }">
-              <el-tag size="small" :type="row.priority === 'URGENT' ? 'danger' : row.priority === 'IMPORTANT' ? 'warning' : 'info'">
-                {{ row.priority_cn }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="publish_time" label="发布时间" width="170">
-            <template #default="{ row }">{{ (row.publish_time || '-').replace('T', ' ').slice(0, 16) }}</template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </el-col>
+/* 右栏 */
+.main-col {
+  flex: 1;
+  min-width: 0;
+}
+.panel-card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
+  padding: 24px 32px;
+  height: 100%;
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #eef2f8;
+  margin-bottom: 26px;
+}
+.lock-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #1878fd;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.lock-badge svg {
+  width: 22px;
+  height: 22px;
+  color: #fff;
+}
+.panel-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #1f2d3d;
+}
+.panel-sub {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: #8a97ad;
+}
 
-    <el-drawer v-model="detailVisible" :title="currentAnn?.title" size="40%">
-      <div style="padding: 0 8px">
-        <div style="color: #909399; font-size: 13px; margin-bottom: 12px">
-          发布于 {{ (currentAnn?.publish_time || '').replace('T', ' ').slice(0, 16) }}
-        </div>
-        <div style="white-space: pre-wrap; line-height: 1.8; color: #303133">{{ currentAnn?.content }}</div>
-      </div>
-    </el-drawer>
-  </el-row>
-</template>
+.pwd-form {
+  max-width: none;
+}
+.pwd-form :deep(.el-form-item__label) {
+  font-size: 13.5px;
+  color: #3b4a5f;
+}
+.pwd-form :deep(.el-input) {
+  width: 560px;
+  flex-shrink: 0;
+}
+.pwd-form :deep(.el-form-item__content) {
+  flex-wrap: wrap;
+}
+.pwd-tip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 560px;
+  max-width: 560px;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 7px 12px;
+  border-radius: 6px;
+  background: #e8f1fe;
+  font-size: 12px;
+  color: #5a6b80;
+}
+.pwd-tip svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.pwd-tip span {
+  white-space: nowrap;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 28px;
+  padding-left: 96px;
+}
+.ghost-btn {
+  border: 1px solid #dcdfe6;
+  color: #3b4a5f;
+}
+</style>

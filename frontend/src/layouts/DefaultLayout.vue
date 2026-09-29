@@ -59,7 +59,14 @@ const menus = computed<MenuNode[]>(() => {
       { title: '管理员信息', icon: 'userbox', path: '/admin/users', query: { role: 'ADMIN' } },
       { title: '教师信息', icon: 'userbox', path: '/admin/users', query: { role: 'TEACHER' } },
       { title: '学生信息', icon: 'userbox', path: '/admin/users', query: { role: 'STUDENT' } },
-      { title: '系统设置', icon: 'gear', path: '/admin/settings', chevron: true },
+      {
+        title: '个人中心',
+        icon: 'gear',
+        children: [
+          { title: '个人信息', path: '/profile', query: { tab: 'info' } },
+          { title: '修改密码', path: '/profile', query: { tab: 'password' } },
+        ],
+      },
       { title: '操作日志', icon: 'doc', path: '/admin/logs' },
     ]
   }
@@ -114,7 +121,8 @@ const expanded = ref<Set<string>>(new Set())
 function isLeafActive(leaf: MenuLeaf) {
   if (route.path !== leaf.path) return false
   if (leaf.query?.role) return route.query.role === leaf.query.role
-  return true
+  if (leaf.query?.tab) return (route.query.tab || 'password') === leaf.query.tab
+  return !route.query.role && !route.query.tab
 }
 
 function containingGroup(node: MenuNode) {
@@ -128,18 +136,10 @@ function isExactActive(node: MenuNode) {
   return want ? route.query.role === want : !route.query.role
 }
 
-// 首次加载展开所有分组(与设计图一致); 之后仅保证包含当前页面的分组展开
-let menusInitialized = false
+// 仅展开包含当前页面的分组（当前页所在分组保持展开）
 watch(
   () => route.path,
   () => {
-    if (!menusInitialized) {
-      menusInitialized = true
-      for (const node of menus.value) {
-        if (node.children) expanded.value.add(node.title)
-      }
-      return
-    }
     for (const node of menus.value) {
       if (node.children && containingGroup(node)) expanded.value.add(node.title)
     }
@@ -164,6 +164,9 @@ const pageTitle = computed(() => {
     const r = String(route.query.role || '').toUpperCase()
     const n = r === 'ADMIN' ? '管理员信息管理' : r === 'TEACHER' ? '教师信息管理' : '学生信息管理'
     return `毕业设计管理 / ${n}`
+  }
+  if (route.path === '/profile') {
+    return route.query.tab === 'info' ? '个人中心 / 个人信息' : '个人中心 / 修改密码'
   }
   if (route.meta.title) return String(route.meta.title)
   for (const node of menus.value) {
