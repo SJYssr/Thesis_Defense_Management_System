@@ -67,25 +67,24 @@ const menus = computed<MenuNode[]>(() => {
           { title: '修改密码', path: '/profile', query: { tab: 'password' } },
         ],
       },
+      { title: '系统设置', icon: 'gear', path: '/admin/settings', chevron: true },
       { title: '操作日志', icon: 'doc', path: '/admin/logs' },
     ]
   }
   if (userStore.role === 'TEACHER') {
+    /* 与设计稿 15 的侧栏严格一致（平铺菜单） */
     return [
       { title: '系统首页', icon: 'home', path: '/teacher/home' },
-      { title: '我的题目', icon: 'doc', path: '/teacher/topics' },
-      {
-        title: '审核管理',
-        icon: 'cap',
-        children: [
-          { title: '选题审核', path: '/teacher/selections' },
-          { title: '开题报告审核', path: '/teacher/opening' },
-          { title: '中期答辩审核', path: '/teacher/midterm' },
-          { title: '终期答辩审核', path: '/teacher/final' },
-          { title: '毕业材料审核', path: '/teacher/materials' },
-        ],
-      },
-      { title: '学生毕设进度', icon: 'chart', path: '/teacher/students' },
+      { title: '题目信息', icon: 'doc', path: '/teacher/topics' },
+      { title: '学生选题', icon: 'userbox', path: '/teacher/selections' },
+      { title: '开题报告', icon: 'doc', path: '/teacher/opening' },
+      { title: '中期答辩', icon: 'doc', path: '/teacher/midterm' },
+      { title: '终期答辩', icon: 'doc', path: '/teacher/final' },
+      { title: '毕业材料', icon: 'doc', path: '/teacher/materials' },
+      { title: '指导学生', icon: 'userbox', path: '/teacher/students' },
+      { title: '公告信息', icon: 'horn', path: '/announcements' },
+      { title: '个人中心', icon: 'userbox', path: '/profile' },
+      { title: '操作日志', icon: 'doc', path: '/admin/logs' },
     ]
   }
   return [
@@ -136,10 +135,17 @@ function isExactActive(node: MenuNode) {
   return want ? route.query.role === want : !route.query.role
 }
 
-// 仅展开包含当前页面的分组（当前页所在分组保持展开）
+// 首次加载展开所有分组(与设计图一致); 之后仅保证包含当前页面的分组展开
+let menusInitialized = false
 watch(
   () => route.path,
   () => {
+    if (!menusInitialized) {
+      menusInitialized = true
+      for (const node of menus.value) {
+        if (node.children) expanded.value.add(node.title)
+      }
+    }
     for (const node of menus.value) {
       if (node.children && containingGroup(node)) expanded.value.add(node.title)
     }
@@ -255,7 +261,7 @@ onUnmounted(() => {
               v-if="!node.children"
               class="menu-item"
               :class="{ active: isExactActive(node) }"
-              @click="go(node.path!)"
+              @click="go(node.path!, node.query)"
             >
               <svg class="m-icon" viewBox="0 0 24 24" fill="currentColor" v-html="ICONS[node.icon]" />
               <span v-if="!collapsed" class="m-label">{{ node.title }}</span>

@@ -41,7 +41,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'admin/announcements', component: () => import('@/views/admin/AnnouncementAdmin.vue'), meta: { roles: ['ADMIN'], title: '毕业设计管理 / 公告管理' } },
       { path: 'admin/users', component: () => import('@/views/admin/UserManagement.vue'), meta: { roles: ['ADMIN'] } },
       { path: 'admin/settings', component: () => import('@/views/admin/SystemSettings.vue'), meta: { roles: ['ADMIN'] } },
-      { path: 'admin/logs', component: () => import('@/views/admin/OperationLogs.vue'), meta: { roles: ['ADMIN'] } },
+      { path: 'admin/logs', component: () => import('@/views/admin/OperationLogs.vue'), meta: { roles: ['ADMIN', 'TEACHER'], title: '操作日志' } },
       // ===== 通用 =====
       { path: 'profile', component: () => import('@/views/common/ProfileView.vue') },
       { path: 'announcements', component: () => import('@/views/common/AnnouncementList.vue') },
