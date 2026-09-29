@@ -53,7 +53,7 @@
         </div>
         <div class="filter-item">
           <span class="filter-label">年级</span>
-          <el-select v-model="query.grade" class="filter-select narrow">
+          <el-select v-model="query.grade" class="filter-select">
             <el-option label="2024届" value="2024届" />
             <el-option label="2023届" value="2023届" />
           </el-select>
@@ -89,8 +89,8 @@
           <div class="toolbar-left">
             <el-button type="primary" @click="onCreate"><el-icon><Plus /></el-icon>&nbsp;新增学生</el-button>
             <el-button class="ghost-btn" @click="onImport"><el-icon><Upload /></el-icon>&nbsp;批量导入</el-button>
-            <el-button class="ghost-btn check" @click="onBatchEnable"><el-icon><CircleCheck /></el-icon>&nbsp;批量启用</el-button>
-            <el-button class="ghost-btn pause" @click="onBatchDisable"><el-icon><Remove /></el-icon>&nbsp;批量禁用</el-button>
+            <el-button class="ghost-btn" @click="onBatchEnable"><el-icon class="ic-blue"><Check /></el-icon>&nbsp;批量启用</el-button>
+            <el-button class="ghost-btn" @click="onBatchDisable"><el-icon class="ic-red"><svg viewBox="0 0 24 24" fill="currentColor" v-html="CIRCLE_PAUSE_ICON" /></el-icon>&nbsp;批量禁用</el-button>
             <el-button class="ghost-btn" @click="onBatchDelete"><el-icon><Delete /></el-icon>&nbsp;批量删除</el-button>
           </div>
           <div class="toolbar-right">
@@ -100,27 +100,27 @@
         </div>
 
         <el-table :data="pagedRows" class="st-table" @selection-change="onSelectionChange">
-          <el-table-column type="selection" width="30" />
-          <el-table-column prop="index" label="序号" width="36" />
-          <el-table-column prop="no" label="学号" width="64" />
-          <el-table-column prop="name" label="学生姓名" width="58" />
-          <el-table-column prop="college" label="学院" width="96" show-overflow-tooltip />
-          <el-table-column prop="major" label="专业" width="132" show-overflow-tooltip />
-          <el-table-column prop="klass" label="班级" width="62" />
-          <el-table-column prop="grade" label="年级" width="54" />
-          <el-table-column label="学生状态" width="54" align="center">
+          <el-table-column type="selection" width="36" />
+          <el-table-column prop="index" label="序号" min-width="44" />
+          <el-table-column prop="no" label="学号" min-width="70" />
+          <el-table-column prop="name" label="学生姓名" min-width="72" />
+          <el-table-column prop="college" label="学院" min-width="108" show-overflow-tooltip />
+          <el-table-column prop="major" label="专业" min-width="150" show-overflow-tooltip />
+          <el-table-column prop="klass" label="班级" min-width="72" />
+          <el-table-column prop="grade" label="年级" min-width="62" />
+          <el-table-column label="学生状态" min-width="78" align="center">
             <template #default="{ row }">
               <span class="status-pill" :class="row.statusClass">{{ row.status }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="是否选题" width="64" align="center">
+          <el-table-column label="是否选题" min-width="78" align="center">
             <template #default="{ row }">
               <span class="sel-pill" :class="row.selected === '已选题' ? 'sp-yes' : 'sp-no'">{{ row.selected }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="teacher" label="指导教师" width="64" />
-          <el-table-column prop="phone" label="联系电话" width="92" show-overflow-tooltip />
-          <el-table-column label="操作" width="112" align="center">
+          <el-table-column prop="teacher" label="指导教师" min-width="72" />
+          <el-table-column prop="phone" label="联系电话" min-width="102" show-overflow-tooltip />
+          <el-table-column label="操作" min-width="126" align="center">
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="onView(row)">查看</el-button>
               <el-button link type="primary" size="small" @click="onEdit(row)">编辑</el-button>
@@ -133,95 +133,100 @@
         <div class="pagination-bar">
           <span class="page-total">共 {{ total }} 条数据</span>
           <div class="pager-group">
-            <el-select v-model="pageSize" size="small" class="page-size">
+            <el-select v-model="pageSize" class="page-size">
               <el-option label="10条/页" :value="10" />
               <el-option label="20条/页" :value="20" />
             </el-select>
             <el-pagination
-              v-model:current-page="page" :page-size="pageSize" :total="total" :pager-count="5"
+              v-model:current-page="page" :page-size="pageSize" :total="total"
               background layout="prev, pager, next, jumper" class="pager"
             />
           </div>
         </div>
       </div>
 
-      <!-- 右：新增学生表单 -->
-      <div class="form-card">
-        <div class="form-head">
-          <span class="form-title">新增学生</span>
-          <el-icon class="close-btn" @click="onClose"><Close /></el-icon>
-        </div>
-        <el-form label-position="left" label-width="66px" class="st-form">
-          <el-form-item required>
-            <template #label>学号</template>
-            <el-input v-model="form.no" size="small" placeholder="请输入学号" />
-          </el-form-item>
-          <el-form-item required>
-            <template #label>姓名</template>
-            <el-input v-model="form.name" size="small" placeholder="请输入学生姓名" />
-          </el-form-item>
-          <el-form-item required>
-            <template #label>学院</template>
-            <el-select v-model="form.college" size="small" placeholder="请选择学院" style="width: 100%">
-              <el-option v-for="c in collegeOptions" :key="c" :label="c" :value="c" />
-            </el-select>
-          </el-form-item>
-          <el-form-item required>
-            <template #label>专业</template>
-            <el-select v-model="form.major" size="small" placeholder="请选择专业" style="width: 100%">
-              <el-option v-for="m in majorOptions" :key="m" :label="m" :value="m" />
-            </el-select>
-          </el-form-item>
-          <el-form-item required>
-            <template #label>班级</template>
-            <el-select v-model="form.klass" size="small" placeholder="请选择班级" style="width: 100%">
-              <el-option v-for="k in klassOptions" :key="k" :label="k" :value="k" />
-            </el-select>
-          </el-form-item>
-          <el-form-item required>
-            <template #label>年级</template>
-            <el-select v-model="form.grade" size="small" style="width: 100%">
-              <el-option label="2024届" value="2024届" />
-              <el-option label="2023届" value="2023届" />
-            </el-select>
-          </el-form-item>
-          <el-form-item required>
-            <template #label>性别</template>
-            <el-radio-group v-model="form.gender" size="small">
-              <el-radio value="男">男</el-radio>
-              <el-radio value="女">女</el-radio>
-            </el-radio-group>
-          </el-form-item>
-          <el-form-item required>
-            <template #label>联系电话</template>
-            <el-input v-model="form.phone" size="small" placeholder="请输入联系电话" />
-          </el-form-item>
-          <el-form-item>
-            <template #label>邮箱</template>
-            <el-input v-model="form.email" size="small" placeholder="请输入邮箱" />
-          </el-form-item>
-          <el-form-item>
-            <template #label>学生状态</template>
-            <el-radio-group v-model="form.status" size="small">
-              <el-radio value="在校">在校</el-radio>
-              <el-radio value="休学">休学</el-radio>
-              <el-radio value="毕业">毕业</el-radio>
-            </el-radio-group>
-          </el-form-item>
-          <el-form-item>
-            <template #label>备注</template>
-            <div class="remark-wrap">
-              <el-input v-model="form.remark" size="small" type="textarea" :rows="2" placeholder="请输入备注信息" maxlength="200" />
-              <div class="remark-counter">{{ form.remark.length }}/200</div>
-            </div>
-          </el-form-item>
-        </el-form>
-        <div class="form-footer">
-          <el-button class="ghost-btn" @click="onClose">取消</el-button>
+    </div>
+
+    <!-- 新增/编辑学生弹窗（屏幕居中） -->
+    <el-dialog
+      v-model="panelVisible"
+      :title="editMode ? '编辑学生' : '新增学生'"
+      width="600px"
+      align-center
+      class="st-dialog"
+    >
+      <el-form label-position="left" label-width="90px" class="st-form">
+        <el-form-item required>
+          <template #label>学号</template>
+          <el-input v-model="form.no" placeholder="请输入学号" />
+        </el-form-item>
+        <el-form-item required>
+          <template #label>姓名</template>
+          <el-input v-model="form.name" placeholder="请输入学生姓名" />
+        </el-form-item>
+        <el-form-item required>
+          <template #label>学院</template>
+          <el-select v-model="form.college" placeholder="请选择学院" style="width: 100%">
+            <el-option v-for="c in collegeOptions" :key="c" :label="c" :value="c" />
+          </el-select>
+        </el-form-item>
+        <el-form-item required>
+          <template #label>专业</template>
+          <el-select v-model="form.major" placeholder="请选择专业" style="width: 100%">
+            <el-option v-for="m in majorOptions" :key="m" :label="m" :value="m" />
+          </el-select>
+        </el-form-item>
+        <el-form-item required>
+          <template #label>班级</template>
+          <el-select v-model="form.klass" placeholder="请选择班级" style="width: 100%">
+            <el-option v-for="k in klassOptions" :key="k" :label="k" :value="k" />
+          </el-select>
+        </el-form-item>
+        <el-form-item required>
+          <template #label>年级</template>
+          <el-select v-model="form.grade" style="width: 100%">
+            <el-option label="2024届" value="2024届" />
+            <el-option label="2023届" value="2023届" />
+          </el-select>
+        </el-form-item>
+        <el-form-item required>
+          <template #label>性别</template>
+          <el-radio-group v-model="form.gender">
+            <el-radio value="男">男</el-radio>
+            <el-radio value="女">女</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item required>
+          <template #label>联系电话</template>
+          <el-input v-model="form.phone" placeholder="请输入联系电话" />
+        </el-form-item>
+        <el-form-item>
+          <template #label>邮箱</template>
+          <el-input v-model="form.email" placeholder="请输入邮箱" />
+        </el-form-item>
+        <el-form-item>
+          <template #label>学生状态</template>
+          <el-radio-group v-model="form.status">
+            <el-radio value="在校">在校</el-radio>
+            <el-radio value="休学">休学</el-radio>
+            <el-radio value="毕业">毕业</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item>
+          <template #label>备注</template>
+          <el-input
+            v-model="form.remark" type="textarea" :rows="3" placeholder="请输入备注信息"
+            maxlength="200" show-word-limit
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="onClose">取消</el-button>
           <el-button type="primary" @click="onSave">保存</el-button>
         </div>
-      </div>
-    </div>
+      </template>
+    </el-dialog>
 
     <!-- 查看弹窗 -->
     <el-dialog v-model="viewVisible" :title="`${detail?.name}（${detail?.no}）`" width="560px">
@@ -245,14 +250,17 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { STAT_ICONS } from '@/components/statIcons'
 
 const CAP_ICON = '<path d="M12 3 1.5 8.2 12 13.4l8.6-4.6v5.8h2V8.2L12 3zm-6.5 9v4.2c0 1.5 2.9 3 6.5 3s6.5-1.5 6.5-3V12l-6.5 3.5L5.5 12z"/>'
-const WARN_ICON = '<path d="M12 2a4 4 0 0 0-4 4v.5C5.6 7.6 4 9.6 4 12a8 8 0 1 0 15.5-2.8l-2.6 1.5A5 5 0 0 1 7 12c0-1.6.9-2.5 2.5-2.5V10h2V6a2 2 0 1 1 4 0v1h2v-.4A4 4 0 0 0 12 2z" transform="translate(0 1)"/><path d="M17.5 8 13 16h3v4l4.5-8h-3V8z" transform="translate(0 1)"/>'
+/* 批量禁用：红色描边圆圈 + 暂停条 */
+const CIRCLE_PAUSE_ICON = '<path fill-rule="evenodd" d="M12 2.6a9.4 9.4 0 1 0 0 18.8 9.4 9.4 0 0 0 0-18.8zm0 2a7.4 7.4 0 1 1 0 14.8 7.4 7.4 0 0 1 0-14.8zM9.4 8.2h2.1v7.6H9.4zM12.5 8.2h2.1v7.6h-2.1z"/>'
+/* 休学/异常：红色人像 + 感叹号 */
+const USER_ALERT_ICON = '<circle cx="9" cy="7.5" r="4"/><path d="M9 12.5c-3.9 0-7 2-7 4.5V20h10v-1h4v-3.5c0-.7-.3-1.3-.8-1.8-1.2-1.1-3.5-1.7-6.2-1.7z"/><path d="M19.2 5h2v6h-2zm0 8h2v2h-2z"/>'
 
 /* 趋势色遵循设计稿：涨为红、跌为绿，"较去年"前缀灰 */
 const statCards = [
   { label: '学生总数', value: 356, icon: STAT_ICONS.users, tileBg: '#d7f0fe', iconColor: '#2563eb', trend: '+12%', trendColor: '#ef4444', arrow: '↗' },
   { label: '在校学生', value: 328, icon: CAP_ICON, tileBg: '#ddfef0', iconColor: '#22c55e', ring: 92, ringColor: '#22c55e', ringBig: true, trend: '+8%', trendColor: '#ef4444', arrow: '↗' },
   { label: '毕业学生', value: 28, icon: CAP_ICON, tileBg: '#fef5ea', iconColor: '#f59e0b', ring: 8, ringColor: '#f59e0b', trend: '+27%', trendColor: '#ef4444', arrow: '↗' },
-  { label: '休学/异常', value: 4, icon: WARN_ICON, tileBg: '#fee7ed', iconColor: '#ef4444', trend: '-33%', trendColor: '#22c55e', arrow: '↘' },
+  { label: '休学/异常', value: 4, icon: USER_ALERT_ICON, tileBg: '#fee7ed', iconColor: '#ef4444', trend: '-33%', trendColor: '#22c55e', arrow: '↘' },
 ]
 
 const collegeOptions = ['计算机学院', '人工智能学院', '电子信息学院', '管理学院', '经济管理学院', '数学与统计学院']
@@ -325,6 +333,10 @@ const form = reactive({
 
 const viewVisible = ref(false)
 const detail = ref<StRow | null>(null)
+/* 右侧新增/编辑表单弹窗：默认隐藏，点"新增学生"或行内"编辑"时居中显示 */
+const panelVisible = ref(false)
+const editMode = ref(false)
+const editingRow = ref<StRow | null>(null)
 
 function onSearch() {
   page.value = 1
@@ -348,7 +360,7 @@ function onSelectionChange(sel: StRow[]) {
 
 function onCreate() {
   onClose()
-  ElMessage.info('请在右侧填写新学生信息')
+  panelVisible.value = true
 }
 
 function onView(row: StRow) {
@@ -365,7 +377,9 @@ function onEdit(row: StRow) {
   form.grade = row.grade
   form.phone = row.phone
   form.status = row.status
-  ElMessage.success('已载入信息，请在右侧编辑')
+  editMode.value = true
+  editingRow.value = row
+  panelVisible.value = true
 }
 
 function onToggle(row: StRow, enable: boolean) {
@@ -419,6 +433,9 @@ function onExport() {
 
 function onClose() {
   Object.assign(form, { no: '', name: '', college: '', major: '', klass: '', grade: '2024届', gender: '男', phone: '', email: '', status: '在校', remark: '' })
+  editMode.value = false
+  editingRow.value = null
+  panelVisible.value = false
 }
 
 function onSave() {
@@ -428,7 +445,7 @@ function onSave() {
   if (!form.major) return ElMessage.warning('请选择专业')
   if (!form.klass) return ElMessage.warning('请选择班级')
   if (!form.phone.trim()) return ElMessage.warning('请输入联系电话')
-  rows.value.unshift({
+  const payload = {
     no: form.no,
     name: form.name,
     college: form.college,
@@ -436,60 +453,63 @@ function onSave() {
     klass: form.klass,
     grade: form.grade,
     status: form.status,
-    selected: '未选题',
-    teacher: '-',
     phone: form.phone,
-  })
+  }
+  if (editMode.value && editingRow.value) {
+    Object.assign(editingRow.value, payload)
+  } else {
+    rows.value.unshift({ ...payload, selected: '未选题', teacher: '-' })
+  }
   ElMessage.success('保存成功')
   onClose()
 }
 </script>
 
 <style scoped>
-/* 统计卡（4 张） */
+/* ===== 统计卡（4 张，通栏） ===== */
 .stat-cards {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 10px;
+  gap: 14px;
+  margin-bottom: 12px;
 }
 .stat-card {
   position: relative;
   background: #fff;
-  border-radius: 8px;
-  padding: 9px 12px;
+  border-radius: 10px;
+  padding: 16px 20px;
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: center;
+  gap: 16px;
   box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
-  min-height: 72px;
+  min-height: 104px;
 }
 .stat-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
+  width: 58px;
+  height: 58px;
+  border-radius: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
-.stat-icon svg { width: 22px; height: 22px; }
-.stat-info { flex: 1; min-width: 0; padding-right: 32px; }
+.stat-icon svg { width: 30px; height: 30px; }
+.stat-info { flex: 1; min-width: 0; padding-right: 40px; }
 .stat-label {
-  font-size: 12.5px;
+  font-size: 14px;
   color: #8a97ad;
 }
 .stat-num {
-  font-size: 24px;
+  font-size: 30px;
   font-weight: 700;
   color: #1f2d3d;
   font-family: 'DIN Alternate', 'Helvetica Neue', sans-serif;
-  line-height: 1.2;
-  margin-top: 2px;
+  line-height: 1.15;
+  margin-top: 3px;
 }
 .stat-trend {
-  font-size: 11.5px;
-  margin-top: 4px;
+  font-size: 13px;
+  margin-top: 5px;
 }
 .trend-prefix {
   color: #8a97ad;
@@ -498,67 +518,72 @@ function onSave() {
   --pct: 0;
   --ring-color: #f59e0b;
   position: absolute;
-  right: 12px;
-  top: 12px;
-  width: 42px;
-  height: 42px;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   background:
-    radial-gradient(closest-side, #fff 72%, transparent 73% 100%),
+    radial-gradient(closest-side, #fff 74%, transparent 75% 100%),
     conic-gradient(var(--ring-color) calc(var(--pct) * 1%), #eef1f6 0);
 }
-.stat-ring.big { width: 48px; height: 48px; right: 10px; }
+.stat-ring.big { width: 62px; height: 62px; }
 .stat-ring span {
-  font-size: 9.5px;
+  font-size: 12px;
   font-weight: 600;
   color: #2c3e5d;
 }
+.stat-ring.big span { font-size: 13px; }
 
-/* 筛选区 */
+/* ===== 筛选区（两行 + 右下按钮行） ===== */
 .filter-card {
   background: #fff;
-  border-radius: 8px;
-  padding: 9px 14px;
+  border-radius: 10px;
+  padding: 14px 20px;
   box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 .filter-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 28px;
 }
-.filter-row + .filter-row { margin-top: 5px; }
-.filter-row.btn-row { justify-content: flex-end; margin-top: 6px; }
+.filter-row + .filter-row { margin-top: 12px; }
+.filter-row.btn-row { justify-content: flex-end; margin-top: 12px; gap: 12px; }
 .filter-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 .filter-label {
-  font-size: 13px;
-  color: #3b4a5f;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2d3d;
   white-space: nowrap;
 }
-.filter-input { width: 160px; }
-.filter-select { width: 116px; }
-.filter-select.narrow { width: 100px; }
+.filter-input { width: 172px; }
+.filter-select { width: 150px; }
+.filter-card :deep(.el-input__wrapper) { padding: 5px 12px; }
+.filter-card :deep(.el-select__wrapper) { min-height: 34px; }
+.btn-row :deep(.el-button) {
+  height: 36px;
+  padding: 0 22px;
+  font-size: 14px;
+  border-radius: 6px;
+}
 .reset-btn { border: 1px solid #dcdfe6; color: #2c3e5d; }
 
-/* 两栏 */
-.main-cols {
-  display: flex;
-  gap: 12px;
-  align-items: stretch;
-}
+/* ===== 表格卡 ===== */
 .table-card {
   flex: 1;
   min-width: 0;
   background: #fff;
-  border-radius: 8px;
-  padding: 10px 14px;
+  border-radius: 10px;
+  padding: 12px 18px;
   box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
 }
 .toolbar {
@@ -568,37 +593,43 @@ function onSave() {
   margin-bottom: 10px;
 }
 .toolbar-left,
-.toolbar-right { display: flex; gap: 8px; }
-.ghost-btn { border: 1px solid #dcdfe6; color: #2c3e5d; }
-.ghost-btn.check { color: #22c55e; }
-.ghost-btn.pause { color: #ef4444; }
+.toolbar-right { display: flex; gap: 10px; }
+.toolbar :deep(.el-button) {
+  height: 38px;
+  padding: 0 16px;
+  font-size: 14px;
+  border-radius: 6px;
+}
+.ghost-btn { border: 1px solid #dfe4ee; color: #2c3e5d; font-weight: 500; }
+.ic-blue { color: #1878fd; font-size: 17px; }
+.ic-red { color: #e83a3a; font-size: 17px; }
 
 .st-table :deep(thead th) {
-  background: #f0f6ff;
+  background: #eaf3fe;
   color: #2c3e5d;
   font-weight: 600;
-  padding: 6px 0;
+  font-size: 13px;
+  padding: 8px 0;
+  border-bottom: none;
 }
-.st-table :deep(thead th .cell) {
-  white-space: nowrap;
-  font-size: 11px;
-  padding: 0 4px;
-}
+.st-table :deep(thead th .cell) { white-space: nowrap; }
+.st-table :deep(td .cell) { white-space: nowrap; }
 .st-table :deep(td) {
-  font-size: 12px;
+  font-size: 13px;
   color: #3b4a5f;
-  padding: 5px 0;
+  padding: 7px 0;
 }
-.st-table :deep(td .cell) { white-space: nowrap; padding: 0 5px; }
-.st-table :deep(.el-button + .el-button) { margin-left: 5px; }
+.st-table :deep(.cell) { padding: 0 6px; }
+.st-table :deep(.el-button + .el-button) { margin-left: 8px; }
+.st-table :deep(.el-button.is-link) { font-size: 13px; }
 
-/* 状态药丸 */
+/* 状态/选题药丸 */
 .status-pill,
 .sel-pill {
   display: inline-block;
-  padding: 2px 6px;
-  border-radius: 10px;
-  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
   line-height: 18px;
 }
 .st-on { color: #27ae60; background: #e4f7ec; }
@@ -612,86 +643,56 @@ function onSave() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 4px 2px;
+  padding: 10px 4px 0;
 }
 .pager-group {
   display: flex;
   align-items: center;
 }
 .page-total {
-  font-size: 12px;
-  color: #8a97a8;
-  margin-right: 12px;
+  font-size: 13.5px;
+  color: #2c3e5d;
+  margin-right: 16px;
 }
-.page-size { width: 96px; margin-right: 12px; }
-
-/* 右侧新增表单 */
-.form-card {
-  width: 316px;
-  flex-shrink: 0;
+.page-size { width: 104px; margin-right: 14px; }
+/* 未激活页码：白底描边（与设计稿一致） */
+.pager :deep(.el-pager li) {
   background: #fff;
-  border-radius: 8px;
-  padding: 10px 16px;
-  box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
-  display: flex;
-  flex-direction: column;
+  border: 1px solid #e4e9f2;
 }
-.form-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 4px;
-  border-bottom: 1px solid #eef2f8;
-  margin-bottom: 4px;
-}
-.form-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #1f2d3d;
-}
-.close-btn {
-  font-size: 16px;
-  color: #97a3b4;
-  cursor: pointer;
-}
-.st-form { flex: 1; }
+.pager :deep(.el-pager li.is-active) { border-color: #1878fd; }
+.pager :deep(.btn-prev),
+.pager :deep(.btn-next) { background: #f5f7fb; }
+
+/* 新增/编辑学生弹窗 */
 .st-form :deep(.el-form-item) {
-  margin-bottom: 5px;
+  margin-bottom: 14px;
 }
 .st-form :deep(.el-form-item__label) {
-  line-height: 22px;
-  font-size: 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #1f2d3d;
   white-space: nowrap;
+  padding-right: 8px;
 }
-.st-form :deep(.el-input__wrapper),
-.st-form :deep(.el-select__wrapper) {
-  min-height: 22px;
+.st-form :deep(.el-radio-group) { flex-wrap: nowrap; }
+.st-form :deep(.el-radio__label) { font-size: 13.5px; color: #2c3e5d; }
+.st-form :deep(.el-textarea) { width: 100%; }
+.st-form :deep(.el-textarea__inner) { resize: none; }
+.st-form :deep(.el-textarea .el-input__count) {
+  background: transparent;
+  bottom: 4px;
+  right: 10px;
+  color: #a8b3c5;
 }
-.remark-wrap {
-  width: 100%;
-  border: 1px solid #dcdfe6;
-  border-radius: 4px;
-  overflow: hidden;
-}
-.remark-wrap :deep(.el-textarea__inner) {
-  border: none;
-  box-shadow: none;
-  resize: none;
-  font-size: 12.5px;
-}
-.remark-counter {
-  text-align: right;
-  font-size: 11px;
-  color: #97a3b4;
-  padding: 3px 8px;
-  background: #fafbfd;
-  border-top: 1px solid #eef2f8;
-}
-.form-footer {
+.dialog-footer {
   display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding-top: 4px;
-  border-top: 1px solid #eef2f8;
+  gap: 12px;
+}
+.dialog-footer :deep(.el-button) {
+  flex: 1;
+  height: 40px;
+  font-size: 15px;
+  border-radius: 6px;
 }
 </style>
