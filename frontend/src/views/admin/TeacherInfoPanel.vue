@@ -90,7 +90,7 @@
           <el-table-column prop="name" label="教师姓名" width="64" />
           <el-table-column prop="no" label="工号" width="72" />
           <el-table-column prop="college" label="所属学院" width="98" show-overflow-tooltip />
-          <el-table-column prop="major" label="所属专业" width="128" show-overflow-tooltip>
+          <el-table-column prop="major" label="所属专业" width="132" show-overflow-tooltip>
             <template #default="{ row }">
               <span class="major-text">{{ row.major }}</span>
             </template>

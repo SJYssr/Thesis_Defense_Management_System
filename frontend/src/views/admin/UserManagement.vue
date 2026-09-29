@@ -5,12 +5,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { userAdminApi } from '@/api/common'
 import AdminInfoPanel from './AdminInfoPanel.vue'
 import TeacherInfoPanel from './TeacherInfoPanel.vue'
+import StudentInfoPanel from './StudentInfoPanel.vue'
 
 const route = useRoute()
 /* 设计稿将管理员/教师/学生信息管理拆为独立页面：ADMIN/TEACHER 用新版面板，学生暂用旧 Tab 版 */
 const roleView = computed(() => String(route.query.role || '').toUpperCase())
 const isAdminView = computed(() => roleView.value === 'ADMIN')
 const isTeacherView = computed(() => roleView.value === 'TEACHER')
+const isStudentView = computed(() => roleView.value === 'STUDENT' || roleView.value === '')
 const activeTab = ref('STUDENT')
 const items = ref<any[]>([])
 const total = ref(0)
@@ -78,17 +80,18 @@ onMounted(() => {
   // 支持侧栏子菜单通过 /admin/users?role=TEACHER 直达对应标签
   const role = String(route.query.role || '').toUpperCase()
   if (['STUDENT', 'TEACHER', 'ADMIN'].includes(role)) activeTab.value = role
-  if (!isAdminView.value && !isTeacherView.value) load()
+  if (!isAdminView.value && !isTeacherView.value && !isStudentView.value) load()
 })
 
-watch([isAdminView, isTeacherView], () => {
-  if (!isAdminView.value && !isTeacherView.value) load()
+watch([isAdminView, isTeacherView, isStudentView], () => {
+  if (!isAdminView.value && !isTeacherView.value && !isStudentView.value) load()
 })
 </script>
 
 <template>
   <AdminInfoPanel v-if="isAdminView" />
   <TeacherInfoPanel v-else-if="isTeacherView" />
+  <StudentInfoPanel v-else-if="isStudentView" />
   <div v-else class="page-card">
     <div class="page-header">
       <h3 class="page-title">用户管理</h3>
