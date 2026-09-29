@@ -1,0 +1,44 @@
+name: graduation-system
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: graduation-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456
+      MYSQL_DATABASE: graduation_system
+      MYSQL_USER: graduation
+      MYSQL_PASSWORD: graduation123
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - graduation-mysql-data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123456"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    # redis-stack 自带 RediSearch, 支持 FT.CREATE 向量索引与 KNN 检索
+    image: redis/redis-stack-server:7.4.0-v0
+    container_name: graduation-redis
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "6380:6379"
+    volumes:
+      - graduation-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  graduation-mysql-data:
+  graduation-redis-data:

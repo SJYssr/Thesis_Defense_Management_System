@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" preserveAspectRatio="xMidYMid slice">
+  <!-- 登录页左侧插画背景(扁平校园场景), 可用同名图片文件直接替换 -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#dbeafe"/>
+      <stop offset="1" stop-color="#e9f5fe"/>
+    </linearGradient>
+    <pattern id="win" width="26" height="32" patternUnits="userSpaceOnUse">
+      <rect x="5" y="6" width="16" height="20" rx="2" fill="#a3c9ee"/>
+    </pattern>
+    <pattern id="win2" width="24" height="28" patternUnits="userSpaceOnUse">
+      <rect x="4" y="5" width="15" height="18" rx="2" fill="#b3d3f2"/>
+    </pattern>
+  </defs>
+
+  <!-- 天空 -->
+  <rect width="1200" height="760" fill="url(#sky)"/>
+
+  <!-- 云朵 -->
+  <g fill="#ffffff" opacity="0.92">
+    <ellipse cx="170" cy="96" rx="74" ry="25"/>
+    <ellipse cx="222" cy="78" rx="48" ry="19"/>
+    <ellipse cx="950" cy="76" rx="84" ry="27"/>
+    <ellipse cx="1008" cy="58" rx="52" ry="21"/>
+    <ellipse cx="600" cy="130" rx="58" ry="19" opacity="0.7"/>
+    <ellipse cx="380" cy="60" rx="44" ry="15" opacity="0.6"/>
+  </g>
+
+  <!-- 飞鸟 -->
+  <g stroke="#7d94b8" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.55">
+    <path d="M452 128 q12 -10 24 0 q12 -10 24 0"/>
+    <path d="M560 168 q9 -8 18 0 q9 -8 18 0"/>
+    <path d="M820 140 q10 -8 20 0 q10 -8 20 0"/>
+    <path d="M300 210 q8 -7 16 0 q8 -7 16 0"/>
+  </g>
+
+  <!-- 地面 -->
+  <rect x="0" y="470" width="1200" height="290" fill="#e8f0dc"/>
+  <!-- 湖泊 -->
+  <ellipse cx="620" cy="680" rx="400" ry="62" fill="#cfe3f5"/>
+  <ellipse cx="620" cy="680" rx="310" ry="42" fill="#dbeaf7"/>
+  <!-- 草丛点缀 -->
+  <g fill="#c9dcae">
+    <circle cx="110" cy="512" r="17"/>
+    <circle cx="142" cy="520" r="13"/>
+    <circle cx="1052" cy="516" r="19"/>
+    <circle cx="1088" cy="522" r="13"/>
+    <circle cx="400" cy="566" r="14"/>
+    <circle cx="848" cy="572" r="15"/>
+    <circle cx="240" cy="600" r="12"/>
+    <circle cx="980" cy="608" r="12"/>
+  </g>
+
+  <!-- 建筑投影 -->
+  <g fill="#d3e2ef" opacity="0.75">
+    <ellipse cx="340" cy="516" rx="92" ry="13"/>
+    <ellipse cx="500" cy="524" rx="108" ry="14"/>
+    <ellipse cx="660" cy="518" rx="96" ry="13"/>
+    <ellipse cx="796" cy="512" rx="80" ry="12"/>
+    <ellipse cx="222" cy="510" rx="70" ry="11"/>
+  </g>
+
+  <!-- 教学楼群 -->
+  <g>
+    <!-- 左侧小楼 -->
+    <g>
+      <rect x="176" y="360" width="92" height="152" rx="8" fill="#ffffff"/>
+      <rect x="184" y="368" width="76" height="126" fill="url(#win2)"/>
+      <rect x="200" y="330" width="42" height="22" rx="4" fill="#ffffff"/>
+      <path d="M196 330 L246 330 L221 308 Z" fill="#5e97e8"/>
+    </g>
+    <!-- 次高主楼 -->
+    <g>
+      <rect x="290" y="300" width="124" height="212" rx="10" fill="#ffffff"/>
+      <rect x="300" y="310" width="104" height="180" fill="url(#win)"/>
+      <rect x="336" y="266" width="32" height="38" rx="5" fill="#ffffff"/>
+      <line x1="352" y1="266" x2="352" y2="208" stroke="#9db6d4" stroke-width="4"/>
+      <path d="M352 208 L388 219 L352 230 Z" fill="#1f6ff0"/>
+    </g>
+    <!-- 中央最高楼 -->
+    <g>
+      <rect x="436" y="222" width="136" height="290" rx="10" fill="#ffffff"/>
+      <rect x="446" y="232" width="116" height="252" fill="url(#win)"/>
+      <rect x="476" y="188" width="56" height="38" rx="6" fill="#ffffff"/>
+      <circle cx="504" cy="207" r="10" fill="#1f6ff0" opacity="0.85"/>
+    </g>
+    <!-- 右一楼 -->
+    <g>
+      <rect x="594" y="270" width="126" height="242" rx="10" fill="#ffffff"/>
+      <rect x="604" y="280" width="106" height="208" fill="url(#win)"/>
+      <rect x="634" y="238" width="44" height="36" rx="6" fill="#ffffff"/>
+      <path d="M630 238 L682 238 L656 214 Z" fill="#5e97e8"/>
+      <circle cx="656" cy="256" r="8" fill="#1f6ff0" opacity="0.8"/>
+    </g>
+    <!-- 右侧小楼 -->
+    <g>
+      <rect x="740" y="336" width="106" height="176" rx="8" fill="#ffffff"/>
+      <rect x="748" y="344" width="90" height="150" fill="url(#win2)"/>
+      <rect x="768" y="302" width="46" height="34" rx="5" fill="#ffffff"/>
+      <path d="M764 302 L818 302 L791 278 Z" fill="#7fb0ef"/>
+    </g>
+    <!-- 远景楼(右侧淡色) -->
+    <g opacity="0.55">
+      <rect x="876" y="388" width="82" height="124" rx="8" fill="#f6fafd"/>
+      <rect x="884" y="396" width="66" height="102" fill="url(#win2)"/>
+    </g>
+  </g>
+
+  <!-- 树木 -->
+  <g>
+    <g>
+      <rect x="112" y="446" width="10" height="38" rx="3" fill="#8a6f4d"/>
+      <circle cx="117" cy="418" r="38" fill="#7cb46b"/>
+      <circle cx="92" cy="434" r="24" fill="#8bc47a"/>
+      <circle cx="142" cy="434" r="22" fill="#8bc47a"/>
+    </g>
+    <g>
+      <rect x="196" y="456" width="9" height="30" rx="3" fill="#8a6f4d"/>
+      <circle cx="200" cy="434" r="28" fill="#8bc47a"/>
+    </g>
+    <g>
+      <rect x="988" y="440" width="10" height="40" rx="3" fill="#8a6f4d"/>
+      <circle cx="993" cy="412" r="38" fill="#7cb46b"/>
+      <circle cx="1020" cy="430" r="22" fill="#8bc47a"/>
+    </g>
+    <g>
+      <rect x="1058" y="456" width="9" height="30" rx="3" fill="#8a6f4d"/>
+      <circle cx="1062" cy="436" r="26" fill="#8bc47a"/>
+    </g>
+    <g>
+      <rect x="1122" y="448" width="10" height="34" rx="3" fill="#8a6f4d"/>
+      <circle cx="1127" cy="422" r="34" fill="#7cb46b"/>
+      <circle cx="1102" cy="436" r="21" fill="#8bc47a"/>
+    </g>
+  </g>
+
+  <!-- 前景书本与学士帽(放大居中) -->
+  <g transform="translate(475 596)">
+    <ellipse cx="130" cy="66" rx="180" ry="18" fill="#bcd8ee" opacity="0.85"/>
+    <g transform="translate(52 -6)">
+      <path d="M0 26 L66 0 L132 26 L66 52 Z" fill="#1e2a4a"/>
+      <path d="M18 34 L18 60 Q66 78 114 60 L114 34 L66 54 Z" fill="#2c3d66"/>
+      <path d="M132 26 L160 36 L66 64 L-28 36 L0 26" fill="#16203a"/>
+      <circle cx="160" cy="30" r="5" fill="#f4c34a"/>
+      <line x1="160" y1="30" x2="160" y2="52" stroke="#f4c34a" stroke-width="2.5"/>
+    </g>
+    <g transform="translate(-36 36)">
+      <rect x="0" y="22" width="80" height="17" rx="4" fill="#ffffff" stroke="#cbd8e8"/>
+      <rect x="8" y="10" width="64" height="14" rx="4" fill="#f3f7fc" stroke="#cbd8e8"/>
+      <rect x="13" y="0" width="54" height="12" rx="4" fill="#ffffff" stroke="#cbd8e8"/>
+    </g>
+    <g transform="translate(248 26)">
+      <rect x="0" y="18" width="62" height="14" rx="4" fill="#ffffff" stroke="#cbd8e8"/>
+      <rect x="7" y="7" width="48" height="12" rx="4" fill="#f3f7fc" stroke="#cbd8e8"/>
+    </g>
+  </g>
+</svg>
+

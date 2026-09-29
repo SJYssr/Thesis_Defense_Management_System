@@ -1,0 +1,27 @@
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Python / 后端
+backend/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+backend/.env
+backend/logs/
+backend/uploads/
+*.db
+*.sqlite
+
+# 前端
+node_modules/
+frontend/dist/
+frontend/.env.local
+*.local
+
+# 构建与日志
+*.log
+coverage/

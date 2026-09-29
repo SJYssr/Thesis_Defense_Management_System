@@ -1,0 +1,99 @@
+# 生产部署编排(roadmap 八十八): nginx(前端) + backend + celery-worker + mysql + redis
+# 用法: docker compose -f docker-compose.prod.yml up -d --build
+# 首次启动后初始化: docker compose -f docker-compose.prod.yml exec backend python seed.py
+
+name: graduation-system-prod
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: gs-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123456}
+      MYSQL_DATABASE: graduation_system
+      MYSQL_USER: graduation
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-graduation123}
+      TZ: Asia/Shanghai
+    volumes:
+      - gs-mysql-data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root123456}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis/redis-stack-server:7.4.0-v0
+    container_name: gs-redis
+    restart: unless-stopped
+    volumes:
+      - gs-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  backend:
+    build: ./backend
+    container_name: gs-backend
+    restart: unless-stopped
+    environment: &backend-env
+      APP_ENV: production
+      SECRET_KEY: ${SECRET_KEY:-please-change-me}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: graduation_system
+      MYSQL_USER: graduation
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-graduation123}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      UPLOAD_DIR: /data/uploads
+      LLM_PROVIDER: ${LLM_PROVIDER:-auto}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-glm-4-flash}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-auto}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-3}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      CELERY_ENABLED: "true"
+      AUTO_CREATE_TABLES: "true"
+      TZ: Asia/Shanghai
+    volumes:
+      - gs-uploads:/data/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    container_name: gs-worker
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    volumes:
+      - gs-uploads:/data/uploads
+    depends_on:
+      - backend
+    # Celery Worker: 文档解析/Embedding/索引等重任务
+    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=2
+
+  frontend:
+    build: ./frontend
+    container_name: gs-frontend
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      - backend
+
+volumes:
+  gs-mysql-data:
+  gs-redis-data:
+  gs-uploads:
