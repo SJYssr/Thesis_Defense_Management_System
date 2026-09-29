@@ -1,6 +1,6 @@
 <template>
   <div class="admin-info-page">
-    <!-- 统计卡 -->
+    <!-- 统计卡（4 张，通栏） -->
     <div class="stat-cards">
       <div v-for="c in statCards" :key="c.label" class="stat-card">
         <div class="stat-icon" :style="{ background: c.tileBg, color: c.iconColor }">
@@ -17,7 +17,7 @@
       </div>
     </div>
 
-    <!-- 筛选区 -->
+    <!-- 筛选区（与其他信息管理页一致：筛选行 + 右下角按钮行） -->
     <div class="filter-card">
       <div class="filter-row">
         <div class="filter-item">
@@ -37,16 +37,16 @@
         </div>
         <div class="filter-item">
           <span class="filter-label">状态</span>
-          <el-select v-model="query.status" class="filter-select narrow" placeholder="全部状态">
+          <el-select v-model="query.status" class="filter-select" placeholder="全部状态">
             <el-option label="全部状态" value="" />
             <el-option label="启用" value="启用" />
             <el-option label="禁用" value="禁用" />
           </el-select>
         </div>
-        <div class="filter-actions">
-          <el-button type="primary" @click="onSearch"><el-icon><Search /></el-icon>&nbsp;查询</el-button>
-          <el-button class="reset-btn" @click="onReset"><el-icon><Refresh /></el-icon>&nbsp;重置</el-button>
-        </div>
+      </div>
+      <div class="filter-row btn-row">
+        <el-button type="primary" @click="onSearch"><el-icon><Search /></el-icon>&nbsp;查询</el-button>
+        <el-button class="reset-btn" @click="onReset"><el-icon><Refresh /></el-icon>&nbsp;重置</el-button>
       </div>
     </div>
 
@@ -56,30 +56,30 @@
       <div class="table-card">
         <div class="toolbar">
           <el-button type="primary" @click="onCreate"><el-icon><Plus /></el-icon>&nbsp;新增管理员</el-button>
-          <el-button class="ghost-btn check" @click="onBatchEnable"><el-icon><CircleCheck /></el-icon>&nbsp;批量启用</el-button>
-          <el-button class="ghost-btn pause" @click="onBatchDisable"><el-icon><VideoPause /></el-icon>&nbsp;批量禁用</el-button>
-          <el-button class="ghost-btn" @click="onBatchDelete"><el-icon><Delete /></el-icon>&nbsp;批量删除</el-button>
+          <el-button class="ghost-btn" @click="onBatchEnable"><el-icon class="ic-blue"><Check /></el-icon>&nbsp;批量启用</el-button>
+          <el-button class="ghost-btn" @click="onBatchDisable"><el-icon class="ic-red"><svg viewBox="0 0 24 24" fill="currentColor" v-html="CIRCLE_PAUSE_ICON" /></el-icon>&nbsp;批量禁用</el-button>
+          <el-button class="ghost-btn" @click="onBatchDelete"><el-icon class="ic-navy"><Delete /></el-icon>&nbsp;批量删除</el-button>
         </div>
 
         <el-table :data="pagedRows" class="adm-table" @selection-change="onSelectionChange">
-          <el-table-column type="selection" width="38" />
-          <el-table-column prop="index" label="序号" width="44" />
-          <el-table-column prop="username" label="用户名" width="86" />
-          <el-table-column prop="name" label="姓名" width="76" />
-          <el-table-column label="角色" width="88" align="center">
+          <el-table-column type="selection" width="36" />
+          <el-table-column prop="index" label="序号" min-width="44" />
+          <el-table-column prop="username" label="用户名" min-width="78" />
+          <el-table-column prop="name" label="姓名" min-width="80" />
+          <el-table-column label="角色" min-width="96" align="center">
             <template #default="{ row }">
               <span class="role-pill" :class="row.roleClass">{{ row.role }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="dept" label="所属部门" width="92" />
-          <el-table-column prop="phone" label="手机号" width="106" />
-          <el-table-column label="状态" width="68" align="center">
+          <el-table-column prop="dept" label="所属部门" min-width="92" show-overflow-tooltip />
+          <el-table-column prop="phone" label="手机号" min-width="96" show-overflow-tooltip />
+          <el-table-column label="状态" min-width="62" align="center">
             <template #default="{ row }">
               <span class="status-tag" :class="row.status === '启用' ? 's-on' : 's-off'">{{ row.status }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="lastLogin" label="最后登录时间" width="122" />
-          <el-table-column label="操作" width="118" align="center">
+          <el-table-column prop="lastLogin" label="最后登录时间" min-width="126" />
+          <el-table-column label="操作" min-width="124" align="center">
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="onEdit(row)">编辑</el-button>
               <el-button v-if="row.status === '启用'" link type="primary" size="small" @click="onToggle(row, false)">禁用</el-button>
@@ -92,7 +92,7 @@
         <div class="pagination-bar">
           <span class="page-total">共 {{ total }} 条数据</span>
           <div class="pager-group">
-            <el-select v-model="pageSize" size="small" class="page-size">
+            <el-select v-model="pageSize" class="page-size">
               <el-option label="10条/页" :value="10" />
               <el-option label="20条/页" :value="20" />
             </el-select>
@@ -103,67 +103,71 @@
           </div>
         </div>
       </div>
+    </div>
 
-      <!-- 右：新增管理员表单 -->
-      <div class="form-card">
-        <div class="form-head">
-          <span class="form-title">新增管理员</span>
-          <el-icon class="close-btn" @click="onClose"><Close /></el-icon>
-        </div>
-        <el-form label-position="left" label-width="66px" class="adm-form">
-          <el-form-item required>
-            <template #label>用户名</template>
-            <el-input v-model="form.username" placeholder="请输入用户名" />
-          </el-form-item>
-          <el-form-item required>
-            <template #label>密码</template>
-            <el-input v-model="form.password" type="password" suffix-icon="View" placeholder="请输入密码" />
-          </el-form-item>
-          <el-form-item required>
-            <template #label>确认密码</template>
-            <el-input v-model="form.confirm" type="password" suffix-icon="View" placeholder="请再次输入密码" />
-          </el-form-item>
-          <el-form-item required>
-            <template #label>姓名</template>
-            <el-input v-model="form.name" placeholder="请输入姓名" />
-          </el-form-item>
-          <el-form-item required>
-            <template #label>手机号</template>
-            <el-input v-model="form.phone" placeholder="请输入手机号" />
-          </el-form-item>
-          <el-form-item required>
-            <template #label>角色</template>
-            <el-select v-model="form.role" placeholder="请选择角色" style="width: 100%">
-              <el-option v-for="r in roleOptions" :key="r" :label="r" :value="r" />
-            </el-select>
-          </el-form-item>
-          <el-form-item required>
-            <template #label>所属部门</template>
-            <el-select v-model="form.dept" placeholder="请选择部门" style="width: 100%">
-              <el-option v-for="d in deptOptions" :key="d" :label="d" :value="d" />
-            </el-select>
-          </el-form-item>
-          <el-form-item required>
-            <template #label>状态</template>
-            <el-radio-group v-model="form.status">
-              <el-radio value="启用">启用</el-radio>
-              <el-radio value="禁用">禁用</el-radio>
-            </el-radio-group>
-          </el-form-item>
-          <el-form-item>
-            <template #label>备注</template>
-            <div class="remark-wrap">
-              <el-input v-model="form.remark" type="textarea" :rows="3" placeholder="请输入备注信息" maxlength="200" />
-              <div class="remark-counter">{{ form.remark.length }}/200</div>
-            </div>
-          </el-form-item>
-        </el-form>
-        <div class="form-footer">
-          <el-button class="ghost-btn" @click="onClose">取消</el-button>
+    <!-- 新增/编辑管理员弹窗（屏幕居中） -->
+    <el-dialog
+      v-model="panelVisible"
+      :title="editMode ? '编辑管理员' : '新增管理员'"
+      width="600px"
+      align-center
+      class="adm-dialog"
+    >
+      <el-form label-position="left" label-width="76px" class="adm-form">
+        <el-form-item required>
+          <template #label>用户名</template>
+          <el-input v-model="form.username" placeholder="请输入用户名" />
+        </el-form-item>
+        <el-form-item required>
+          <template #label>密码</template>
+          <el-input v-model="form.password" type="password" suffix-icon="View" placeholder="请输入密码" />
+        </el-form-item>
+        <el-form-item required>
+          <template #label>确认密码</template>
+          <el-input v-model="form.confirm" type="password" suffix-icon="View" placeholder="请再次输入密码" />
+        </el-form-item>
+        <el-form-item required>
+          <template #label>姓名</template>
+          <el-input v-model="form.name" placeholder="请输入姓名" />
+        </el-form-item>
+        <el-form-item required>
+          <template #label>手机号</template>
+          <el-input v-model="form.phone" placeholder="请输入手机号" />
+        </el-form-item>
+        <el-form-item required>
+          <template #label>角色</template>
+          <el-select v-model="form.role" placeholder="请选择角色" style="width: 100%">
+            <el-option v-for="r in roleOptions" :key="r" :label="r" :value="r" />
+          </el-select>
+        </el-form-item>
+        <el-form-item required>
+          <template #label>所属部门</template>
+          <el-select v-model="form.dept" placeholder="请选择部门" style="width: 100%">
+            <el-option v-for="d in deptOptions" :key="d" :label="d" :value="d" />
+          </el-select>
+        </el-form-item>
+        <el-form-item required>
+          <template #label>状态</template>
+          <el-radio-group v-model="form.status">
+            <el-radio value="启用">启用</el-radio>
+            <el-radio value="禁用">禁用</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item>
+          <template #label>备注</template>
+          <el-input
+            v-model="form.remark" type="textarea" :rows="3" placeholder="请输入备注信息"
+            maxlength="200" show-word-limit
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="onClose">取消</el-button>
           <el-button type="primary" @click="onSave">保存</el-button>
         </div>
-      </div>
-    </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -172,9 +176,12 @@ import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { STAT_ICONS } from '@/components/statIcons'
 
-const SHIELD_ICON = '<path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5l-8-3zm-1.2 13.6-3-3 1.4-1.4 1.6 1.6 5-5 1.4 1.4-6.4 6.4z"/>'
-const PAUSE_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zM10 8h2.4v8H10V8zm3.6 0H16v8h-2.4V8z"/>'
+const SHIELD_ICON = '<path fill-rule="evenodd" d="M12 2 4 5v6c0 5 3.4 9.35 8 11 4.6-1.65 8-6 8-11V5l-8-3zm-1.2 13.6-3-3 1.4-1.4 1.6 1.6 5-5 1.4 1.4-6.4 6.4z"/>'
+/* 实心圆 + 白色暂停条（与设计稿一致，evenodd 挖孔） */
+const PAUSE_ICON = '<path fill-rule="evenodd" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM9.7 7.5h2.2v9H9.7zM12.1 7.5h2.2v9h-2.2z"/>'
 const USER_PLUS_ICON = '<path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-3.9 0-7 2-7 4.5V20h10v-1h4v-3.5c0-.7-.3-1.3-.8-1.8-1.2-1.1-3.5-1.7-6.2-1.7zm10 2v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z" transform="translate(-1 0)"/>'
+/* 批量禁用：红色描边圆圈 + 暂停条 */
+const CIRCLE_PAUSE_ICON = '<path fill-rule="evenodd" d="M12 2.6a9.4 9.4 0 1 0 0 18.8 9.4 9.4 0 0 0 0-18.8zm0 2a7.4 7.4 0 1 1 0 14.8 7.4 7.4 0 0 1 0-14.8zM9.4 8.2h2.1v7.6H9.4zM12.5 8.2h2.1v7.6h-2.1z"/>'
 
 /* 趋势色遵循设计稿：涨为红、跌为绿，"较去年"前缀灰 */
 const statCards = [
@@ -253,6 +260,11 @@ const form = reactive({
   remark: '',
 })
 
+/* 右侧新增/编辑表单弹窗：默认隐藏，点"新增管理员"或行内"编辑"时居中显示 */
+const panelVisible = ref(false)
+const editMode = ref(false)
+const editingRow = ref<AdmRow | null>(null)
+
 function onSearch() {
   page.value = 1
 }
@@ -270,8 +282,8 @@ function onSelectionChange(sel: AdmRow[]) {
 }
 
 function onCreate() {
-  Object.assign(form, { username: '', password: '', confirm: '', name: '', phone: '', role: '', dept: '', status: '启用', remark: '' })
-  ElMessage.info('请在右侧填写新管理员信息')
+  onClose()
+  panelVisible.value = true
 }
 
 function onEdit(row: AdmRow) {
@@ -281,7 +293,9 @@ function onEdit(row: AdmRow) {
   form.role = row.role
   form.dept = row.dept
   form.status = row.status
-  ElMessage.success('已载入信息，请在右侧编辑')
+  editMode.value = true
+  editingRow.value = row
+  panelVisible.value = true
 }
 
 function onToggle(row: AdmRow, enable: boolean) {
@@ -303,19 +317,13 @@ function onDelete(row: AdmRow) {
 }
 
 function onBatchEnable() {
-  if (!selected.value.length) {
-    ElMessage.warning('请先勾选账号')
-    return
-  }
+  if (!selected.value.length) return ElMessage.warning('请先勾选账号')
   selected.value.forEach((s) => { s.status = '启用' })
   ElMessage.success('批量启用成功')
 }
 
 function onBatchDisable() {
-  if (!selected.value.length) {
-    ElMessage.warning('请先勾选账号')
-    return
-  }
+  if (!selected.value.length) return ElMessage.warning('请先勾选账号')
   ElMessageBox.confirm(`确定批量禁用 ${selected.value.length} 个账号吗？`, '批量禁用', { type: 'warning' })
     .then(() => {
       selected.value.forEach((s) => { s.status = '禁用' })
@@ -325,10 +333,7 @@ function onBatchDisable() {
 }
 
 function onBatchDelete() {
-  if (!selected.value.length) {
-    ElMessage.warning('请先勾选账号')
-    return
-  }
+  if (!selected.value.length) return ElMessage.warning('请先勾选账号')
   ElMessageBox.confirm(`确定批量删除 ${selected.value.length} 个账号吗？`, '批量删除', { type: 'error' })
     .then(() => {
       const del = new Set(selected.value)
@@ -340,75 +345,83 @@ function onBatchDelete() {
 
 function onClose() {
   Object.assign(form, { username: '', password: '', confirm: '', name: '', phone: '', role: '', dept: '', status: '启用', remark: '' })
+  editMode.value = false
+  editingRow.value = null
+  panelVisible.value = false
 }
 
 function onSave() {
   if (!form.username.trim()) return ElMessage.warning('请输入用户名')
-  if (!form.password) return ElMessage.warning('请输入密码')
-  if (form.password !== form.confirm) return ElMessage.warning('两次输入的密码不一致')
   if (!form.name.trim()) return ElMessage.warning('请输入姓名')
   if (!form.phone.trim()) return ElMessage.warning('请输入手机号')
   if (!form.role) return ElMessage.warning('请选择角色')
   if (!form.dept) return ElMessage.warning('请选择部门')
-  rows.value.unshift({
+  /* 编辑模式密码选填（留空保持原密码）；新增必填 */
+  if (!editMode.value && !form.password) return ElMessage.warning('请输入密码')
+  if (form.password && form.password !== form.confirm) return ElMessage.warning('两次输入的密码不一致')
+  const payload = {
     username: form.username,
     name: form.name,
     role: form.role,
     dept: form.dept,
     phone: form.phone,
     status: form.status,
-    lastLogin: '-',
-  })
+  }
+  if (editMode.value && editingRow.value) {
+    Object.assign(editingRow.value, payload)
+  } else {
+    rows.value.unshift({ ...payload, lastLogin: '-' })
+  }
   ElMessage.success('保存成功')
   onClose()
 }
 </script>
 
 <style scoped>
-/* 统计卡（4 张） */
+/* ===== 统计卡（4 张，通栏） ===== */
 .stat-cards {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+  gap: 14px;
   margin-bottom: 12px;
 }
 .stat-card {
   position: relative;
   background: #fff;
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: 10px;
+  padding: 16px 20px;
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: center;
+  gap: 16px;
   box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
-  min-height: 76px;
+  min-height: 104px;
 }
 .stat-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
+  width: 58px;
+  height: 58px;
+  border-radius: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
-.stat-icon svg { width: 22px; height: 22px; }
-.stat-info { flex: 1; min-width: 0; padding-right: 32px; }
+.stat-icon svg { width: 30px; height: 30px; }
+.stat-info { flex: 1; min-width: 0; padding-right: 40px; }
 .stat-label {
-  font-size: 12.5px;
+  font-size: 14px;
   color: #8a97ad;
 }
 .stat-num {
-  font-size: 24px;
+  font-size: 30px;
   font-weight: 700;
   color: #1f2d3d;
   font-family: 'DIN Alternate', 'Helvetica Neue', sans-serif;
-  line-height: 1.2;
-  margin-top: 2px;
+  line-height: 1.15;
+  margin-top: 3px;
 }
 .stat-trend {
-  font-size: 11.5px;
-  margin-top: 4px;
+  font-size: 13px;
+  margin-top: 5px;
 }
 .trend-prefix {
   color: #8a97ad;
@@ -417,55 +430,65 @@ function onSave() {
   --pct: 0;
   --ring-color: #f59e0b;
   position: absolute;
-  right: 12px;
-  top: 12px;
-  width: 42px;
-  height: 42px;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   background:
-    radial-gradient(closest-side, #fff 72%, transparent 73% 100%),
+    radial-gradient(closest-side, #fff 74%, transparent 75% 100%),
     conic-gradient(var(--ring-color) calc(var(--pct) * 1%), #eef1f6 0);
 }
-.stat-ring.big { width: 48px; height: 48px; right: 10px; }
+.stat-ring.big { width: 62px; height: 62px; }
 .stat-ring span {
-  font-size: 9.5px;
+  font-size: 12px;
   font-weight: 600;
   color: #2c3e5d;
 }
+.stat-ring.big span { font-size: 13px; }
 
-/* 筛选区 */
+/* ===== 筛选区（与其他信息管理页一致） ===== */
 .filter-card {
   background: #fff;
-  border-radius: 8px;
-  padding: 10px 14px;
+  border-radius: 10px;
+  padding: 14px 20px;
   box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
   margin-bottom: 12px;
 }
 .filter-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 28px;
 }
+.filter-row.btn-row { justify-content: flex-end; margin-top: 12px; gap: 12px; }
 .filter-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 .filter-label {
-  font-size: 13px;
-  color: #3b4a5f;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2d3d;
   white-space: nowrap;
 }
-.filter-input { width: 168px; }
-.filter-select { width: 116px; }
-.filter-select.narrow { width: 100px; }
-.filter-actions { margin-left: auto; display: flex; gap: 8px; }
+.filter-input { width: 172px; }
+.filter-select { width: 150px; }
+.filter-card :deep(.el-input__wrapper) { padding: 5px 12px; }
+.filter-card :deep(.el-select__wrapper) { min-height: 34px; }
+.btn-row :deep(.el-button) {
+  height: 36px;
+  padding: 0 22px;
+  font-size: 14px;
+  border-radius: 6px;
+}
 .reset-btn { border: 1px solid #dcdfe6; color: #2c3e5d; }
 
-/* 两栏 */
+/* ===== 两栏 ===== */
 .main-cols {
   display: flex;
   gap: 12px;
@@ -475,40 +498,51 @@ function onSave() {
   flex: 1;
   min-width: 0;
   background: #fff;
-  border-radius: 8px;
-  padding: 10px 14px;
+  border-radius: 10px;
+  padding: 12px 18px;
   box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
 }
 .toolbar {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 10px;
 }
-.ghost-btn { border: 1px solid #dcdfe6; color: #2c3e5d; }
-.ghost-btn.check { color: #22c55e; }
-.ghost-btn.pause { color: #ef4444; }
+.toolbar :deep(.el-button) {
+  height: 38px;
+  padding: 0 16px;
+  font-size: 14px;
+  border-radius: 6px;
+}
+.ghost-btn { border: 1px solid #dfe4ee; color: #2c3e5d; font-weight: 500; }
+.ic-blue { color: #1878fd; font-size: 17px; }
+.ic-red { color: #e83a3a; font-size: 17px; }
+.ic-navy { color: #2c3e5d; font-size: 16px; }
 
 .adm-table :deep(thead th) {
-  background: #f0f6ff;
+  background: #eaf3fe;
   color: #2c3e5d;
   font-weight: 600;
-  font-size: 12px;
-  padding: 6px 0;
+  font-size: 13px;
+  padding: 8px 0;
+  border-bottom: none;
 }
+.adm-table :deep(thead th .cell) { white-space: nowrap; }
+.adm-table :deep(td .cell) { white-space: nowrap; }
 .adm-table :deep(td) {
-  font-size: 12px;
+  font-size: 13px;
   color: #3b4a5f;
-  padding: 5px 0;
+  padding: 7px 0;
 }
 .adm-table :deep(.cell) { padding: 0 6px; }
-.adm-table :deep(.el-button + .el-button) { margin-left: 6px; }
+.adm-table :deep(.el-button + .el-button) { margin-left: 8px; }
+.adm-table :deep(.el-button.is-link) { font-size: 13px; }
 
 /* 角色药丸 */
 .role-pill {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
   line-height: 18px;
 }
 .r-super { color: #e74c3c; background: #fdeaea; }
@@ -519,9 +553,9 @@ function onSave() {
 /* 状态药丸 */
 .status-tag {
   display: inline-block;
-  padding: 2px 10px;
-  border-radius: 10px;
-  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
   line-height: 18px;
 }
 .s-on { color: #27ae60; background: #e4f7ec; }
@@ -532,82 +566,56 @@ function onSave() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 4px 2px;
+  padding: 10px 4px 0;
 }
 .pager-group {
   display: flex;
   align-items: center;
 }
 .page-total {
-  font-size: 12px;
-  color: #8a97a8;
-  margin-right: 12px;
+  font-size: 13.5px;
+  color: #2c3e5d;
+  margin-right: 16px;
 }
-.page-size { width: 96px; margin-right: 12px; }
-
-/* 右侧新增表单 */
-.form-card {
-  width: 340px;
-  flex-shrink: 0;
+.page-size { width: 104px; margin-right: 14px; }
+/* 未激活页码：白底描边（与设计稿一致） */
+.pager :deep(.el-pager li) {
   background: #fff;
-  border-radius: 8px;
-  padding: 14px 16px;
-  box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
-  display: flex;
-  flex-direction: column;
+  border: 1px solid #e4e9f2;
 }
-.form-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 10px;
-  border-bottom: 1px solid #eef2f8;
-  margin-bottom: 12px;
-}
-.form-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #1f2d3d;
-}
-.close-btn {
-  font-size: 16px;
-  color: #97a3b4;
-  cursor: pointer;
-}
-.adm-form { flex: 1; }
+.pager :deep(.el-pager li.is-active) { border-color: #1878fd; }
+.pager :deep(.btn-prev),
+.pager :deep(.btn-next) { background: #f5f7fb; }
+
+/* ===== 新增/编辑管理员弹窗 ===== */
 .adm-form :deep(.el-form-item) {
-  margin-bottom: 14px;
+  margin-bottom: 11px;
 }
 .adm-form :deep(.el-form-item__label) {
-  font-size: 13px;
-  color: #3b4a5f;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #1f2d3d;
   white-space: nowrap;
+  padding-right: 8px;
 }
-.remark-wrap {
-  width: 100%;
-  border: 1px solid #dcdfe6;
-  border-radius: 4px;
-  overflow: hidden;
+.adm-form :deep(.el-radio-group) { flex-wrap: nowrap; }
+.adm-form :deep(.el-radio__label) { font-size: 13.5px; color: #2c3e5d; }
+.adm-form :deep(.el-textarea) { width: 100%; }
+.adm-form :deep(.el-textarea__inner) { resize: none; }
+.adm-form :deep(.el-textarea .el-input__count) {
+  background: transparent;
+  bottom: 4px;
+  right: 10px;
+  color: #a8b3c5;
 }
-.remark-wrap :deep(.el-textarea__inner) {
-  border: none;
-  box-shadow: none;
-  resize: none;
-  font-size: 12.5px;
-}
-.remark-counter {
-  text-align: right;
-  font-size: 11px;
-  color: #97a3b4;
-  padding: 3px 8px;
-  background: #fafbfd;
-  border-top: 1px solid #eef2f8;
-}
-.form-footer {
+.dialog-footer {
   display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding-top: 10px;
-  border-top: 1px solid #eef2f8;
+  gap: 12px;
+}
+.dialog-footer :deep(.el-button) {
+  flex: 1;
+  height: 40px;
+  font-size: 15px;
+  border-radius: 6px;
 }
 </style>
