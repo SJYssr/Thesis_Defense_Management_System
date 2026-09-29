@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch, watchEffect } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { userAdminApi } from '@/api/common'
 import AdminInfoPanel from './AdminInfoPanel.vue'
+import TeacherInfoPanel from './TeacherInfoPanel.vue'
 
 const route = useRoute()
-/* 设计稿将管理员/教师/学生信息管理拆为独立页面：ADMIN 用新版面板，其余暂用旧 Tab 版 */
-const isAdminView = computed(() => String(route.query.role || '').toUpperCase() === 'ADMIN')
+/* 设计稿将管理员/教师/学生信息管理拆为独立页面：ADMIN/TEACHER 用新版面板，学生暂用旧 Tab 版 */
+const roleView = computed(() => String(route.query.role || '').toUpperCase())
+const isAdminView = computed(() => roleView.value === 'ADMIN')
+const isTeacherView = computed(() => roleView.value === 'TEACHER')
 const activeTab = ref('STUDENT')
 const items = ref<any[]>([])
 const total = ref(0)
@@ -75,24 +78,17 @@ onMounted(() => {
   // 支持侧栏子菜单通过 /admin/users?role=TEACHER 直达对应标签
   const role = String(route.query.role || '').toUpperCase()
   if (['STUDENT', 'TEACHER', 'ADMIN'].includes(role)) activeTab.value = role
-  if (!isAdminView.value) load()
+  if (!isAdminView.value && !isTeacherView.value) load()
 })
 
-/* 顶栏面包屑随角色视图切换 */
-watchEffect(() => {
-  const role = String(route.query.role || '').toUpperCase()
-  route.meta.title = role === 'ADMIN' ? '毕业设计管理 / 管理员信息管理'
-    : role === 'TEACHER' ? '毕业设计管理 / 教师信息管理'
-    : '毕业设计管理 / 学生信息管理'
-})
-
-watch(isAdminView, () => {
-  if (!isAdminView.value) load()
+watch([isAdminView, isTeacherView], () => {
+  if (!isAdminView.value && !isTeacherView.value) load()
 })
 </script>
 
 <template>
   <AdminInfoPanel v-if="isAdminView" />
+  <TeacherInfoPanel v-else-if="isTeacherView" />
   <div v-else class="page-card">
     <div class="page-header">
       <h3 class="page-title">用户管理</h3>

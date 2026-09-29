@@ -160,6 +160,11 @@ function go(path: string, query?: Record<string, string>) {
 
 /* ---------- 顶栏: 页面标题 ---------- */
 const pageTitle = computed(() => {
+  if (route.path === '/admin/users') {
+    const r = String(route.query.role || '').toUpperCase()
+    const n = r === 'ADMIN' ? '管理员信息管理' : r === 'TEACHER' ? '教师信息管理' : '学生信息管理'
+    return `毕业设计管理 / ${n}`
+  }
   if (route.meta.title) return String(route.meta.title)
   for (const node of menus.value) {
     if (node.path === route.path) return node.title

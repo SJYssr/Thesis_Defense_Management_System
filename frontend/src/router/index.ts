@@ -39,7 +39,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'admin/materials', component: () => import('@/views/admin/AdminMaterials.vue'), meta: { roles: ['ADMIN'], title: '毕业设计管理 / 毕业材料管理' } },
       { path: 'admin/progress', component: () => import('@/views/admin/AdminProgress.vue'), meta: { roles: ['ADMIN'], title: '毕业设计管理 / 毕设进度管理' } },
       { path: 'admin/announcements', component: () => import('@/views/admin/AnnouncementAdmin.vue'), meta: { roles: ['ADMIN'], title: '毕业设计管理 / 公告管理' } },
-      { path: 'admin/users', component: () => import('@/views/admin/UserManagement.vue'), meta: { roles: ['ADMIN'], title: '毕业设计管理 / 管理员信息管理' } },
+      { path: 'admin/users', component: () => import('@/views/admin/UserManagement.vue'), meta: { roles: ['ADMIN'] } },
       { path: 'admin/settings', component: () => import('@/views/admin/SystemSettings.vue'), meta: { roles: ['ADMIN'] } },
       { path: 'admin/logs', component: () => import('@/views/admin/OperationLogs.vue'), meta: { roles: ['ADMIN'] } },
       // ===== 通用 =====
