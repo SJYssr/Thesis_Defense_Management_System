@@ -1,0 +1,237 @@
+"""LLM 服务抽象: OpenAI 兼容接口(智谱/DeepSeek/通义/OpenAI) + 离线 Mock, 切换只改 .env(roadmap 三/AI)."""
+import json
+import re
+import time
+from abc import ABC, abstractmethod
+from typing import Generator
+
+
+class BaseLLMService(ABC):
+    name = "base"
+
+    @abstractmethod
+    def complete(self, system: str, user: str, temperature: float = 0.3) -> str:
+        """同步补全."""
+
+    @abstractmethod
+    def stream(self, system: str, user: str, history: list[dict] | None = None, temperature: float = 0.5) -> Generator[str, None, None]:
+        """流式补全, 逐段 yield 文本."""
+
+    def structured(self, system: str, user: str, temperature: float = 0.1) -> dict:
+        """要求 JSON 结构化输出: 优先用模型 JSON 模式, 失败则正则提取."""
+        raw = self.complete(system, user, temperature)
+        return extract_json(raw)
+
+
+def extract_json(text: str) -> dict:
+    """从 LLM 输出中稳健提取 JSON 对象(容忍 markdown 代码块/前后缀文本)."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+    raise ValueError(f"无法解析 LLM JSON 输出: {text[:200]}")
+
+
+class OpenAICompatibleLLM(BaseLLMService):
+    """OpenAI 兼容 Chat Completions: 通过 base_url 适配各家模型."""
+
+    def __init__(self, base_url: str, api_key: str, model: str):
+        from openai import OpenAI
+
+        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=120)
+        self.model = model
+        self.name = f"openai:{model}"
+
+    @staticmethod
+    def _messages(system: str, user: str, history: list[dict] | None):
+        messages = [{"role": "system", "content": system}]
+        for h in (history or [])[-10:]:
+            if h.get("role") in ("user", "assistant") and h.get("content"):
+                messages.append({"role": h["role"], "content": h["content"]})
+        messages.append({"role": "user", "content": user})
+        return messages
+
+    def complete(self, system: str, user: str, temperature: float = 0.3) -> str:
+        resp = self.client.chat.completions.create(
+            model=self.model, messages=self._messages(system, user), temperature=temperature,
+        )
+        return resp.choices[0].message.content or ""
+
+    def stream(self, system: str, user: str, history: list[dict] | None = None, temperature: float = 0.5):
+        resp = self.client.chat.completions.create(
+            model=self.model, messages=self._messages(system, user, history),
+            temperature=temperature, stream=True,
+        )
+        for chunk in resp:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+
+class MockLLM(BaseLLMService):
+    """离线 Mock: 无 API Key 时保证整条链路可演示. 基于 prompt 内嵌的 JSON 上下文生成模板化输出."""
+
+    name = "mock"
+
+    def complete(self, system: str, user: str, temperature: float = 0.3) -> str:
+        return self._render(system, user)
+
+    def stream(self, system: str, user: str, history: list[dict] | None = None, temperature: float = 0.5):
+        text = self._render(system, user)
+        for i in range(0, len(text), 12):
+            yield text[i:i + 12]
+            time.sleep(0.02)
+
+    def _render(self, system: str, user: str) -> str:
+        ctx = self._extract_context(user)
+
+        topic = ctx.get("topic_title") or ctx.get("topic") or ctx.get("学生毕业设计题目") or "本毕业设计"
+        chunks = ctx.get("chunks") or ctx.get("reference_chunks") or []
+        answer = ctx.get("学生回答") or ctx.get("student_answer") or ctx.get("answer") or ""
+
+        # 场景识别依据 System Prompt 中的 JSON schema 关键词, 分支条件互斥且顺序敏感
+        if "accuracy" in system:  # 回答评价
+            length = len(answer)
+            base = max(60, min(90, 55 + length // 8))
+            return json.dumps({
+                "accuracy": int(base * 0.35), "logic": int(base * 0.25),
+                "clarity": int(base * 0.2), "depth": int(max(50, base - 12) * 0.2),
+                "feedback": f"你的回答围绕「{topic}」进行了阐述, 覆盖了主要方面。\n\n"
+                            f"**优点**: 表达较为清晰, 提到了与题目相关的内容。\n\n"
+                            f"**不足**: 回答深度有限, 建议结合论文中的具体设计与数据进一步展开, "
+                            f"例如说明技术选型理由、实现细节或测试结果。\n\n"
+                            f"**建议**: 回答时先给出结论, 再分点展开依据, 最后补充实例。",
+                "follow_up_needed": length < 120,
+                "follow_up_question": f"请进一步说明「{topic}」中该方案的实现细节与遇到的问题是如何解决的?" if length < 120 else None,
+            }, ensure_ascii=False)
+
+        if "dimension_scores" in system:  # 答辩报告
+            turns = ctx.get("turns") or []
+            if not turns:
+                turns = [{"total": 78}]
+            avg = int(sum(t.get("total", t.get("total_score", 78)) for t in turns) / len(turns))
+            return json.dumps({
+                "overall_score": avg,
+                "dimension_scores": {"基础知识": avg, "系统设计": max(50, avg - 3), "技术理解": max(50, avg - 5),
+                                     "表达能力": min(95, avg + 3), "应变能力": max(50, avg - 6)},
+                "summary": f"本次模拟答辩共完成 {len(turns)} 个问题的回答, 综合表现{'良好' if avg >= 75 else '一般'}。",
+                "strengths": ["对系统整体功能较熟悉", "能围绕题目组织回答"],
+                "weaknesses": ["部分技术细节阐述不够深入", "缺少对设计方案取舍的论证"],
+                "risky_questions": ["为什么选择当前技术栈而非其他方案?", "系统在高并发场景下的表现如何?"],
+                "suggestions": ["重读论文第三章系统设计与第五章测试章节", "为每个核心技术准备一个具体例子"],
+            }, ensure_ascii=False)
+
+        if "questions" in system and "问题库" in system:  # 问题生成
+            plan = {"BASIC": 3, "TECHNOLOGY": 5, "DESIGN": 4, "IMPLEMENTATION": 4, "INNOVATION": 2, "LIMITATION": 2, "EXTENSION": 2}
+            keywords = ["系统整体架构", "核心技术选型", "数据库设计", "关键功能实现", "测试方案", "创新点", "系统不足", "后续扩展"]
+            questions = []
+            i = 0
+            for qt, count in plan.items():
+                for n in range(count):
+                    kw = keywords[i % len(keywords)]
+                    i += 1
+                    questions.append({
+                        "question": f"请结合「{topic}」介绍{kw}方面的设计与考虑。",
+                        "question_type": qt,
+                        "difficulty": "MEDIUM",
+                        "reference": (chunks[0].get("content", "")[:80] if chunks else "依据论文对应章节内容作答"),
+                    })
+            return json.dumps({"questions": questions[:22]}, ensure_ascii=False)
+
+        if "follow_up_question" in system and "追问" in system:
+            return json.dumps({
+                "follow_up_question": f"针对你的回答: 在「{topic}」中为什么采用该方案而不是常见替代方案?",
+                "follow_up_needed": False,
+            }, ensure_ascii=False)
+
+        if "speaker_notes" in system or "PPT" in system:
+            return json.dumps({
+                "title": f"{topic} 毕业设计答辩",
+                "pages": [
+                    {"page": 1, "title": "封面", "key_points": [topic, "姓名 / 指导教师 / 日期"], "speaker_notes": "开场自我介绍", "recommended_visual": "校徽+标题"},
+                    {"page": 2, "title": "研究背景与意义", "key_points": ["行业现状与痛点", "研究价值"], "speaker_notes": "用1-2个例子说明痛点", "recommended_visual": "背景图"},
+                    {"page": 3, "title": "系统总体架构", "key_points": ["前端 Vue3", "后端 FastAPI", "MySQL + Redis"], "speaker_notes": "按调用链讲一遍", "recommended_visual": "架构图"},
+                    {"page": 4, "title": "核心功能实现", "key_points": ["毕业流程状态机", "审核工作流", "进度跟踪"], "speaker_notes": "重点讲状态机设计", "recommended_visual": "流程图"},
+                    {"page": 5, "title": "RAG 智能能力", "key_points": ["文档解析与分块", "向量检索", "AI模拟答辩"], "speaker_notes": "结合检索流程图讲解", "recommended_visual": "RAG流程图"},
+                    {"page": 6, "title": "系统测试", "key_points": ["功能测试", "检索质量测试"], "speaker_notes": "给出关键指标", "recommended_visual": "表格"},
+                    {"page": 7, "title": "总结与展望", "key_points": ["完成工作", "不足与改进"], "speaker_notes": "致谢", "recommended_visual": "简洁文字"},
+                ],
+            }, ensure_ascii=False)
+
+        if "recommended_reminder" in system:
+            return json.dumps({
+                "risk_level": ctx.get("rule_risk", "NORMAL"),
+                "summary": f"学生当前进度由规则引擎计算为 {ctx.get('progress_percent', 0)}%, 材料完整性总体{ctx.get('materials_summary', '一般')}。",
+                "problems": ["中期报告的测试部分内容偏少", "材料中数据库设计说明不够完整"],
+                "suggestions": ["补充系统测试用例与结果说明", "完善数据库ER图与表结构说明"],
+                "recommended_reminder": f"提醒: 请按计划推进当前阶段材料并尽快提交。",
+            }, ensure_ascii=False)
+
+        if "standalone_query" in system:
+            return json.dumps({"standalone_query": ctx.get("question") or user[:80]}, ensure_ascii=False)
+
+        # 通用 RAG 回答
+        ref = ""
+        if chunks:
+            ref = "\n\n".join(f"- {c.get('content', '')[:100]}" for c in chunks[:3])
+        material = ctx.get("materials") or ctx.get("检索上下文") or ""
+        return (f"基于检索到的资料, 对问题回答如下:\n\n"
+                f"{ref or (str(material)[:400] if material else '') or '当前知识库中未找到直接相关内容, 建议补充材料后重试。'}\n\n"
+                f"(离线演示模式: 配置 LLM_API_KEY 后将获得真实大模型回答)")
+
+    @staticmethod
+    def _extract_context(user: str) -> dict:
+        """从 prompt 的【标签】段落或内嵌 JSON 中提取上下文."""
+        ctx: dict = {}
+        for label in ("学生毕业设计题目", "答辩问题", "学生回答", "学生问题", "之前问答概要",
+                      "规则引擎结果", "学生材料文本", "论文材料节选", "模拟答辩表现摘要", "历史对话"):
+            m = re.search(rf"【{label}】\s*(.+?)(?=【|$)", user, re.DOTALL)
+            if m:
+                text = m.group(1).strip()
+                if text.startswith("{"):
+                    try:
+                        ctx[label] = json.loads(text)
+                        continue
+                    except json.JSONDecodeError:
+                        pass
+                ctx[label] = text[:400]
+        m = re.search(r"【上下文】\s*(\{.*?\})(?:\s*【|$)", user, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group(1))
+                ctx.update(data)
+            except json.JSONDecodeError:
+                pass
+        # 检索上下文中的 chunk 内容供引用
+        chunks = re.findall(r"\[\d+\][^\n]*\n(.{10,200})", user)
+        if chunks:
+            ctx.setdefault("chunks", [{"content": c.strip()} for c in chunks[:5]])
+        return ctx
+
+
+class LLMFactory:
+    _instance: BaseLLMService | None = None
+
+    @classmethod
+    def get(cls) -> BaseLLMService:
+        if cls._instance is None:
+            from app.core.config import settings
+
+            if settings.llm_use_openai:
+                cls._instance = OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, settings.llm_model)
+            else:
+                cls._instance = MockLLM()
+        return cls._instance
+
+    @classmethod
+    def provider_name(cls) -> str:
+        return cls.get().name
