@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <!-- 占位背景图: 更换时直接覆盖本文件(建议同名 bg.svg, 或改 src/config/media.ts 引用并升级版本号) -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#dceafd"/>
+      <stop offset="0.55" stop-color="#eaf3fe"/>
+      <stop offset="1" stop-color="#f4f9ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#sky)"/>
+  <circle cx="330" cy="210" r="150" fill="#ffffff" opacity="0.45"/>
+  <circle cx="1560" cy="160" r="190" fill="#ffffff" opacity="0.38"/>
+  <text x="960" y="560" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-size="120" fill="#9db9dd" text-anchor="middle">背景图</text>
+</svg>
