@@ -1,0 +1,243 @@
+/* ===== 全局设计规范(依据设计图: 1600x900 深蓝侧栏 蓝白主色) ===== */
+
+:root {
+  /* 主色系 */
+  --gx-primary: #1a76fd;
+  --gx-primary-light: #e8f1fd;
+  --gx-sidebar-bg: #0f2144;
+  --gx-sidebar-hover: #1a2f57;
+  --gx-page-bg: #f5f9fd;
+  --gx-text-main: #1f2d3d;
+  --gx-text-sub: #8a97ad;
+  --gx-border: #e8ecf3;
+  --gx-danger: #f56c6c;
+  --gx-warning: #e6a23c;
+  --gx-success: #4fc253;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: 'PingFang SC', 'Helvetica Neue', Arial, 'Microsoft YaHei', sans-serif;
+  background: var(--gx-page-bg);
+  color: var(--gx-text-main);
+  font-size: 14px;
+}
+
+/* ---------- Element Plus 主题覆盖 ---------- */
+.el-button--primary {
+  --el-button-bg-color: #1a76fd;
+  --el-button-border-color: #1a76fd;
+  --el-button-hover-bg-color: #3b8bfc;
+  --el-button-hover-border-color: #3b8bfc;
+  --el-button-active-bg-color: #1262d6;
+}
+
+.el-menu {
+  --el-menu-bg-color: transparent;
+}
+
+/* 表格: 表头浅灰底 + 主文字色 */
+.el-table th.el-table__cell {
+  background: #f5f7fa !important;
+  color: #5e6d82;
+  font-weight: 600;
+}
+
+.el-table .el-table__cell {
+  padding: 10px 0;
+}
+
+/* 分页 */
+.el-pagination.is-background .el-pager li.is-active {
+  background: var(--gx-primary);
+  color: #fff;
+}
+
+/* ---------- 通用页面结构 ---------- */
+.page-card {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 2px 8px rgba(15, 33, 68, 0.04);
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+/* 页面标题(内容区顶部, 20-22px 粗体) */
+.page-title {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--gx-text-main);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.filter-bar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.pagination-bar {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---------- 统计卡片 ---------- */
+.stat-card {
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.stat-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 18px rgba(15, 33, 68, 0.08);
+}
+
+.stat-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.stat-card .value {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--gx-text-main);
+  line-height: 1.2;
+}
+
+.stat-card .label {
+  font-size: 13px;
+  color: var(--gx-text-sub);
+  margin-top: 2px;
+}
+
+/* ---------- 欢迎问候区 ---------- */
+.welcome-block h2 {
+  margin: 0 0 6px;
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--gx-text-main);
+}
+
+.welcome-block .sub {
+  color: var(--gx-text-sub);
+  font-size: 14px;
+}
+
+/* ---------- 区块标题(卡片内) ---------- */
+.block-title {
+  margin: 0 0 14px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--gx-text-main);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.block-title .more {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--gx-primary);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+/* ---------- Markdown ---------- */
+.markdown-body {
+  line-height: 1.75;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  margin: 14px 0 8px;
+}
+
+.markdown-body p {
+  margin: 8px 0;
+}
+
+.markdown-body ul, .markdown-body ol {
+  padding-left: 22px;
+}
+
+.markdown-body code {
+  background: #f4f4f5;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.markdown-body pre {
+  background: #282c34;
+  color: #abb2bf;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.markdown-body pre code {
+  background: transparent;
+  color: inherit;
+}
+
+.markdown-body blockquote {
+  border-left: 4px solid #dcdfe6;
+  padding-left: 12px;
+  color: #606266;
+  margin: 8px 0;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+}
+
+.markdown-body th, .markdown-body td {
+  border: 1px solid #dcdfe6;
+  padding: 6px 10px;
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c9d3e0;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #aab8ca;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
