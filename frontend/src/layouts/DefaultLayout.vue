@@ -158,6 +158,7 @@ function go(path: string, query?: Record<string, string>) {
 
 /* ---------- 顶栏: 页面标题 ---------- */
 const pageTitle = computed(() => {
+  if (route.meta.title) return String(route.meta.title)
   for (const node of menus.value) {
     if (node.path === route.path) return node.title
     if (node.children) {
