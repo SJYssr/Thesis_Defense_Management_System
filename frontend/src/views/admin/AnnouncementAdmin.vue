@@ -202,7 +202,7 @@
         <el-descriptions-item label="浏览次数">{{ viewing?.views }}</el-descriptions-item>
         <el-descriptions-item label="状态">{{ viewing?.status }}</el-descriptions-item>
       </el-descriptions>
-      <p class="view-content">{{ viewing?.content || '各学院、各位指导教师及2024届毕业生：请按学校毕业设计工作安排认真推进各阶段任务，具体要求见附件。' }}</p>
+      <p class="view-content">各学院、各位指导教师及2024届毕业生：请按学校毕业设计工作安排认真推进各阶段任务，具体要求见附件。</p>
     </el-dialog>
   </div>
 </template>
