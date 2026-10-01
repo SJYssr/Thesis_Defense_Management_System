@@ -11,6 +11,11 @@ export const topicApi = {
   publish: (id: number) => request.post(`/teacher/topics/${id}/publish`),
   close: (id: number) => request.post(`/teacher/topics/${id}/close`),
   adminList: (params: Record<string, unknown>) => request.get('/admin/topics', { params }),
+  adminSummary: () => request.get('/admin/topics/summary'),
+  adminCreate: (data: Record<string, unknown>) => request.post('/admin/topics', data),
+  adminUpdate: (id: number, data: Record<string, unknown>) => request.put(`/admin/topics/${id}`, data),
+  adminPublish: (id: number) => request.post(`/admin/topics/${id}/publish`),
+  adminRemove: (id: number) => request.delete(`/admin/topics/${id}`),
 }
 
 // ---------- 选题 ----------
@@ -87,6 +92,10 @@ export const materialApi = {
   approve: (id: number, comment?: string) => request.post(`/teacher/materials/${id}/approve`, { comment }),
   reject: (id: number, comment?: string) => request.post(`/teacher/materials/${id}/reject`, { comment }),
   adminList: (params: Record<string, unknown>) => request.get('/admin/materials', { params }),
+  adminStats: (academicYear?: string) => request.get('/admin/materials/stats', { params: { academic_year: academicYear } }),
+  adminFilters: () => request.get('/admin/materials/filters'),
+  adminApprove: (id: number, comment?: string) => request.post(`/admin/materials/${id}/approve`, { comment }),
+  adminReject: (id: number, comment?: string) => request.post(`/admin/materials/${id}/reject`, { comment }),
 }
 
 // ---------- 进度 ----------
@@ -97,4 +106,6 @@ export const progressApi = {
   sendReminder: (id: number, data: { title: string; content: string }) =>
     request.post(`/teacher/students/${id}/reminders`, data),
   adminList: (params: Record<string, unknown>) => request.get('/admin/progress', { params }),
+  adminSummary: (academicYear?: string) => request.get('/admin/progress/summary', { params: { academic_year: academicYear } }),
+  adminRemind: (data: { student_ids: number[]; title: string; content: string }) => request.post('/admin/progress/reminders', data),
 }

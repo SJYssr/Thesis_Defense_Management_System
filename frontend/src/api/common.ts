@@ -22,6 +22,9 @@ export const aiApi = {
 export const dashboardApi = {
   home: () => request.get('/dashboard/home'),
   stats: () => request.get('/dashboard/stats'),
+  analytics: () => request.get('/dashboard/analytics'),
+  adminActivity: () => request.get('/dashboard/admin-activity'),
+  teacherActivity: () => request.get('/dashboard/teacher-activity'),
 }
 
 export const announcementApi = {
@@ -46,6 +49,10 @@ export const userAdminApi = {
   remove: (role: string, id: number) => request.delete(`/admin/users/${role}/${id}`),
   colleges: () => request.get('/org/colleges'),
   majors: (collegeId?: number) => request.get('/org/majors', { params: { college_id: collegeId } }),
+}
+
+export const operationLogApi = {
+  list: (params: Record<string, unknown>) => request.get('/admin/operation-logs', { params }),
 }
 
 export const uploadApi = {

@@ -8,6 +8,8 @@ const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 
+const isStudent = computed(() => userStore.role === 'STUDENT')
+const sidebarWidth = computed(() => isStudent.value ? '220px' : '264px')
 const ROLE_CN: Record<string, string> = { ADMIN: '管理员', TEACHER: '教师', STUDENT: '学生' }
 
 /* ---------- 侧栏填充风格图标(与设计图一致的实底图标) ---------- */
@@ -50,15 +52,26 @@ const menus = computed<MenuNode[]>(() => {
           { title: '选题审核', path: '/admin/selections' },
           { title: '开题报告', path: '/admin/opening' },
           { title: '中期答辩', path: '/admin/midterm' },
-          { title: '终期答辩', path: '/admin/final' },
+          { title: '终期材料', path: '/admin/final' },
           { title: '毕业材料', path: '/admin/materials' },
           { title: '毕设进度', path: '/admin/progress' },
+          { title: '成果归档', path: '/admin/archive' },
+        ],
+      },
+      {
+        title: '答辩与成绩',
+        icon: 'chart',
+        children: [
+          { title: '答辩排期', path: '/admin/defense-schedule' },
+          { title: '成绩复核', path: '/admin/score-review' },
         ],
       },
       { title: '公告管理', icon: 'horn', path: '/admin/announcements', chevron: true },
-      { title: '管理员信息', icon: 'userbox', path: '/admin/users', query: { role: 'ADMIN' } },
-      { title: '教师信息', icon: 'userbox', path: '/admin/users', query: { role: 'TEACHER' } },
-      { title: '学生信息', icon: 'userbox', path: '/admin/users', query: { role: 'STUDENT' } },
+      { title: '用户管理', icon: 'userbox', children: [
+        { title: '管理员信息', path: '/admin/users', query: { role: 'ADMIN' } },
+        { title: '教师信息', path: '/admin/users', query: { role: 'TEACHER' } },
+        { title: '学生信息', path: '/admin/users', query: { role: 'STUDENT' } },
+      ] },
       {
         title: '个人中心',
         icon: 'gear',
@@ -75,47 +88,49 @@ const menus = computed<MenuNode[]>(() => {
     /* 与设计稿 15 的侧栏严格一致（平铺菜单） */
     return [
       { title: '系统首页', icon: 'home', path: '/teacher/home' },
-      { title: '题目信息', icon: 'doc', path: '/teacher/topics' },
-      { title: '学生选题', icon: 'userbox', path: '/teacher/selections' },
+      { title: '我的题目', icon: 'doc', path: '/teacher/topics' },
+      { title: '选题审核', icon: 'userbox', path: '/teacher/selections' },
       { title: '开题报告', icon: 'doc', path: '/teacher/opening' },
       { title: '中期答辩', icon: 'doc', path: '/teacher/midterm' },
-      { title: '终期答辩', icon: 'doc', path: '/teacher/final' },
+      { title: '终期材料', icon: 'doc', path: '/teacher/final' },
       { title: '毕业材料', icon: 'doc', path: '/teacher/materials' },
-      { title: '指导学生', icon: 'userbox', path: '/teacher/students' },
+      { title: '学生毕设进度', icon: 'userbox', path: '/teacher/students' },
+      { title: '指导任务', icon: 'doc', path: '/teacher/tasks' },
+      { title: '评阅与答辩', icon: 'userbox', path: '/teacher/review-workbench' },
+      { title: 'AI 进度分析', icon: 'spark', path: '/teacher/ai-progress' },
       { title: '公告信息', icon: 'horn', path: '/announcements' },
       { title: '个人中心', icon: 'userbox', path: '/profile' },
-      { title: '操作日志', icon: 'doc', path: '/admin/logs' },
     ]
   }
   return [
     { title: '系统首页', icon: 'home', path: '/student/home' },
-    {
-      title: '毕业设计',
-      icon: 'cap',
-      children: [
-        { title: '题目中心', path: '/student/topics' },
-        { title: '我的选题', path: '/student/selection' },
-        { title: '开题报告提交', path: '/student/opening' },
-        { title: '中期答辩材料', path: '/student/midterm' },
-        { title: '终期答辩材料', path: '/student/final' },
-        { title: '毕业材料提交', path: '/student/material' },
-        { title: '毕设进度', path: '/student/progress' },
-      ],
-    },
-    {
-      title: 'AI 助手',
-      icon: 'spark',
-      children: [
-        { title: 'AI 模拟答辩', path: '/student/ai-defense' },
-        { title: 'AI 知识问答', path: '/student/ai-chat' },
-      ],
-    },
+    { title: '我的任务', icon: 'doc', path: '/student/my-tasks' },
+    { title: '我的答辩', icon: 'userbox', path: '/student/my-defense' },
+    { title: '毕业成果', icon: 'cap', path: '/student/my-archive' },
+    { title: '题目中心', icon: 'doc', path: '/student/topics' },
+    { title: '我的选题', icon: 'doc', path: '/student/selection' },
+    { title: '开题报告', icon: 'doc', path: '/student/opening' },
+    { title: '中期答辩', icon: 'doc', path: '/student/midterm' },
+    { title: '终期材料', icon: 'doc', path: '/student/final' },
+    { title: '毕业材料', icon: 'doc', path: '/student/material' },
+    { title: '毕设进度', icon: 'chart', path: '/student/progress' },
+    { title: 'AI 模拟答辩(练习)', icon: 'spark', path: '/student/ai-defense' },
+    { title: '答辩报告', icon: 'doc', path: '/student/ai-report' },
+    { title: 'PPT 大纲', icon: 'doc', path: '/student/ai-ppt' },
+    { title: 'AI 知识准备', icon: 'spark', path: '/student/ai-knowledge' },
+    { title: '知识问答', icon: 'spark', path: '/student/ai-chat' },
   ]
 })
 
 /* ---------- 展开/折叠 ---------- */
 const collapsed = ref(false)
+const isNarrow = ref(false)
 const expanded = ref<Set<string>>(new Set())
+function syncViewport() {
+  const narrow = window.matchMedia('(max-width: 900px)').matches
+  if (narrow !== isNarrow.value) collapsed.value = narrow
+  isNarrow.value = narrow
+}
 
 function isLeafActive(leaf: MenuLeaf) {
   if (route.path !== leaf.path) return false
@@ -143,7 +158,7 @@ watch(
     if (!menusInitialized) {
       menusInitialized = true
       for (const node of menus.value) {
-        if (node.children) expanded.value.add(node.title)
+        if (node.children && node.title !== '个人中心') expanded.value.add(node.title)
       }
     }
     for (const node of menus.value) {
@@ -161,6 +176,7 @@ function toggleGroup(node: MenuNode) {
 }
 
 function go(path: string, query?: Record<string, string>) {
+  if (isNarrow.value) collapsed.value = true
   router.push({ path, query })
 }
 
@@ -206,7 +222,7 @@ async function loadNotifications() {
   try {
     const res = await notificationApi.list({ page: 1, page_size: 10 })
     notifications.value = res.data.items
-    unreadCount.value = res.data.unread || 5 /* 无真实未读时按设计稿演示值显示 */
+    unreadCount.value = res.data.unread || 0
   } catch {
     /* 忽略 */
   }
@@ -232,18 +248,22 @@ function handleCommand(cmd: string) {
 }
 
 onMounted(() => {
+  syncViewport()
+  window.addEventListener('resize', syncViewport)
   loadNotifications()
   timer = window.setInterval(loadNotifications, 30000)
 })
 onUnmounted(() => {
+  window.removeEventListener('resize', syncViewport)
   if (timer) window.clearInterval(timer)
 })
 </script>
 
 <template>
-  <el-container style="height: 100%">
+  <el-container class="app-shell" :class="{ 'student-shell': isStudent, 'teacher-shell': userStore.role === 'TEACHER', 'admin-shell': userStore.role === 'ADMIN' }">
+    <div v-if="isNarrow && !collapsed" class="sidebar-backdrop" @click="collapsed = true" />
     <!-- 深蓝侧栏 -->
-    <el-aside :width="collapsed ? '64px' : '260px'" class="sidebar">
+    <el-aside :width="isNarrow ? (collapsed ? '0px' : sidebarWidth) : (collapsed ? '64px' : sidebarWidth)" class="sidebar" :class="{ 'sidebar-mobile': isNarrow, 'sidebar-mobile-closed': isNarrow && collapsed }">
       <div class="logo" @click="collapsed = !collapsed">
         <svg class="logo-cap" viewBox="0 0 24 24" fill="none">
           <path d="M12 3 2 8l10 5 10-5-10-5z" fill="#fff" />
@@ -295,7 +315,7 @@ onUnmounted(() => {
                   :class="{ active: isLeafActive(leaf) }"
                   @click="go(leaf.path, leaf.query)"
                 >
-                  <span class="sub-title">{{ leaf.title }}</span>
+                  <svg class="sub-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h6"/></svg><span class="sub-title">{{ leaf.title }}</span>
                 </div>
               </div>
             </template>
@@ -370,27 +390,33 @@ onUnmounted(() => {
       </el-header>
 
       <el-main class="main-area" :style="route.meta.pageBg ? { background: String(route.meta.pageBg) } : undefined">
-        <router-view />
+        <router-view :key="route.path" />
       </el-main>
     </el-container>
   </el-container>
 </template>
 
 <style scoped>
+.app-shell { height: 100dvh; min-width: 0; }
+.app-shell > .el-container { min-width: 0; }
+.sidebar-backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(15, 33, 68, .42); }
 .sidebar {
-  background: #142a49;
+  background: #102d4d;
   display: flex;
   flex-direction: column;
   transition: width 0.25s;
   overflow: hidden;
+  flex-shrink: 0;
 }
+.sidebar-mobile { position: fixed; top: 0; bottom: 0; left: 0; z-index: 21; }
+.sidebar-mobile-closed { visibility: hidden; pointer-events: none; }
 
 .logo {
   height: 64px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 22px;
+  padding: 0 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
   cursor: pointer;
@@ -404,14 +430,14 @@ onUnmounted(() => {
 
 .logo-text {
   color: #fff;
-  font-size: 16px;
+  font-size: 20px;
   font-weight: 600;
-  letter-spacing: 1px;
+  letter-spacing: 0;
   white-space: nowrap;
 }
 
 .menu-wrap {
-  padding: 10px 12px 24px;
+  padding: 14px 15px 24px;
 }
 
 .menu-wrap.collapsed {
@@ -424,8 +450,8 @@ onUnmounted(() => {
   gap: 12px;
   height: 44px;
   padding: 0 12px;
-  border-radius: 8px;
-  color: #aab2c2;
+  border-radius: 5px;
+  color: #e2eaf7;
   cursor: pointer;
   font-size: 14px;
   margin-bottom: 4px;
@@ -481,12 +507,12 @@ onUnmounted(() => {
 }
 
 .menu-sub-item {
-  height: 40px;
+  height: 42px;
   display: flex;
   align-items: center;
-  padding: 0 12px 0 42px;
+  padding: 0 12px 0 26px;
   border-radius: 8px;
-  color: #93a0b5;
+  color: #e2eaf7;
   font-size: 13.5px;
   cursor: pointer;
   transition: all 0.2s;
@@ -494,10 +520,11 @@ onUnmounted(() => {
 
 .menu-sub-item::before {
   content: '';
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #48607f;
+  width: 12px;
+  height: 15px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  background: transparent;
   margin-right: 10px;
   transition: background 0.2s;
 }
@@ -517,7 +544,7 @@ onUnmounted(() => {
 }
 
 .menu-sub-item.active::before {
-  background: #fff;
+  background: transparent;
 }
 
 /* ---------- 顶栏 ---------- */
@@ -535,7 +562,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-width: 220px;
+  min-width: 0;
+  flex: 1 1 0;
 }
 
 .tb-btn {
@@ -555,10 +583,14 @@ onUnmounted(() => {
   font-size: 16px;
   font-weight: 600;
   color: #1f2d3d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar-search {
-  flex: 1;
+  flex: 1 1 220px;
+  min-width: 0;
   display: flex;
   justify-content: center;
 }
@@ -568,8 +600,8 @@ onUnmounted(() => {
 }
 
 .topbar-search :deep(.el-input__wrapper) {
-  border-radius: 18px;
-  background: #f5f7fa;
+  border-radius: 6px;
+  background: #eef7ff;
   box-shadow: none;
   height: 34px;
 }
@@ -582,7 +614,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 22px;
-  min-width: 220px;
+  flex-shrink: 0;
   justify-content: flex-end;
 }
 
@@ -615,8 +647,20 @@ onUnmounted(() => {
 }
 
 .main-area {
-  padding: 16px 20px;
+  padding: 14px 18px;
   overflow-y: auto;
+  min-width: 0;
+}
+@media (max-width: 1100px) {
+  .topbar-search { display: none; }
+  .topbar-right { gap: 14px; }
+}
+@media (max-width: 600px) {
+  .topbar { padding: 0 14px; gap: 10px; }
+  .topbar-left { gap: 8px; }
+  .home-icon, .user-name { display: none; }
+  .topbar-right { gap: 12px; }
+  .main-area { padding: 12px; }
 }
 
 .notif-header {
@@ -639,7 +683,7 @@ onUnmounted(() => {
 }
 
 .notif-item:hover {
-  background: #f5f7fa;
+  background: #eef7ff;
 }
 
 .notif-item.unread .notif-title {
@@ -664,4 +708,22 @@ onUnmounted(() => {
   color: #c0c4cc;
   margin-top: 2px;
 }
+
+.student-shell .sidebar { background: #112b50; }
+.student-shell .logo { padding: 0 18px; height: 60px; gap: 8px; }
+.student-shell .logo-text { font-size: 15px; letter-spacing: 0; }
+.student-shell .logo-cap { width: 25px; }
+.student-shell .menu-wrap { padding: 14px 12px; }
+.student-shell .menu-item { height: 42px; font-size: 13px; margin-bottom: 6px; gap: 10px; }
+.student-shell .m-icon { width: 16px; height: 16px; }
+.student-shell .topbar { height: 60px; }
+.student-shell .home-icon { display: none; }
+.student-shell .main-area { background: #f5f6fa; padding: 26px; }
+.student-shell .topbar-search { justify-content: flex-end; }
+.student-shell .topbar-search :deep(.el-input) { width: 260px; }
+.student-shell .topbar-search :deep(.el-input__wrapper) { background: #f8f9fc; border-radius: 18px; }
+@media (max-width: 700px) { .student-shell .main-area { padding: 16px; } }
+.menu-sub-item::before { display: none; }
+.sub-icon { width: 20px; height: 20px; margin-right: 14px; flex-shrink: 0; }
+.menu-sub-item { border-radius: 5px; }
 </style>
