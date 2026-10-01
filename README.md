@@ -17,6 +17,15 @@
 - **教师**: 我的题目、四阶段审核(含终期评分)、学生进度、AI 进度分析、一键提醒
 - **学生**: 题目中心、我的选题、四阶段材料(版本管理+审核轨迹)、毕业材料上传、进度时间轴
 
+### 正式答辩与成绩闭环(roadmap 执行版 P0~P3, 依据 docs/project-design.md)
+
+- **学年流程实例**: `graduation_cycle` 按学年+学生唯一, 选题/材料/答辩/归档全部挂 `cycle_id`, 支持跨学年重做; 材料审核、场次安排、正式结论是三个独立状态域, 互不推断
+- **阶段任务**: 管理员/教师按学年发布(名称/说明/所需材料/开放截止/适用范围, 修改版本化留痕), 学生端「我的任务」展示待办/逾期/服务端提交状态
+- **答辩排期**: 场次(阶段/时间/地点或线上/容量/状态) + 评委分配(主席/评委/评阅人), 教师/学生/场地/容量四类冲突校验, 发布需指定主席并二次复检; 已发布场次改期全量留痕并通知师生
+- **评阅与评分**: 被指派评委查看最小必要材料, 按学年/学院配置的评分表(启用即冻结版本)逐项评分; 提交即锁定, 复核重开产生新版本(旧版 SUPERSEDED 保留)
+- **成绩发布**: 服务端按有效评分复算加权总分(可复算, 保留每位评委原始分), 评委人数不足/评分不完整/未到场不得发布; 撤回发布留痕, 学生端显示"复核中"
+- **成果归档**: 归档前置校验(结论 PUBLISHED+PASS 且材料 APPROVED), 文件哈希快照; 默认私有, 学生可授权公开题目摘要或全文并可撤回(立即失效), 下载含审计日志(含被拒请求)
+
 ### AI / RAG 能力(业务内嵌, 非独立聊天页)
 
 - **文档入库流水线**: 上传论文 → PyMuPDF/python-docx 解析 → 文本清洗 → 章节识别 → 500~900字分块(overlap 120) → Embedding → Redis 向量库(HNSW+KNN, 无 Search 模块自动降级 MySQL 余弦) → 元数据落库
@@ -79,12 +88,21 @@ EMBEDDING_MODEL=embedding-3
 
 重启后端即可, 代码零修改(所有模型经 LLMService/EmbeddingService 抽象)。
 
-### 6. 自测
+### 6. 存量库迁移(已建库升级到正式答辩版)
 
 ```bash
-cd backend && .venv/bin/python smoke_test.py
-# 42 项断言: 登录鉴权/RBAC/选题并发/阶段状态机强校验/对象级权限/
-#           RAG学生隔离/AI答辩全流程/PPT/进度分析/SSE/Dashboard
+cd backend && .venv/bin/python backfill_cycles.py
+# 幂等: 建新表 → 补 cycle_id 列 → 回填 → 唯一约束由"单学生"切换为"单流程实例"
+# 旧 final_defense.score 仅保留为旧版材料评分, 不会生成任何正式答辩结论
+```
+
+### 7. 自测
+
+```bash
+cd backend && .venv/bin/python -m unittest discover -s tests   # 12 项单测(状态分离/冲突/复算/归档)
+cd backend && .venv/bin/python smoke_test.py                    # 93 项断言
+# 登录鉴权/RBAC/选题并发/阶段状态机强校验/对象级权限/RAG学生隔离/AI答辩全流程/
+# PPT/进度分析/SSE/Dashboard + 阶段任务/答辩排期冲突/评审成绩闭环/归档与文件权限
 ```
 
 ## 三、核心设计
@@ -98,13 +116,16 @@ cd backend && .venv/bin/python smoke_test.py
 
 ### 并发安全
 
-- 一人一题: `UNIQUE(student_id, active_flag)` + 历史记录 `active_flag=NULL` 归档
+- 一流程一题: `UNIQUE(cycle_id, active_flag)` + 历史记录 `active_flag=NULL` 归档(按学年流程实例隔离)
 - 名额不超卖: 审核通过时 `SELECT ... FOR UPDATE` 锁题目行 + 复查已通过人数
+- 场次并发修改: `defense_session.revision` 乐观锁, 冲突返回 40900
 
 ### 数据权限(对象级)
 
 - 教师 → 仅自己题目的学生; 学生 → 仅自己; RAG 检索强制 `student_id` TAG 过滤
-- 测试场景: 教师A访问教师B学生材料 → 404; 学生A检索不到学生B论文 Chunk
+- 评委 → 仅被指派场次中的评审材料; 归档 → 本人/导师/管理员, 公开需学生授权
+- 文件下载统一走 `shared/fileperm.py`: 未授权用户无法经 API 或文件 URL 下载私有论文
+- 测试场景: 教师A访问教师B学生材料 → 404; 学生A检索不到学生B论文 Chunk; 非指派评委访问评审 → 403
 
 ### Redis Key 规划
 
@@ -120,10 +141,13 @@ backend/
 ├── app/
 │   ├── core/          # config/JWT/权限/异常/统一响应
 │   ├── db/            # SQLAlchemy/Redis
-│   ├── models/        # 用户/业务/系统/AI 四组模型 + 状态机枚举
+│   ├── models/        # 用户/业务/系统/AI/答辩归档 五组模型 + 状态机枚举
 │   ├── modules/       # auth user topic selection opening midterm final_defense
 │   │   │              # material file progress announcement dashboard ai
-│   │   └── stages/    # 通用阶段状态机引擎 + 路由工厂
+│   │   ├── stages/    # 通用阶段状态机引擎 + 路由工厂
+│   │   ├── task/      # 阶段任务(P1)
+│   │   ├── defense/   # 答辩排期/评审/成绩发布(P1+P2)
+│   │   └── archive/   # 成果归档/授权/下载审计(P3)
 │   ├── ai/
 │   │   ├── llm/ embedding/     # Provider 工厂(OpenAI兼容 + 离线Mock/本地向量)
 │   │   ├── document/           # 解析(PDF/DOCX/PPTX/XLSX/TXT) + 章节感知分块
@@ -132,9 +156,10 @@ backend/
 │   │   ├── defense/            # AI模拟答辩: 问题/评价/追问/报告/PPT
 │   │   └── progress/           # 教师AI进度分析
 │   ├── tasks/         # Celery(可选, 默认同步执行)
-│   └── shared/        # 工作流状态机/进度规则引擎/存储/事件
-├── seed.py            # 种子数据(含演示论文+索引)
-└── smoke_test.py      # 42项核心链路自测
+│   └── shared/        # 工作流状态机/进度规则引擎/学年流程/文件权限/存储/事件
+├── backfill_cycles.py # P0 迁移: cycle_id 回填 + 唯一约束切换(幂等)
+├── seed.py            # 种子数据(含演示论文+答辩场次+评分+归档)
+└── smoke_test.py      # 93项核心链路自测
 
 frontend/src/
 ├── api/ stores/ router/ layouts/
@@ -146,6 +171,10 @@ frontend/src/
 
 - Auth: 登录/刷新/登出/资料/密码
 - 业务: topics / selections / opening-report / midterm / final-defense / material / progress
+- 任务与答辩: `/stage-tasks*`(任务配置+我的待办) `/defense-sessions*`(场次/冲突/发布/改期)
+  `/defense-assignments/*`(评审材料/评分提交/席位状态) `/review-rubrics*`(评分表配置)
+  `/defense-results/*`(复算/发布/撤回)
+- 归档: `/archive-packages*`(检索/授权/撤回/导出) `/archive-files/{id}/download`(授权下载+审计)
 - AI: `/ai/documents/*`(索引) `/ai/rag/query`(检索测试) `/ai/chat/stream`(SSE)
   `/ai/defense/*`(问题库/会话/回答/追问/报告) `/ai/ppt-outline/generate` `/ai/progress/student/{id}/analyse`
 - 完整文档: 启动后访问 `http://127.0.0.1:8000/docs`
@@ -178,8 +207,14 @@ docker compose -f docker-compose.prod.yml exec backend python seed.py   # 首次
 | P2 文件与进度 | 版本管理/文件表/进度权重/风险规则/提醒 | ✅ |
 | P3 RAG | 解析/分块/Embedding/Redis向量/Hybrid检索/测试接口 | ✅ |
 | P4 AI答辩 | 问题库/会话/四维评分/动态追问/报告/PPT大纲 | ✅ |
-| P5 数据统计 | 三角色首页/ECharts 四图/AI用量 | ✅ |
-| P6 测试 | 42项核心场景自测(含7个必测场景+RAG隔离) | ✅ |
+| P5 数据统计 | 三角色首页/ECharts 四图/AI用量/答辩运营统计 | ✅ |
+| P6 测试 | 93项核心场景自测(含7个必测场景+RAG隔离) + 12项单测 | ✅ |
+| 执行版P0 | 学年流程实例/三状态域分离/迁移脚本 | ✅ |
+| 执行版P1 | 阶段任务/答辩排期/冲突校验/改期留痕 | ✅ |
+| 执行版P2 | 评分表/评委评分锁定/成绩复算与发布 | ✅ |
+| 执行版P3 | 成果归档/公开授权/下载审计/撤回 | ✅ |
+| 执行版P4 | 测试、运营统计、开发环境隔离恢复演练 ✅ / 旧页移动端全面适配与生产恢复验收 ◐ | ◐ |
 
 > 说明: LLM/Embedding 未配置 API Key 时自动降级为内置离线实现(Mock LLM + 本地哈希向量),
 > 全部链路可离线演示; 配置 Key 后无需改码即切换真实大模型。
+> AI 模拟答辩分数仅为练习结果, 不进入正式成绩; 正式结论只来自评委评分的发布链路。
