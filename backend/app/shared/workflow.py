@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import StageValidationException
 from app.models.business import (
     FinalDefense,
+    GraduationCycle,
     GraduationMaterial,
     GraduationProcess,
     GraduationTopic,
@@ -29,31 +30,48 @@ STAGE_ORDER = [
 
 
 class GraduationWorkflowService:
-    # ---------- 查询 ----------
+    # ---------- 查询(全部按学生当前学年流程实例 cycle 归属) ----------
+
+    @staticmethod
+    def get_active_cycle(db: Session, student_id: int) -> GraduationCycle | None:
+        from app.shared.cycle import get_active_cycle
+
+        return get_active_cycle(db, student_id)
 
     @staticmethod
     def get_active_selection(db: Session, student_id: int) -> TopicSelection | None:
+        cycle = GraduationWorkflowService.get_active_cycle(db, student_id)
+        if cycle is None:
+            return None
         return db.execute(
             select(TopicSelection).where(
-                TopicSelection.student_id == student_id,
+                TopicSelection.cycle_id == cycle.id,
                 TopicSelection.active_flag == 1,
             )
         ).scalar_one_or_none()
 
     @staticmethod
     def get_process(db: Session, student_id: int) -> GraduationProcess | None:
+        cycle = GraduationWorkflowService.get_active_cycle(db, student_id)
+        if cycle is None:
+            return None
         return db.execute(
-            select(GraduationProcess).where(GraduationProcess.student_id == student_id)
+            select(GraduationProcess).where(GraduationProcess.cycle_id == cycle.id)
         ).scalar_one_or_none()
 
     @classmethod
     def get_stage_snapshot(cls, db: Session, student_id: int) -> dict:
         """一次查出学生五个阶段的状态, 供首页/进度页使用."""
-        selection = cls.get_active_selection(db, student_id)
-        opening = db.execute(select(OpeningReport).where(OpeningReport.student_id == student_id)).scalar_one_or_none()
-        midterm = db.execute(select(MidtermReport).where(MidtermReport.student_id == student_id)).scalar_one_or_none()
-        final = db.execute(select(FinalDefense).where(FinalDefense.student_id == student_id)).scalar_one_or_none()
-        material = db.execute(select(GraduationMaterial).where(GraduationMaterial.student_id == student_id)).scalar_one_or_none()
+        cycle = cls.get_active_cycle(db, student_id)
+        if cycle is None:
+            return {"selection": None, "opening": None, "midterm": None, "final": None, "material": None}
+        selection = db.execute(
+            select(TopicSelection).where(TopicSelection.cycle_id == cycle.id, TopicSelection.active_flag == 1)
+        ).scalar_one_or_none()
+        opening = db.execute(select(OpeningReport).where(OpeningReport.cycle_id == cycle.id)).scalar_one_or_none()
+        midterm = db.execute(select(MidtermReport).where(MidtermReport.cycle_id == cycle.id)).scalar_one_or_none()
+        final = db.execute(select(FinalDefense).where(FinalDefense.cycle_id == cycle.id)).scalar_one_or_none()
+        material = db.execute(select(GraduationMaterial).where(GraduationMaterial.cycle_id == cycle.id)).scalar_one_or_none()
         return {
             "selection": selection,
             "opening": opening,
@@ -86,21 +104,30 @@ class GraduationWorkflowService:
     @classmethod
     def require_can_submit_midterm(cls, db: Session, student_id: int) -> None:
         cls.require_selection_approved(db, student_id)
-        opening = db.execute(select(OpeningReport).where(OpeningReport.student_id == student_id)).scalar_one_or_none()
+        cycle = cls.get_active_cycle(db, student_id)
+        opening = db.execute(
+            select(OpeningReport).where(OpeningReport.cycle_id == cycle.id)
+        ).scalar_one_or_none() if cycle else None
         if opening is None or opening.status != "APPROVED":
             raise StageValidationException("开题报告尚未通过,无法提交中期答辩材料")
 
     @classmethod
     def require_can_submit_final(cls, db: Session, student_id: int) -> None:
         cls.require_selection_approved(db, student_id)
-        midterm = db.execute(select(MidtermReport).where(MidtermReport.student_id == student_id)).scalar_one_or_none()
+        cycle = cls.get_active_cycle(db, student_id)
+        midterm = db.execute(
+            select(MidtermReport).where(MidtermReport.cycle_id == cycle.id)
+        ).scalar_one_or_none() if cycle else None
         if midterm is None or midterm.status != "APPROVED":
             raise StageValidationException("中期报告尚未通过,无法提交终期答辩材料")
 
     @classmethod
     def require_can_submit_material(cls, db: Session, student_id: int) -> None:
         cls.require_selection_approved(db, student_id)
-        final = db.execute(select(FinalDefense).where(FinalDefense.student_id == student_id)).scalar_one_or_none()
+        cycle = cls.get_active_cycle(db, student_id)
+        final = db.execute(
+            select(FinalDefense).where(FinalDefense.cycle_id == cycle.id)
+        ).scalar_one_or_none() if cycle else None
         if final is None or final.status != "APPROVED":
             raise StageValidationException("终期答辩尚未通过,无法提交毕业材料")
 
@@ -108,19 +135,17 @@ class GraduationWorkflowService:
 
     @classmethod
     def on_selection_approved(cls, db: Session, selection: TopicSelection) -> GraduationProcess:
-        """选题通过 → 建立/推进毕业流程."""
-        process = cls.get_process(db, selection.student_id)
-        if process is None:
-            process = GraduationProcess(
-                student_id=selection.student_id,
-                topic_id=selection.topic_id,
-                teacher_id=selection.teacher_id,
-                current_stage=ProcessStage.OPENING.value,
-                progress_percent=10,
-                started_at=now(),
-            )
-            db.add(process)
-            db.flush()  # 立即可见, 防止后续 recompute 重复创建
+        """选题通过 → 建立/推进当前学年流程实例."""
+        from app.shared.cycle import ensure_cycle
+
+        cycle = ensure_cycle(db, selection.student_id, selection.topic_id, selection.teacher_id)
+        selection.cycle_id = cycle.id
+        process = cls._get_or_create_process(db, cycle, selection.topic_id, selection.teacher_id)
+        if process.current_stage == ProcessStage.SELECTION.value:
+            process.current_stage = ProcessStage.OPENING.value
+            process.progress_percent = 10
+        if not process.started_at:
+            process.started_at = now()
         return process
 
     @classmethod
@@ -128,7 +153,8 @@ class GraduationWorkflowService:
         """开题/中期/终期/材料审核通过后推进流程: 百分比按权重累加, 阶段前移."""
         from app.shared.progress import ProgressService
 
-        process = cls.get_process(db, student_id)
+        cycle = cls.get_active_cycle(db, student_id)
+        process = cls._get_or_create_process(db, cycle) if cycle else None
         if process is None:
             process = GraduationProcess(student_id=student_id, started_at=now())
             db.add(process)
@@ -140,6 +166,32 @@ class GraduationWorkflowService:
             next_stage = STAGE_ORDER[STAGE_ORDER.index(stage) + 1]
             process.current_stage = next_stage.value
         ProgressService.recompute(db, student_id, process=process)
+        return process
+
+    @staticmethod
+    def _get_or_create_process(db: Session, cycle: GraduationCycle | None,
+                               topic_id: int | None = None, teacher_id: int | None = None) -> GraduationProcess:
+        process = None
+        if cycle is not None:
+            process = db.execute(
+                select(GraduationProcess).where(GraduationProcess.cycle_id == cycle.id)
+            ).scalar_one_or_none()
+        if process is None:
+            process = GraduationProcess(
+                student_id=cycle.student_id if cycle else None,
+                cycle_id=cycle.id if cycle else None,
+                topic_id=topic_id if topic_id is not None else (cycle.topic_id if cycle else None),
+                teacher_id=teacher_id if teacher_id is not None else (cycle.teacher_id if cycle else None),
+                current_stage=ProcessStage.SELECTION.value,
+                started_at=now(),
+            )
+            db.add(process)
+            db.flush()
+        else:
+            if topic_id is not None:
+                process.topic_id = topic_id
+            if teacher_id is not None:
+                process.teacher_id = teacher_id
         return process
 
     # ---------- 教师审核权限辅助 ----------

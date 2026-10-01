@@ -1,4 +1,4 @@
-"""终期答辩模块: 由统一阶段状态机引擎驱动, 审核支持评分."""
+"""终期答辩材料模块: 仅处理材料审核及旧版材料评分，非正式答辩结果。"""
 from app.models.business import FinalDefense, FinalDefenseVersion
 from app.models.enums import BusinessType, ProcessStage
 from app.modules.stages.engine import StageConfig
@@ -10,7 +10,7 @@ FINAL_CONFIG = StageConfig(
     model=FinalDefense,
     version_model=FinalDefenseVersion,
     version_fk="final_defense_id",
-    label="终期答辩",
+    label="终期答辩材料",
     fields=["summary", "innovation", "technical_solution", "test_result"],
     required_fields=["summary", "technical_solution", "test_result"],
 )

@@ -24,7 +24,7 @@ EDITABLE_STATUSES = {"NOT_SUBMITTED", "DRAFT", "REJECTED", "RESUBMIT_REQUIRED"}
 STAGE_CN = {
     ProcessStage.OPENING: "开题报告",
     ProcessStage.MIDTERM: "中期报告",
-    ProcessStage.FINAL: "终期答辩",
+    ProcessStage.FINAL: "终期答辩材料",
     ProcessStage.MATERIAL: "毕业材料",
 }
 
@@ -64,8 +64,19 @@ class StageEngine:
 
     # ---------- 学生 ----------
 
+    def _active_cycle(self, db: Session, student_id: int):
+        from app.shared.cycle import get_active_cycle
+
+        return get_active_cycle(db, student_id)
+
     def get_report(self, db: Session, student_id: int):
-        return db.execute(select(self.cfg.model).where(self.cfg.model.student_id == student_id)).scalar_one_or_none()
+        """按学生当前学年流程实例(cycle)取阶段材料, 支持跨学年重做."""
+        cycle = self._active_cycle(db, student_id)
+        if cycle is None:
+            return None
+        return db.execute(
+            select(self.cfg.model).where(self.cfg.model.cycle_id == cycle.id)
+        ).scalar_one_or_none()
 
     def student_view(self, db: Session, student_id: int) -> dict:
         report = self.get_report(db, student_id)
@@ -92,12 +103,14 @@ class StageEngine:
     def student_save(self, db: Session, student_id: int, payload: dict, as_draft: bool = True):
         """保存(草稿或直接内容更新). 阶段前置校验在后端强制执行."""
         self.cfg.require_check(db, student_id)
+        cycle = self._active_cycle(db, student_id)
         report = self.get_report(db, student_id)
         self._ensure_editable(report)
         clean = {k: v for k, v in payload.items() if k in self.cfg.fields and v is not None}
         if report is None:
             sel = self._selection(db, student_id)
-            report = self.cfg.model(student_id=student_id, topic_id=sel.topic_id, teacher_id=sel.teacher_id, **clean)
+            report = self.cfg.model(student_id=student_id, cycle_id=cycle.id,
+                                    topic_id=sel.topic_id, teacher_id=sel.teacher_id, **clean)
             db.add(report)
         else:
             for k, v in clean.items():

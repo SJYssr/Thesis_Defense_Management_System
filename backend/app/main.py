@@ -75,6 +75,11 @@ from app.modules.announcement.router import router as ann_router  # noqa: E402
 from app.modules.dashboard.router import router as dashboard_router  # noqa: E402
 from app.modules.ai.router import defense as ai_defense_router  # noqa: E402
 from app.modules.ai.router import router as ai_router  # noqa: E402
+from app.modules.task.router import router as task_router  # noqa: E402
+from app.modules.defense.router import router as defense_router  # noqa: E402
+from app.modules.defense.router import rubric_router  # noqa: E402
+from app.modules.archive.router import router as archive_router  # noqa: E402
+from app.modules.audit.router import router as audit_router  # noqa: E402
 
 for r in (
     auth_router, user_router, org_router,
@@ -89,6 +94,7 @@ for r in (
     ann_router, ann_admin, notification_router,
     dashboard_router,
     ai_router, ai_defense_router,
+    task_router, defense_router, rubric_router, archive_router, audit_router,
 ):
     app.include_router(r, prefix=API_PREFIX)
 

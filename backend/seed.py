@@ -21,7 +21,9 @@ from app.models.all import *  # noqa: F401,F403
 from app.models.ai import AIDocument
 from app.models.business import (
     FinalDefense,
+    GraduationCycle,
     GraduationMaterial,
+    GraduationMaterialFile,
     GraduationProcess,
     GraduationSchedule,
     GraduationTopic,
@@ -29,9 +31,22 @@ from app.models.business import (
     OpeningReport,
     TopicSelection,
 )
+from app.models.defense import (
+    ArchiveFile,
+    ArchivePackage,
+    DefenseAssignment,
+    DefenseExaminer,
+    DefenseResult,
+    DefenseSession,
+    ExaminerScore,
+    ReviewRubric,
+    StageTask,
+)
 from app.models.enums import AIDocumentType
-from app.models.system import Announcement, ReviewRecord
+from app.models.system import Announcement, ReviewRecord, SysFile
 from app.models.user import ClassInfo, College, Major, StudentProfile, SysUser, TeacherProfile
+from app.shared.cycle import ensure_cycle
+from app.shared.storage import storage
 
 DEMO_THESIS = """# 基于LangChain与RAG的智能毕业设计管理系统设计与实现
 
@@ -198,7 +213,7 @@ def seed(force: bool = False):
             db.flush()
             topics.append(t)
 
-        # ---------- 演示主线: 学生1 全流程到毕业材料 ----------
+        # ---------- 演示主线: 学生1 全流程到毕业材料 + 正式答辩结论 + 归档 ----------
         s1 = students[0]
         sel1 = TopicSelection(student_id=s1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
                               status="APPROVED", active_flag=1, student_reason="对大模型应用开发有浓厚兴趣, 希望深入学习RAG技术。",
@@ -207,8 +222,10 @@ def seed(force: bool = False):
         db.flush()
         db.add(ReviewRecord(business_type="TOPIC_SELECTION", business_id=sel1.id, student_id=s1.id,
                             action="SUBMIT", after_status="PENDING", created_at=now - timedelta(days=105)))
+        cycle1 = ensure_cycle(db, s1.id, topics[0].id, teachers[0].id, academic_year="2025-2026")
+        sel1.cycle_id = cycle1.id
         opening = OpeningReport(
-            student_id=s1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
+            student_id=s1.id, cycle_id=cycle1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
             title=topics[0].title,
             research_background="传统毕业设计管理效率低, 缺乏智能化手段。",
             research_significance="将RAG融入业务系统, 提升管理智能化水平。",
@@ -221,7 +238,7 @@ def seed(force: bool = False):
             reviewed_at=now - timedelta(days=78), review_comment="开题通过, 注意进度控制。")
         db.add(opening)
         midterm = MidtermReport(
-            student_id=s1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
+            student_id=s1.id, cycle_id=cycle1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
             progress_description="已完成基础框架、题目选题与审核流程开发。",
             completed_content="用户权限、题目管理、选题审核、开题审核模块。",
             remaining_content="RAG知识库、AI模拟答辩、数据统计。",
@@ -231,7 +248,7 @@ def seed(force: bool = False):
             reviewed_at=now - timedelta(days=28))
         db.add(midterm)
         final = FinalDefense(
-            student_id=s1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
+            student_id=s1.id, cycle_id=cycle1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
             summary="完成了毕业设计全流程管理与RAG智能能力的融合系统。",
             innovation="基于RAG的个性化答辩问题生成与有依据评价。",
             technical_solution="FastAPI+SQLAlchemy+Redis Vector+Hybrid RAG。",
@@ -239,11 +256,76 @@ def seed(force: bool = False):
             status="APPROVED", score=88, current_version=1,
             submitted_at=now - timedelta(days=3), reviewed_at=now - timedelta(days=1))
         db.add(final)
-        db.add(GraduationMaterial(student_id=s1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
-                                  status="NOT_SUBMITTED"))
-        db.add(GraduationProcess(student_id=s1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
-                                 current_stage="MATERIAL", progress_percent=80, risk_level="NORMAL",
-                                 started_at=now - timedelta(days=100)))
+
+        # 正式终期答辩: 已发布场次 + 双评委评分 + 已发布结论(与材料审核严格分离)
+        final_session = DefenseSession(
+            academic_year="2025-2026", stage="FINAL", title="终期答辩第1场(软件工程)",
+            starts_at=now - timedelta(days=2), ends_at=now - timedelta(days=2) + timedelta(hours=3),
+            location="教学楼A-301", capacity=8, status="PUBLISHED", revision=1)
+        db.add(final_session)
+        db.flush()
+        db.add(DefenseExaminer(session_id=final_session.id, teacher_id=teachers[0].id, examiner_role="CHAIR"))
+        db.add(DefenseExaminer(session_id=final_session.id, teacher_id=teachers[1].id, examiner_role="EXAMINER"))
+        seat1 = DefenseAssignment(session_id=final_session.id, cycle_id=cycle1.id,
+                                  seat_status="ATTENDED", acknowledged_at=now - timedelta(days=3))
+        db.add(seat1)
+        db.flush()
+        db.add(ExaminerScore(assignment_id=seat1.id, examiner_id=teachers[0].id, rubric_version=1,
+                             scores_json='{"报告质量": 90, "系统实现": 88, "答辩表现": 86}',
+                             comment="工作量饱满, 系统完成度高, 创新点阐述清晰。",
+                             status="SUBMITTED", version=1, submitted_at=now - timedelta(days=1)))
+        db.add(ExaminerScore(assignment_id=seat1.id, examiner_id=teachers[1].id, rubric_version=1,
+                             scores_json='{"报告质量": 87, "系统实现": 85, "答辩表现": 84}',
+                             comment="RAG流程设计合理, 建议补充对比实验细节。",
+                             status="SUBMITTED", version=1, submitted_at=now - timedelta(days=1)))
+        result1 = DefenseResult(
+            assignment_id=seat1.id, cycle_id=cycle1.id, stage="FINAL",
+            score=87, decision="PASS", status="PUBLISHED",
+            rubric_snapshot='{"version": 1, "weights": [{"name": "报告质量", "weight": 30}, {"name": "系统实现", "weight": 40}, {"name": "答辩表现", "weight": 30}], "pass_line": 60, "min_examiners": 2}',
+            score_detail_json='[{"examiner_id": %d, "version": 1, "scores": {"报告质量": 90, "系统实现": 88, "答辩表现": 86}}, {"examiner_id": %d, "version": 1, "scores": {"报告质量": 87, "系统实现": 85, "答辩表现": 84}}]' % (teachers[0].id, teachers[1].id),
+            published_at=now - timedelta(hours=12), published_by=admin.id)
+        db.add(result1)
+        db.flush()
+
+        # 毕业材料审核通过 + 归档包(含真实文件快照)
+        demo_thesis_file = storage.save(DEMO_THESIS.encode("utf-8"), "基于LangChain与RAG的智能毕业设计管理系统-终稿.md")
+        thesis_file = SysFile(original_name="基于LangChain与RAG的智能毕业设计管理系统-终稿.md",
+                              stored_name=demo_thesis_file[0], extension="md", mime_type="text/markdown",
+                              size=len(DEMO_THESIS.encode("utf-8")), storage_type="LOCAL",
+                              storage_path=demo_thesis_file[1],
+                              sha256=__import__("hashlib").sha256(DEMO_THESIS.encode("utf-8")).hexdigest(),
+                              uploader_id=admin.id)
+        db.add(thesis_file)
+        db.flush()
+        material1 = GraduationMaterial(student_id=s1.id, cycle_id=cycle1.id, topic_id=topics[0].id,
+                                       teacher_id=teachers[0].id, status="APPROVED",
+                                       submitted_at=now - timedelta(hours=6), reviewed_at=now - timedelta(hours=1),
+                                       review_comment="材料齐全规范")
+        db.add(material1)
+        db.flush()
+        db.add(GraduationMaterialFile(material_id=material1.id, file_id=thesis_file.id, material_type="THESIS"))
+        db.add(GraduationProcess(student_id=s1.id, cycle_id=cycle1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
+                                 current_stage="COMPLETED", progress_percent=100, risk_level="NORMAL",
+                                 started_at=now - timedelta(days=100), completed_at=now - timedelta(hours=1)))
+        pkg = ArchivePackage(cycle_id=cycle1.id, result_id=result1.id,
+                             title="基于LangChain与RAG的智能毕业设计管理系统设计与实现",
+                             abstract="将RAG检索增强生成技术融入毕业设计管理流程, 实现AI模拟答辩、进度风险分析等智能能力。",
+                             keywords="RAG;LangChain;FastAPI;Vue3",
+                             status="ARCHIVED", archived_at=now - timedelta(minutes=30), created_by=admin.id)
+        db.add(pkg)
+        db.flush()
+        db.add(ArchiveFile(package_id=pkg.id, file_id=thesis_file.id, file_role="THESIS", version=1,
+                           sha256=__import__("hashlib").sha256(DEMO_THESIS.encode("utf-8")).hexdigest()))
+        db.add(StageTask(academic_year="2025-2026", stage="MATERIAL", title="提交毕业材料",
+                         description="上传毕业论文终稿、源代码与说明文档, 提交后由指导教师审核。",
+                         requirements_json='["毕业论文(THESIS)", "源代码(SOURCE_CODE)", "说明文档(MANUAL)"]',
+                         opens_at=now - timedelta(days=7), due_at=now + timedelta(days=14),
+                         late_policy="ALLOW", status="PUBLISHED", created_by=admin.id, current_version=1))
+        db.add(StageTask(academic_year="2025-2026", stage="FINAL", title="终期答辩材料提交",
+                         description="提交终期总结、创新点与技术方案, 并准备现场答辩。",
+                         requirements_json='["终期答辩材料"]',
+                         opens_at=now - timedelta(days=20), due_at=now - timedelta(days=3),
+                         late_policy="DENY", status="PUBLISHED", created_by=admin.id, current_version=1))
 
         # 其他学生各阶段分布(供 Dashboard 演示)
         stage_setup = [
@@ -252,14 +334,45 @@ def seed(force: bool = False):
             (students[3], topics[2], "APPROVED", "MIDTERM", 30),      # 开题通过(教师2)
             (students[4], topics[2], "PENDING", "SELECTION", 0),      # 待审核
         ]
+        cycles_by_student = {}
         for s, t, sel_status, stage, pct in stage_setup:
-            db.add(TopicSelection(student_id=s.id, topic_id=t.id, teacher_id=t.teacher_id,
-                                  status=sel_status, active_flag=1,
-                                  student_reason="对该题目方向感兴趣, 具备相关基础。"))
+            sel = TopicSelection(student_id=s.id, topic_id=t.id, teacher_id=t.teacher_id,
+                                 status=sel_status, active_flag=1,
+                                 student_reason="对该题目方向感兴趣, 具备相关基础。")
+            db.add(sel)
+            db.flush()
             if sel_status == "APPROVED":
-                db.add(GraduationProcess(student_id=s.id, topic_id=t.id, teacher_id=t.teacher_id,
+                cycle = ensure_cycle(db, s.id, t.id, t.teacher_id, academic_year="2025-2026")
+                sel.cycle_id = cycle.id
+                cycles_by_student[s.id] = cycle
+                db.add(GraduationProcess(student_id=s.id, cycle_id=cycle.id, topic_id=t.id, teacher_id=t.teacher_id,
                                          current_stage=stage, progress_percent=pct, risk_level="NORMAL",
                                          started_at=now - timedelta(days=60)))
+
+        # 中期答辩场次: 已发布待评审(教师1主席), 学生3/4(开题已通过)已排期待答辩
+        midterm_session = DefenseSession(
+            academic_year="2025-2026", stage="MIDTERM", title="中期答辩第1场",
+            starts_at=now + timedelta(days=5), ends_at=now + timedelta(days=5, hours=3),
+            location="教学楼B-205", capacity=10, status="PUBLISHED", revision=1)
+        db.add(midterm_session)
+        db.flush()
+        db.add(DefenseExaminer(session_id=midterm_session.id, teacher_id=teachers[0].id, examiner_role="CHAIR"))
+        db.add(DefenseExaminer(session_id=midterm_session.id, teacher_id=teachers[1].id, examiner_role="EXAMINER"))
+        for sid in (students[2].id, students[3].id):
+            if sid in cycles_by_student:
+                db.add(DefenseAssignment(session_id=midterm_session.id, cycle_id=cycles_by_student[sid].id,
+                                         seat_status="SCHEDULED"))
+
+        # 草稿场次(管理员排期演示, 未发布)
+        db.add(DefenseSession(academic_year="2025-2026", stage="FINAL", title="终期答辩第2场(草稿)",
+                              starts_at=now + timedelta(days=15), ends_at=now + timedelta(days=15, hours=3),
+                              location="教学楼A-302", capacity=6, status="DRAFT"))
+
+        # 评分表配置(启用并冻结, 供评分/汇总复算)
+        db.add(ReviewRubric(academic_year="2025-2026", stage="FINAL", college_id=None, version=1,
+                            min_examiners=2, pass_line=60,
+                            weights_json='[{"name": "报告质量", "weight": 30}, {"name": "系统实现", "weight": 40}, {"name": "答辩表现", "weight": 30}]',
+                            enabled=1, frozen_at=now - timedelta(days=30)))
         # 学生5 未选题
         # 学生6/7 无选题
 

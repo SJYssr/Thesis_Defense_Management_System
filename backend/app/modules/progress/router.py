@@ -1,18 +1,22 @@
 """Progress 模块: 毕设进度时间轴/教师提醒/风险视图."""
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import ResourceNotFoundException
+from app.core.exceptions import BusinessException, ResourceNotFoundException
 from app.core.permissions import CurrentUser, PermissionService, require_admin, require_student, require_teacher
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
-from app.models.business import GraduationProcess, GraduationTopic, TopicSelection
+from app.models.business import (FinalDefense, GraduationCycle, GraduationMaterial,
+                                 GraduationProcess, GraduationTopic, MidtermReport,
+                                 OpeningReport, TopicSelection)
 from app.models.enums import ProcessStage
-from app.models.system import Reminder, ReviewRecord
-from app.models.user import StudentProfile, SysUser, TeacherProfile
+from app.models.system import OperationLog, Reminder, ReviewRecord
+from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
 from app.shared.events import push_notification
+from app.shared.cycle import formal_defense_snapshot
 from app.shared.progress import ProgressService, STAGE_LABELS
 from app.shared.workflow import GraduationWorkflowService
 
@@ -69,8 +73,16 @@ def _progress_item(db: Session, process: GraduationProcess, student_id: int) -> 
             select(SysUser.real_name).join(TeacherProfile, TeacherProfile.user_id == SysUser.id)
             .where(TeacherProfile.id == process.teacher_id)
         ).scalar()
+    student = db.get(StudentProfile, student_id)
+    college = db.get(College, student.college_id) if student and student.college_id else None
+    major = db.get(Major, student.major_id) if student and student.major_id else None
+    cycle = db.get(GraduationCycle, process.cycle_id) if process.cycle_id else None
     data.update({
         "topic_id": process.topic_id, "topic_title": topic_title, "teacher_name": teacher_name,
+        "college_name": college.name if college else None,
+        "major_name": major.name if major else None,
+        "academic_year": cycle.academic_year if cycle else None,
+        "teacher_id": process.teacher_id,
         "current_stage": process.current_stage,
         "current_stage_cn": STAGE_LABELS.get(ProcessStage(process.current_stage), process.current_stage),
         "progress_percent": process.progress_percent,
@@ -78,6 +90,7 @@ def _progress_item(db: Session, process: GraduationProcess, student_id: int) -> 
         "risk_reason": process.risk_reason,
         "started_at": process.started_at.isoformat() if process.started_at else None,
         "completed_at": process.completed_at.isoformat() if process.completed_at else None,
+        "updated_at": process.updated_at.isoformat() if process.updated_at else None,
     })
     return data
 
@@ -100,7 +113,14 @@ def my_progress(user: CurrentUser = Depends(require_student), db: Session = Depe
         "status": sel.status if sel else "NOT_SELECTED",
     } if sel else None
     item["timeline"] = _timeline(db, student_id)
+    item["formal_defense"] = formal_defense_snapshot(db, student_id)
     item["deadline_info"] = ProgressService.stage_deadline_info(db, item["current_stage"])
+    reminders = db.execute(select(Reminder).where(Reminder.student_id == student_id)
+                           .order_by(Reminder.id.desc()).limit(5)).scalars().all()
+    item["reminders"] = [{"id": reminder.id, "title": reminder.title,
+                          "content": reminder.content,
+                          "created_at": reminder.created_at.isoformat() if reminder.created_at else None}
+                         for reminder in reminders]
     return ResponseUtil.success(item)
 
 
@@ -163,16 +183,103 @@ def send_reminder(student_id: int, body: ReminderRequest, user: CurrentUser = De
 
 @admin_router.get("")
 def admin_progress(risk_level: str | None = None, stage: str | None = None,
+                   academic_year: str | None = None, college_id: int | None = None,
+                   major_id: int | None = None, teacher_id: int | None = None,
+                   student: str | None = None,
                    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                    _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
     conds = []
     if risk_level:
-        conds.append(GraduationProcess.risk_level == risk_level)
+        if risk_level == "COMPLETED":
+            conds.append(GraduationProcess.current_stage == "COMPLETED")
+        else:
+            conds.extend([GraduationProcess.risk_level == risk_level,
+                          GraduationProcess.current_stage != "COMPLETED"])
     if stage:
         conds.append(GraduationProcess.current_stage == stage)
+    if academic_year:
+        conds.append(GraduationProcess.cycle_id.in_(select(GraduationCycle.id).where(
+            GraduationCycle.academic_year == academic_year)))
+    if teacher_id:
+        conds.append(GraduationProcess.teacher_id == teacher_id)
+    if college_id or major_id or student:
+        students = select(StudentProfile.id).join(SysUser, SysUser.id == StudentProfile.user_id)
+        if college_id:
+            students = students.where(StudentProfile.college_id == college_id)
+        if major_id:
+            students = students.where(StudentProfile.major_id == major_id)
+        if student:
+            students = students.where(or_(SysUser.real_name.contains(student),
+                                          StudentProfile.student_no.contains(student)))
+        conds.append(GraduationProcess.student_id.in_(students))
     total = db.execute(select(func.count(GraduationProcess.id)).where(*conds)).scalar()
     processes = db.execute(
         select(GraduationProcess).where(*conds).order_by(GraduationProcess.risk_level.desc())
         .offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
     return ResponseUtil.page([_progress_item(db, p, p.student_id) for p in processes], total, page, page_size)
+
+
+@admin_router.get("/summary")
+def admin_progress_summary(academic_year: str | None = None,
+                           _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    base = [GraduationProcess.cycle_id.in_(select(GraduationCycle.id).where(
+        GraduationCycle.academic_year == academic_year))] if academic_year else []
+    total_students = db.execute(select(func.count(StudentProfile.id)).where(
+        StudentProfile.deleted_at.is_(None),
+        *([StudentProfile.id.in_(select(GraduationCycle.student_id).where(
+            GraduationCycle.academic_year == academic_year))] if academic_year else []))).scalar_one()
+    process_total = db.execute(select(func.count(GraduationProcess.id)).where(*base)).scalar_one()
+    completed = db.execute(select(func.count(GraduationProcess.id)).where(
+        *base, GraduationProcess.current_stage == "COMPLETED")).scalar_one()
+    risk = {level: db.execute(select(func.count(GraduationProcess.id)).where(
+        *base, GraduationProcess.current_stage != "COMPLETED",
+        GraduationProcess.risk_level == level)).scalar_one()
+            for level in ("NORMAL", "WARNING", "HIGH")}
+    stage_models = [("选题", TopicSelection), ("开题报告", OpeningReport),
+                    ("中期材料", MidtermReport), ("终期材料", FinalDefense),
+                    ("毕业材料", GraduationMaterial)]
+    stages = []
+    for label, model in stage_models:
+        conditions = [model.status == "APPROVED"]
+        if academic_year:
+            conditions.append(model.cycle_id.in_(select(GraduationCycle.id).where(
+                GraduationCycle.academic_year == academic_year)))
+        stages.append({"name": label, "value": db.execute(select(func.count(model.id)).where(
+            *conditions)).scalar_one()})
+    trend = []
+    today = datetime.now().date()
+    for offset in range(6, -1, -1):
+        day = today - timedelta(days=offset)
+        next_day = day + timedelta(days=1)
+        count = db.execute(select(func.count(GraduationProcess.id)).where(
+            *base, GraduationProcess.updated_at >= day,
+            GraduationProcess.updated_at < next_day)).scalar_one()
+        trend.append({"date": day.isoformat(), "value": count})
+    return ResponseUtil.success({"student_total": total_students, "process_total": process_total,
+                                 "not_started": max(total_students - process_total, 0),
+                                 "normal": risk["NORMAL"], "warning": risk["WARNING"],
+                                 "high": risk["HIGH"], "completed": completed,
+                                 "stages": stages, "trend": trend})
+
+
+class AdminReminderRequest(BaseModel):
+    student_ids: list[int] = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=2, max_length=255)
+    content: str = Field(min_length=2, max_length=2000)
+
+
+@admin_router.post("/reminders")
+def admin_send_reminders(body: AdminReminderRequest, user: CurrentUser = Depends(require_admin),
+                         db: Session = Depends(get_db)):
+    ids = sorted(set(body.student_ids))
+    recipients = db.execute(select(StudentProfile.id, StudentProfile.user_id).where(
+        StudentProfile.id.in_(ids), StudentProfile.deleted_at.is_(None))).all()
+    if len(recipients) != len(ids):
+        raise BusinessException("部分学生不存在或已停用")
+    for _, user_id in recipients:
+        push_notification(db, user_id=user_id, type="REMINDER", title=body.title, content=body.content)
+    db.add(OperationLog(user_id=user.id, username=user.username, module="PROGRESS", action="SEND_REMINDER",
+                        detail=f"向{len(ids)}名学生发送进度提醒：{body.title}"))
+    db.commit()
+    return ResponseUtil.success({"sent": len(ids)}, message="提醒已发送")

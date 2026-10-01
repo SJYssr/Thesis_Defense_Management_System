@@ -40,11 +40,13 @@ class DefenseService:
 
     def _get_topic(self, student_id: int) -> GraduationTopic:
         from app.models.business import TopicSelection
+        from app.shared.cycle import get_active_cycle
 
+        cycle = get_active_cycle(self.db, student_id)
         sel = self.db.execute(
-            select(TopicSelection).where(TopicSelection.student_id == student_id,
+            select(TopicSelection).where(TopicSelection.cycle_id == cycle.id,
                                          TopicSelection.status == "APPROVED", TopicSelection.active_flag == 1)
-        ).scalar_one_or_none()
+        ).scalar_one_or_none() if cycle else None
         if sel is None:
             raise BusinessException("尚未通过选题, 无法使用AI模拟答辩")
         topic = self.db.get(GraduationTopic, sel.topic_id)

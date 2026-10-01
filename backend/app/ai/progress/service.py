@@ -73,16 +73,19 @@ class ProgressAnalysisService:
         return data
 
     def _collect_materials(self, student_id: int) -> str:
+        from app.shared.workflow import GraduationWorkflowService
+
         parts: list[str] = []
-        opening = self.db.execute(select(OpeningReport).where(OpeningReport.student_id == student_id)).scalar_one_or_none()
-        if opening:
+        snap = GraduationWorkflowService.get_stage_snapshot(self.db, student_id)
+        if snap["opening"]:
+            opening = snap["opening"]
             parts.append(f"[开题报告·{opening.status}]\n{opening.research_content or ''}\n{opening.technical_route or ''}")
-        midterm = self.db.execute(select(MidtermReport).where(MidtermReport.student_id == student_id)).scalar_one_or_none()
-        if midterm:
+        if snap["midterm"]:
+            midterm = snap["midterm"]
             parts.append(f"[中期报告·{midterm.status}]\n{(midterm.completed_content or '')[:800]}\n问题: {(midterm.existing_problems or '')[:300]}")
-        final = self.db.execute(select(FinalDefense).where(FinalDefense.student_id == student_id)).scalar_one_or_none()
-        if final:
-            parts.append(f"[终期答辩·{final.status}]\n{(final.summary or '')[:800]}\n测试: {(final.test_result or '')[:300]}")
+        if snap["final"]:
+            final = snap["final"]
+            parts.append(f"[终期材料·{final.status}]\n{(final.summary or '')[:800]}\n测试: {(final.test_result or '')[:300]}")
 
         rejects = self.db.execute(
             select(ReviewRecord).where(ReviewRecord.student_id == student_id,

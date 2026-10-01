@@ -3,11 +3,11 @@
 论文(THESIS)提交后自动创建 AI 知识文档记录并触发 RAG 入库(roadmap 三十二章).
 """
 import json
-from datetime import datetime as dt
+from datetime import date, datetime as dt, time, timedelta
 
 from fastapi import APIRouter, Depends, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, PermissionDeniedException, ResourceNotFoundException
@@ -15,10 +15,10 @@ from app.core.permissions import CurrentUser, require_admin, require_student, re
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
 from app.models.ai import AIDocument
-from app.models.business import GraduationMaterial, GraduationMaterialFile
+from app.models.business import GraduationCycle, GraduationMaterial, GraduationMaterialFile
 from app.models.enums import AIDocumentType, BusinessType, MaterialType, ProcessStage
 from app.models.system import ReviewRecord, SysFile
-from app.models.user import StudentProfile, SysUser, TeacherProfile
+from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
 from app.shared.events import add_review_record, push_notification
 from app.shared.progress import ProgressService
 from app.shared.storage import read_upload, storage
@@ -40,10 +40,16 @@ class ReviewRequest(BaseModel):
 
 
 def _get_or_create(db: Session, student_id: int) -> GraduationMaterial:
-    m = db.execute(select(GraduationMaterial).where(GraduationMaterial.student_id == student_id)).scalar_one_or_none()
+    from app.shared.cycle import get_active_cycle
+
+    cycle = get_active_cycle(db, student_id)
+    m = db.execute(
+        select(GraduationMaterial).where(GraduationMaterial.cycle_id == cycle.id)
+    ).scalar_one_or_none() if cycle else None
     if m is None:
         sel = GraduationWorkflowService.require_selection_approved(db, student_id)
-        m = GraduationMaterial(student_id=student_id, topic_id=sel.topic_id, teacher_id=sel.teacher_id)
+        m = GraduationMaterial(student_id=student_id, cycle_id=cycle.id,
+                               topic_id=sel.topic_id, teacher_id=sel.teacher_id)
         db.add(m)
         db.flush()
     return m
@@ -57,11 +63,20 @@ def _material_item(db: Session, m: GraduationMaterial) -> dict:
     stu = db.execute(
         select(StudentProfile, SysUser).join(SysUser, SysUser.id == StudentProfile.user_id).where(StudentProfile.id == m.student_id)
     ).first()
+    teacher = db.get(TeacherProfile, m.teacher_id) if m.teacher_id else None
+    teacher_user = db.get(SysUser, teacher.user_id) if teacher else None
+    cycle = db.get(GraduationCycle, m.cycle_id) if m.cycle_id else None
+    college = db.get(College, stu[0].college_id) if stu and stu[0].college_id else None
+    major = db.get(Major, stu[0].major_id) if stu and stu[0].major_id else None
     return {
         "id": m.id, "student_id": m.student_id,
         "student_name": stu[1].real_name if stu else None,
         "student_no": stu[0].student_no if stu else None,
+        "college_name": college.name if college else None,
+        "major_name": major.name if major else None,
+        "academic_year": cycle.academic_year if cycle else None,
         "teacher_id": m.teacher_id, "status": m.status,
+        "teacher_name": teacher_user.real_name if teacher_user else None,
         "status_cn": STATUS_CN.get(m.status, m.status),
         "review_comment": m.review_comment,
         "submitted_at": m.submitted_at.isoformat() if m.submitted_at else None,
@@ -81,7 +96,12 @@ def _material_item(db: Session, m: GraduationMaterial) -> dict:
 
 @router.get("")
 def my_material(user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
-    m = db.execute(select(GraduationMaterial).where(GraduationMaterial.student_id == user.profile_id)).scalar_one_or_none()
+    from app.shared.cycle import get_active_cycle
+
+    cycle = get_active_cycle(db, user.profile_id)
+    m = db.execute(
+        select(GraduationMaterial).where(GraduationMaterial.cycle_id == cycle.id)
+    ).scalar_one_or_none() if cycle else None
     if m is None:
         return ResponseUtil.success({"status": "NOT_SUBMITTED", "status_cn": "未提交", "can_edit": True, "files": []})
     item = _material_item(db, m)
@@ -247,15 +267,74 @@ def reject_material(material_id: int, body: ReviewRequest, user: CurrentUser = D
 # ---------- 管理员 ----------
 
 @admin_router.get("")
-def admin_materials(status: str | None = None, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+def admin_materials(status: str | None = None, academic_year: str | None = None,
+                    college_id: int | None = None, major_id: int | None = None,
+                    teacher_id: int | None = None, student: str | None = None,
+                    material_type: str | None = None, from_date: date | None = None,
+                    to_date: date | None = None,
+                    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                     _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
     conds = []
     if status:
-        conds.append(GraduationMaterial.status == status)
-    total = db.execute(select(func.count(GraduationMaterial.id)).where(*conds)).scalar()
+        conds.append(GraduationMaterial.status.in_(status.split(",")))
+    if academic_year:
+        conds.append(GraduationMaterial.cycle_id.in_(select(GraduationCycle.id).where(
+            GraduationCycle.academic_year == academic_year)))
+    if college_id or major_id or student:
+        student_query = select(StudentProfile.id).join(SysUser, SysUser.id == StudentProfile.user_id)
+        if college_id:
+            student_query = student_query.where(StudentProfile.college_id == college_id)
+        if major_id:
+            student_query = student_query.where(StudentProfile.major_id == major_id)
+        if student:
+            student_query = student_query.where(or_(SysUser.real_name.contains(student),
+                                                   StudentProfile.student_no.contains(student)))
+        conds.append(GraduationMaterial.student_id.in_(student_query))
+    if teacher_id:
+        conds.append(GraduationMaterial.teacher_id == teacher_id)
+    if material_type:
+        conds.append(GraduationMaterial.id.in_(select(GraduationMaterialFile.material_id).where(
+            GraduationMaterialFile.material_type == material_type)))
+    if from_date:
+        conds.append(GraduationMaterial.submitted_at >= dt.combine(from_date, time.min))
+    if to_date:
+        conds.append(GraduationMaterial.submitted_at < dt.combine(to_date + timedelta(days=1), time.min))
+    total = db.execute(select(func.count(GraduationMaterial.id)).where(*conds)).scalar_one()
     rows = db.execute(select(GraduationMaterial).where(*conds).order_by(GraduationMaterial.id.desc())
                       .offset((page - 1) * page_size).limit(page_size)).scalars().all()
     return ResponseUtil.page([_material_item(db, m) for m in rows], total, page, page_size)
+
+
+@admin_router.get("/stats")
+def admin_material_stats(academic_year: str | None = None,
+                         _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    base = [GraduationMaterial.cycle_id.in_(select(GraduationCycle.id).where(
+        GraduationCycle.academic_year == academic_year))] if academic_year else []
+    counts = {status: db.execute(select(func.count(GraduationMaterial.id)).where(
+        *base, GraduationMaterial.status == status)).scalar_one()
+              for status in ("APPROVED", "SUBMITTED", "REJECTED", "RESUBMIT_REQUIRED")}
+    drafts = db.execute(select(func.count(GraduationMaterial.id)).where(
+        *base, GraduationMaterial.status.in_(["NOT_SUBMITTED", "DRAFT"]))).scalar_one()
+    submitted_total = sum(counts.values())
+    return ResponseUtil.success({"total": submitted_total, "approved": counts["APPROVED"],
+                                 "pending": counts["SUBMITTED"],
+                                 "rejected": counts["REJECTED"] + counts["RESUBMIT_REQUIRED"],
+                                 "not_submitted": drafts})
+
+
+@admin_router.get("/filters")
+def admin_material_filters(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    years = db.execute(select(GraduationCycle.academic_year).distinct().order_by(
+        GraduationCycle.academic_year.desc())).scalars().all()
+    colleges = db.execute(select(College.id, College.name).order_by(College.name)).all()
+    majors = db.execute(select(Major.id, Major.name, Major.college_id).order_by(Major.name)).all()
+    teachers = db.execute(select(TeacherProfile.id, SysUser.real_name).join(
+        SysUser, SysUser.id == TeacherProfile.user_id).order_by(SysUser.real_name)).all()
+    return ResponseUtil.success({"years": years,
+                                 "colleges": [{"id": row.id, "name": row.name} for row in colleges],
+                                 "majors": [{"id": row.id, "name": row.name, "college_id": row.college_id}
+                                            for row in majors],
+                                 "teachers": [{"id": row.id, "name": row.real_name} for row in teachers]})
 
 
 @admin_router.post("/{material_id}/approve")

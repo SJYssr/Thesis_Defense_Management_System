@@ -95,6 +95,70 @@ class AnnouncementPriority(str, Enum):
     URGENT = "URGENT"
 
 
+# ============ 正式答辩/评审/归档(docs/project-design.md 第3节) ============
+
+class DefenseStage(str, Enum):
+    """排期/评审/结论共用的阶段维度; 开题与中期如需现场答辩复用同一场次模型."""
+    OPENING = "OPENING"
+    MIDTERM = "MIDTERM"
+    FINAL = "FINAL"
+
+
+class SessionStatus(str, Enum):
+    DRAFT = "DRAFT"
+    READY = "READY"
+    PUBLISHED = "PUBLISHED"
+    IN_PROGRESS = "IN_PROGRESS"
+    FINISHED = "FINISHED"
+    CANCELLED = "CANCELLED"
+
+
+class SeatStatus(str, Enum):
+    SCHEDULED = "SCHEDULED"
+    ATTENDED = "ATTENDED"
+    ABSENT = "ABSENT"
+    POSTPONED = "POSTPONED"
+    RETAKE = "RETAKE"
+
+
+class ExaminerRole(str, Enum):
+    CHAIR = "CHAIR"
+    EXAMINER = "EXAMINER"
+    REVIEWER = "REVIEWER"
+
+
+class ScoreStatus(str, Enum):
+    DRAFT = "DRAFT"
+    SUBMITTED = "SUBMITTED"
+    REOPENED = "REOPENED"
+    SUPERSEDED = "SUPERSEDED"
+
+
+class ResultStatus(str, Enum):
+    PENDING = "PENDING"
+    READY = "READY"
+    UNDER_REVIEW = "UNDER_REVIEW"
+    PUBLISHED = "PUBLISHED"
+    WITHDRAWN = "WITHDRAWN"
+
+
+class TaskStatus(str, Enum):
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    CLOSED = "CLOSED"
+
+
+class ArchiveStatus(str, Enum):
+    PENDING = "PENDING"
+    ARCHIVED = "ARCHIVED"
+    REVOKED = "REVOKED"
+
+
+class ConsentVisibility(str, Enum):
+    METADATA = "METADATA"
+    FULL_TEXT = "FULL_TEXT"
+
+
 class NotificationType(str, Enum):
     ANNOUNCEMENT = "ANNOUNCEMENT"
     REVIEW_RESULT = "REVIEW_RESULT"

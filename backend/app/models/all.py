@@ -13,6 +13,7 @@ from app.models.ai import (  # noqa: F401
 from app.models.business import (  # noqa: F401
     FinalDefense,
     FinalDefenseVersion,
+    GraduationCycle,
     GraduationMaterial,
     GraduationMaterialFile,
     GraduationProcess,
@@ -23,6 +24,21 @@ from app.models.business import (  # noqa: F401
     OpeningReport,
     OpeningReportVersion,
     TopicSelection,
+)
+from app.models.defense import (  # noqa: F401
+    ArchiveConsent,
+    ArchiveDownloadLog,
+    ArchiveFile,
+    ArchivePackage,
+    DefenseAssignment,
+    DefenseExaminer,
+    DefenseResult,
+    DefenseScheduleChange,
+    DefenseSession,
+    ExaminerScore,
+    ReviewRubric,
+    StageTask,
+    StageTaskVersion,
 )
 from app.models.system import (  # noqa: F401
     Announcement,

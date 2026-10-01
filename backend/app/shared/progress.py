@@ -23,10 +23,10 @@ from app.shared.events import now
 STAGE_LABELS = {
     ProcessStage.SELECTION: "选题",
     ProcessStage.OPENING: "开题报告",
-    ProcessStage.MIDTERM: "中期答辩",
-    ProcessStage.FINAL: "终期答辩",
+    ProcessStage.MIDTERM: "中期材料",
+    ProcessStage.FINAL: "终期材料",
     ProcessStage.MATERIAL: "毕业材料",
-    ProcessStage.COMPLETED: "毕业完成",
+    ProcessStage.COMPLETED: "材料审核完成",
 }
 
 
@@ -43,14 +43,19 @@ class ProgressService:
 
     @classmethod
     def compute_progress(cls, db: Session, student_id: int) -> tuple[str, int]:
-        """返回 (当前阶段, 进度百分比)."""
+        """返回 (当前阶段, 进度百分比). 全部按学生当前学年流程实例(cycle)归属."""
+        from app.shared.cycle import get_active_cycle
+
+        cycle = get_active_cycle(db, student_id)
+        if cycle is None:
+            return ProcessStage.SELECTION.value, 0
         sel = db.execute(
-            select(TopicSelection).where(TopicSelection.student_id == student_id, TopicSelection.active_flag == 1)
+            select(TopicSelection).where(TopicSelection.cycle_id == cycle.id, TopicSelection.active_flag == 1)
         ).scalar_one_or_none()
-        opening = db.execute(select(OpeningReport).where(OpeningReport.student_id == student_id)).scalar_one_or_none()
-        midterm = db.execute(select(MidtermReport).where(MidtermReport.student_id == student_id)).scalar_one_or_none()
-        final = db.execute(select(FinalDefense).where(FinalDefense.student_id == student_id)).scalar_one_or_none()
-        material = db.execute(select(GraduationMaterial).where(GraduationMaterial.student_id == student_id)).scalar_one_or_none()
+        opening = db.execute(select(OpeningReport).where(OpeningReport.cycle_id == cycle.id)).scalar_one_or_none()
+        midterm = db.execute(select(MidtermReport).where(MidtermReport.cycle_id == cycle.id)).scalar_one_or_none()
+        final = db.execute(select(FinalDefense).where(FinalDefense.cycle_id == cycle.id)).scalar_one_or_none()
+        material = db.execute(select(GraduationMaterial).where(GraduationMaterial.cycle_id == cycle.id)).scalar_one_or_none()
 
         if _approved(material):
             return ProcessStage.COMPLETED.value, 100
@@ -67,6 +72,8 @@ class ProgressService:
     @classmethod
     def compute_risk(cls, db: Session, student_id: int) -> tuple[str, str | None]:
         """规则引擎判定风险: 截止时间逾期 + 连续驳回次数."""
+        from app.shared.cycle import get_active_cycle
+
         stage, _ = cls.compute_progress(db, student_id)
         schedule = cls.get_active_schedule(db)
         reasons: list[str] = []
@@ -91,35 +98,44 @@ class ProgressService:
                         level = "WARNING"
                     reasons.append(f"{STAGE_LABELS[ProcessStage(stage)]}已逾期{overdue_days}天")
 
-        # 同一阶段被驳回 >= 3 次 → 警告
+        # 同一阶段被驳回 >= 3 次 → 警告(仅统计当前学年流程实例的记录)
+        cycle = get_active_cycle(db, student_id)
         business_map = {
-            ProcessStage.OPENING.value: "OPENING_REPORT",
-            ProcessStage.MIDTERM.value: "MIDTERM_REPORT",
-            ProcessStage.FINAL.value: "FINAL_DEFENSE",
-            ProcessStage.MATERIAL.value: "GRADUATION_MATERIAL",
+            ProcessStage.OPENING.value: ("OPENING_REPORT", OpeningReport),
+            ProcessStage.MIDTERM.value: ("MIDTERM_REPORT", MidtermReport),
+            ProcessStage.FINAL.value: ("FINAL_DEFENSE", FinalDefense),
+            ProcessStage.MATERIAL.value: ("GRADUATION_MATERIAL", GraduationMaterial),
         }
-        bt = business_map.get(stage)
-        if bt:
-            reject_count = db.execute(
-                select(func.count(ReviewRecord.id)).where(
-                    ReviewRecord.student_id == student_id,
-                    ReviewRecord.business_type == bt,
-                    ReviewRecord.action.in_(["REJECT", "RETURN"]),
-                )
-            ).scalar() or 0
-            if reject_count >= 3 and level == "NORMAL":
-                level = "WARNING"
-                reasons.append(f"{STAGE_LABELS[ProcessStage(stage)]}已被驳回{reject_count}次")
+        entry = business_map.get(stage)
+        if entry and cycle is not None:
+            bt, model = entry
+            report = db.execute(select(model).where(model.cycle_id == cycle.id)).scalar_one_or_none()
+            if report is not None:
+                reject_count = db.execute(
+                    select(func.count(ReviewRecord.id)).where(
+                        ReviewRecord.business_type == bt,
+                        ReviewRecord.business_id == report.id,
+                        ReviewRecord.action.in_(["REJECT", "RETURN"]),
+                    )
+                ).scalar() or 0
+                if reject_count >= 3 and level == "NORMAL":
+                    level = "WARNING"
+                    reasons.append(f"{STAGE_LABELS[ProcessStage(stage)]}已被驳回{reject_count}次")
 
         return level, "; ".join(reasons) if reasons else None
 
     @classmethod
     def recompute(cls, db: Session, student_id: int, process: GraduationProcess | None = None) -> GraduationProcess:
         """重算并落库学生的进度与风险."""
+        from app.shared.cycle import get_active_cycle
+        from app.shared.workflow import GraduationWorkflowService
+
         if process is None:
-            process = GraduationWorkflowService_get_process(db, student_id)
+            process = GraduationWorkflowService.get_process(db, student_id)
             if process is None:
-                process = GraduationProcess(student_id=student_id, started_at=now())
+                cycle = get_active_cycle(db, student_id)
+                process = GraduationProcess(student_id=student_id, cycle_id=cycle.id if cycle else None,
+                                            started_at=now())
                 db.add(process)
         stage, percent = cls.compute_progress(db, student_id)
         risk, reason = cls.compute_risk(db, student_id)
@@ -147,9 +163,3 @@ class ProgressService:
             return {"has_schedule": True, "deadline": None, "days_left": None}
         days_left = (deadline - now()).days
         return {"has_schedule": True, "deadline": deadline.isoformat(), "days_left": days_left}
-
-
-def GraduationWorkflowService_get_process(db: Session, student_id: int):
-    from app.shared.workflow import GraduationWorkflowService
-
-    return GraduationWorkflowService.get_process(db, student_id)

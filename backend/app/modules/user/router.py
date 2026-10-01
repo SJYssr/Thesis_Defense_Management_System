@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, ResourceNotFoundException
-from app.core.permissions import CurrentUser, require_admin
+from app.core.permissions import CurrentUser, get_current_user, require_admin
 from app.core.response import ResponseUtil
 from app.core.security import hash_password
 from app.db.mysql import get_db
@@ -175,13 +175,13 @@ def delete_user(role: str, user_id: int, current: CurrentUser = Depends(require_
 # ---------- 院系/专业/班级 ----------
 
 @org_router.get("/colleges")
-def list_colleges(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+def list_colleges(_: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     rows = db.execute(select(College).order_by(College.id)).scalars().all()
     return ResponseUtil.success([{"id": c.id, "name": c.name, "code": c.code} for c in rows])
 
 
 @org_router.get("/majors")
-def list_majors(college_id: int | None = None, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+def list_majors(college_id: int | None = None, _: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     conds = []
     if college_id:
         conds.append(Major.college_id == college_id)

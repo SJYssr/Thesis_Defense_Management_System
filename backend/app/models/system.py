@@ -104,7 +104,7 @@ class OperationLog(Base):
     ip: Mapped[str | None] = mapped_column(String(64))
     detail: Mapped[str | None] = mapped_column(Text)
     result: Mapped[str | None] = mapped_column(String(16), comment="SUCCESS/FAIL")
-    created_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, index=True, default=datetime.now)
 
 
 class LoginLog(Base):

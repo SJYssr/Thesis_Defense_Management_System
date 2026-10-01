@@ -14,7 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, BigIntPK, TimestampMixin
 
 
 class GraduationTopic(Base, TimestampMixin):
@@ -39,10 +39,12 @@ class GraduationTopic(Base, TimestampMixin):
 class TopicSelection(Base, TimestampMixin):
     __tablename__ = "topic_selection"
     # active_flag=1 表示当前有效选题; 历史记录为 NULL.
-    # MySQL UNIQUE 允许多个 NULL → 每个学生最多一条 active 选题, 从数据库层防并发重复选题.
+    # MySQL UNIQUE 允许多个 NULL → 每个流程实例(学年)最多一条 active 选题, 数据库层防并发重复选题.
+    # 唯一性按 cycle_id 而非 student_id: 学生跨学年重做时, 新学年拥有独立流程与选题.
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), index=True)
+    cycle_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("graduation_cycle.id"), index=True)
     topic_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("graduation_topic.id"), index=True)
     teacher_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("teacher_profile.id"), index=True)
     status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True, comment="PENDING/APPROVED/REJECTED/CANCELLED")
@@ -53,7 +55,7 @@ class TopicSelection(Base, TimestampMixin):
     active_flag: Mapped[int | None] = mapped_column(SmallInteger, default=1, index=True)
 
     __table_args__ = (
-        UniqueConstraint("student_id", "active_flag", name="uq_student_active_selection"),
+        UniqueConstraint("cycle_id", "active_flag", name="uq_cycle_active_selection"),
         Index("ix_selection_topic_status", "topic_id", "status"),
     )
 
@@ -62,7 +64,8 @@ class OpeningReport(Base, TimestampMixin):
     __tablename__ = "opening_report"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), unique=True, index=True)
+    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), index=True)
+    cycle_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("graduation_cycle.id"), unique=True, index=True)
     topic_id: Mapped[int] = mapped_column(BigInteger, index=True)
     teacher_id: Mapped[int] = mapped_column(BigInteger, index=True)
     title: Mapped[str] = mapped_column(String(255))
@@ -95,7 +98,8 @@ class MidtermReport(Base, TimestampMixin):
     __tablename__ = "midterm_report"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), unique=True, index=True)
+    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), index=True)
+    cycle_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("graduation_cycle.id"), unique=True, index=True)
     topic_id: Mapped[int] = mapped_column(BigInteger, index=True)
     teacher_id: Mapped[int] = mapped_column(BigInteger, index=True)
     progress_description: Mapped[str | None] = mapped_column(Text)
@@ -122,10 +126,13 @@ class MidtermReportVersion(Base):
 
 
 class FinalDefense(Base, TimestampMixin):
+    """终期答辩材料审核(旧版). 现场答辩与正式结论见 defense.py, 两域严格分离."""
+
     __tablename__ = "final_defense"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), unique=True, index=True)
+    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), index=True)
+    cycle_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("graduation_cycle.id"), unique=True, index=True)
     topic_id: Mapped[int] = mapped_column(BigInteger, index=True)
     teacher_id: Mapped[int] = mapped_column(BigInteger, index=True)
     summary: Mapped[str | None] = mapped_column(Text, comment="工作总结")
@@ -134,7 +141,7 @@ class FinalDefense(Base, TimestampMixin):
     test_result: Mapped[str | None] = mapped_column(Text, comment="测试结果")
     status: Mapped[str] = mapped_column(String(24), default="NOT_SUBMITTED", index=True)
     review_comment: Mapped[str | None] = mapped_column(String(500))
-    score: Mapped[int | None] = mapped_column(Integer, comment="终期评分")
+    score: Mapped[int | None] = mapped_column(Integer, comment="旧版材料评分, 不代表正式答辩成绩")
     current_version: Mapped[int] = mapped_column(Integer, default=0)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -155,7 +162,8 @@ class GraduationMaterial(Base, TimestampMixin):
     __tablename__ = "graduation_material"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), unique=True, index=True)
+    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), index=True)
+    cycle_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("graduation_cycle.id"), unique=True, index=True)
     topic_id: Mapped[int] = mapped_column(BigInteger, index=True)
     teacher_id: Mapped[int] = mapped_column(BigInteger, index=True)
     status: Mapped[str] = mapped_column(String(24), default="NOT_SUBMITTED", index=True)
@@ -174,10 +182,13 @@ class GraduationMaterialFile(Base, TimestampMixin):
 
 
 class GraduationProcess(Base, TimestampMixin):
+    """流程进度: 每个学年流程实例(cycle)一条, 记录阶段/进度/风险."""
+
     __tablename__ = "graduation_process"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), unique=True, index=True)
+    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), index=True)
+    cycle_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("graduation_cycle.id"), unique=True, index=True)
     topic_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     teacher_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     current_stage: Mapped[str] = mapped_column(String(24), default="SELECTION", index=True, comment="SELECTION/OPENING/MIDTERM/FINAL/MATERIAL/COMPLETED")
@@ -206,3 +217,17 @@ class GraduationSchedule(Base, TimestampMixin):
     material_start: Mapped[datetime | None] = mapped_column(DateTime)
     material_end: Mapped[datetime | None] = mapped_column(DateTime)
     is_active: Mapped[int] = mapped_column(SmallInteger, default=1, comment="当前生效的学年配置")
+
+
+class GraduationCycle(Base, TimestampMixin):
+    """学年流程实例: 一名学生一个学年一条(UNIQUE), 支撑跨学年重做与届别管理."""
+
+    __tablename__ = "graduation_cycle"
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    academic_year: Mapped[str] = mapped_column(String(32), index=True)
+    student_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("student_profile.id"), index=True)
+    topic_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("graduation_topic.id"))
+    teacher_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("teacher_profile.id"))
+    status: Mapped[str] = mapped_column(String(24), default="ACTIVE", index=True, comment="ACTIVE/COMPLETED/WITHDRAWN")
+
+    __table_args__ = (UniqueConstraint("academic_year", "student_id", name="uq_cycle_year_student"),)

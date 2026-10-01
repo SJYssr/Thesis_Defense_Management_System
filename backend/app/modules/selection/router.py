@@ -1,7 +1,7 @@
 """Selection 模块: 学生选题 + 教师/管理员审核.
 
 并发控制(roadmap 八十三):
-1. 一个学生一条 active 选题 → UNIQUE(student_id, active_flag) 数据库约束
+1. 一个流程实例(学年)一条 active 选题 → UNIQUE(cycle_id, active_flag) 数据库约束
 2. 审核通过时 SELECT ... FOR UPDATE 锁题目行 + 复查已通过人数, 防止超额
 """
 from datetime import datetime
@@ -65,6 +65,8 @@ def _selection_item(db: Session, s: TopicSelection) -> dict:
 
 @router.post("")
 def apply_selection(body: ApplyRequest, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+    from app.shared.cycle import ensure_cycle
+
     GraduationWorkflowService.require_can_apply_selection(db, user.profile_id)
 
     topic = db.execute(
@@ -85,15 +87,18 @@ def apply_selection(body: ApplyRequest, user: CurrentUser = Depends(require_stud
     if approved >= topic.max_students:
         raise BusinessException("该题目名额已满")
 
-    # 将旧的 REJECTED/CANCELLED active 记录归档(active_flag → NULL)
+    # 选题时即建立当前学年流程实例, 选题/材料/答辩全部归属该实例
+    cycle = ensure_cycle(db, user.profile_id)
+
+    # 将本流程实例内旧的 REJECTED/CANCELLED active 记录归档(active_flag → NULL)
     old = db.execute(
-        select(TopicSelection).where(TopicSelection.student_id == user.profile_id, TopicSelection.active_flag == 1)
+        select(TopicSelection).where(TopicSelection.cycle_id == cycle.id, TopicSelection.active_flag == 1)
     ).scalars().all()
     for o in old:
         o.active_flag = None
 
     selection = TopicSelection(
-        student_id=user.profile_id, topic_id=topic.id, teacher_id=topic.teacher_id,
+        student_id=user.profile_id, cycle_id=cycle.id, topic_id=topic.id, teacher_id=topic.teacher_id,
         status="PENDING", student_reason=body.reason, active_flag=1,
     )
     db.add(selection)

@@ -1,4 +1,7 @@
-"""File 模块: 统一文件上传/下载, 随机存储名+日期目录防路径穿越(roadmap 八十七)."""
+"""File 模块: 统一文件上传/下载, 随机存储名+日期目录防路径穿越(roadmap 八十七).
+
+下载执行对象级权限过滤(app/shared/fileperm.py): 未授权用户无法经文件 URL 下载私有论文(P3 验收).
+"""
 import uuid
 from datetime import datetime
 
@@ -11,6 +14,7 @@ from app.core.permissions import CurrentUser, get_current_user
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
 from app.models.system import SysFile
+from app.shared.fileperm import ensure_file_access
 from app.shared.storage import read_upload, storage
 
 router = APIRouter(prefix="/files", tags=["File"])
@@ -39,6 +43,7 @@ def download_file(file_id: int, user: CurrentUser = Depends(get_current_user), d
     record = db.get(SysFile, file_id)
     if record is None or record.deleted_at is not None:
         raise ResourceNotFoundException("文件不存在")
+    ensure_file_access(db, user, record)
     path = storage.abs_path(record.storage_path)
     if not path.exists():
         raise ResourceNotFoundException("文件已丢失")
