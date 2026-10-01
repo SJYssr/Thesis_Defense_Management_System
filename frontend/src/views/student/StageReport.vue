@@ -3,8 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { stageApi } from '@/api/business'
-import StatusTag from '@/components/StatusTag.vue'
-import ReviewHistory from '@/components/ReviewHistory.vue'
+import MaterialStatus from '@/components/MaterialStatus.vue'
 
 const route = useRoute()
 const stage = computed(() => (route.meta.stage as string) || 'opening')
@@ -19,7 +18,7 @@ interface FieldConf {
 
 const STAGE_FIELDS: Record<string, { title: string; fields: FieldConf[] }> = {
   opening: {
-    title: '开题报告',
+    title: '开题报告提交',
     fields: [
       { key: 'title', label: '报告题目', required: true, textarea: false },
       { key: 'research_background', label: '研究背景', required: true, textarea: true },
@@ -32,7 +31,7 @@ const STAGE_FIELDS: Record<string, { title: string; fields: FieldConf[] }> = {
     ],
   },
   midterm: {
-    title: '中期报告',
+    title: '中期答辩材料',
     fields: [
       { key: 'progress_description', label: '总体进度说明', required: true, textarea: true },
       { key: 'completed_content', label: '已完成内容', required: true, textarea: true },
@@ -42,7 +41,7 @@ const STAGE_FIELDS: Record<string, { title: string; fields: FieldConf[] }> = {
     ],
   },
   final: {
-    title: '终期答辩',
+    title: '终期答辩材料',
     fields: [
       { key: 'summary', label: '工作总结', required: true, textarea: true },
       { key: 'innovation', label: '创新点', required: false, textarea: true },
@@ -53,6 +52,8 @@ const STAGE_FIELDS: Record<string, { title: string; fields: FieldConf[] }> = {
 }
 
 const conf = computed(() => STAGE_FIELDS[stage.value])
+const primaryFields = computed(() => stage.value === 'opening' ? conf.value.fields.filter(f => f.required) : conf.value.fields)
+const extraFields = computed(() => stage.value === 'opening' ? conf.value.fields.filter(f => !f.required) : [])
 const view = ref<any>(null)
 const history = ref<any[]>([])
 const versions = ref<any[]>([])
@@ -87,6 +88,8 @@ async function save() {
 }
 
 async function submit() {
+  const missing = conf.value.fields.find(f => f.required && !form[f.key]?.trim())
+  if (missing) { ElMessage.warning(`请填写${missing.label}`); return }
   submitting.value = true
   try {
     await stageApi.save(stage.value, { ...form })
@@ -104,60 +107,22 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page-card">
-    <div class="page-header">
-      <h3 class="page-title">{{ conf.title }}</h3>
-      <div>
-        <StatusTag v-if="view" :status="view.status" />
-        <span v-if="view?.current_version" style="margin-left: 8px; color: #909399; font-size: 13px">
-          当前版本 v{{ view.current_version }}
-        </span>
+  <header class="student-heading"><h1>{{ conf.title }}</h1><p>完善各阶段材料，提交后等待指导教师审核</p></header>
+  <div class="student-split">
+    <section class="page-card student-form">
+      <h3 class="block-title">材料信息</h3>
+      <el-form label-position="top">
+        <el-form-item v-for="f in primaryFields" :key="f.key" :label="f.label" :required="f.required">
+          <el-input v-model="form[f.key]" :type="f.textarea ? 'textarea' : 'text'" :rows="2" :disabled="!canEdit" :placeholder="`请输入${f.label}`" />
+        </el-form-item>
+        <el-collapse v-if="extraFields.length" class="extra-fields"><el-collapse-item title="补充材料（研究意义、技术路线与参考文献）"><el-form-item v-for="f in extraFields" :key="f.key" :label="f.label"><el-input v-model="form[f.key]" type="textarea" :rows="2" :disabled="!canEdit" :placeholder="`请输入${f.label}`" /></el-form-item></el-collapse-item></el-collapse>
+      </el-form>
+      <div v-if="canEdit" class="form-actions">
+        <el-button :loading="saving" @click="save">保存草稿</el-button>
+        <el-button type="primary" :loading="submitting" @click="submit">提交</el-button>
       </div>
-    </div>
-
-    <el-alert v-if="view?.status === 'REJECTED' || view?.status === 'RESUBMIT_REQUIRED'" type="error" :closable="false"
-              style="margin-bottom: 16px" :title="`审核意见: ${view?.review_comment || '无'}`" />
-
-    <el-form label-position="top">
-      <el-row :gutter="16">
-        <el-col v-for="f in conf.fields" :key="f.key" :span="f.textarea ? 24 : 12">
-          <el-form-item :label="f.label" :required="f.required">
-            <el-input v-if="f.textarea" v-model="form[f.key]" type="textarea" :rows="4" :disabled="!canEdit"
-                      :placeholder="`请输入${f.label}`" />
-            <el-input v-else v-model="form[f.key]" :disabled="!canEdit" :placeholder="`请输入${f.label}`" />
-          </el-form-item>
-        </el-col>
-      </el-row>
-    </el-form>
-
-    <div v-if="canEdit" style="display: flex; gap: 12px; justify-content: flex-end">
-      <el-button :loading="saving" @click="save">保存草稿</el-button>
-      <el-button type="primary" :loading="submitting" @click="submit">提交审核</el-button>
-    </div>
-    <el-alert v-else type="info" :closable="false" style="margin-top: 8px"
-              :title="view?.status === 'APPROVED' ? '该阶段已审核通过' : '材料已提交, 等待教师审核'" />
+      <el-alert v-else type="info" :closable="false" :title="view?.status === 'APPROVED' ? '该阶段已审核通过' : '材料已提交，等待教师审核'" />
+    </section>
+    <MaterialStatus :view="view" :versions="versions" :history="history" />
   </div>
-
-  <el-row :gutter="16" style="margin-top: 16px">
-    <el-col :span="12">
-      <div class="page-card">
-        <h3 style="margin: 0 0 12px">审核历史</h3>
-        <ReviewHistory :records="history" />
-      </div>
-    </el-col>
-    <el-col :span="12">
-      <div class="page-card">
-        <h3 style="margin: 0 0 12px">历史版本</h3>
-        <el-empty v-if="!versions.length" description="暂无提交版本" :image-size="70" />
-        <el-collapse v-else>
-          <el-collapse-item v-for="v in versions" :key="v.id" :title="`v${v.version_no} · ${(v.submitted_at || '').replace('T', ' ').slice(0, 16)}`">
-            <div v-for="f in conf.fields" :key="f.key" style="margin-bottom: 8px">
-              <strong>{{ f.label }}:</strong>
-              <p style="white-space: pre-wrap; color: #606266; margin: 4px 0 0">{{ v.content?.[f.key] || '无' }}</p>
-            </div>
-          </el-collapse-item>
-        </el-collapse>
-      </div>
-    </el-col>
-  </el-row>
 </template>

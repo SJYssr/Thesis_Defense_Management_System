@@ -1,550 +1,222 @@
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { materialApi } from '@/api/business'
+import { STAT_ICONS } from '@/components/statIcons'
+
+interface MaterialFile { id: number; file_id: number; material_type: string; material_type_cn: string; original_name: string; size: number; url: string }
+interface MaterialRow { id: number; student_name: string; student_no: string; college_name: string | null; major_name: string | null; teacher_name: string | null; academic_year: string | null; status: string; status_cn: string; review_comment: string | null; submitted_at: string | null; files: MaterialFile[] }
+interface Option { id: number; name: string; college_id?: number }
+
+const loading = ref(false)
+const rows = ref<MaterialRow[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(10)
+const selected = ref<MaterialRow[]>([])
+const stats = ref({ total: 0, approved: 0, pending: 0, rejected: 0, not_submitted: 0 })
+const filters = ref<{ years: string[]; colleges: Option[]; majors: Option[]; teachers: Option[] }>({ years: [], colleges: [], majors: [], teachers: [] })
+const query = reactive({ year: '', collegeId: undefined as number | undefined, majorId: undefined as number | undefined,
+  teacherId: undefined as number | undefined, student: '', materialType: '', status: '', dateRange: [] as string[] })
+const applied = ref({ ...query, dateRange: [] as string[] })
+const tabs = computed(() => [
+  { label: '全部', value: '', count: stats.value.total + stats.value.not_submitted },
+  { label: '已通过', value: 'APPROVED', count: stats.value.approved },
+  { label: '审核中', value: 'SUBMITTED', count: stats.value.pending },
+  { label: '未通过', value: 'REJECTED,RESUBMIT_REQUIRED', count: stats.value.rejected },
+  { label: '未提交', value: 'NOT_SUBMITTED,DRAFT', count: stats.value.not_submitted },
+])
+const statCards = computed(() => [
+  { label: '材料提交总数', value: stats.value.total, icon: STAT_ICONS.doc, color: '#2563eb', bg: '#d7f0fe' },
+  { label: '已通过', value: stats.value.approved, icon: STAT_ICONS.case, color: '#22c55e', bg: '#ddfef0' },
+  { label: '审核中', value: stats.value.pending, icon: STAT_ICONS.bars, color: '#f59e0b', bg: '#fef5ea' },
+  { label: '未通过', value: stats.value.rejected, icon: STAT_ICONS.doc, color: '#ef4444', bg: '#fee7ed' },
+  { label: '未提交（已建档）', value: stats.value.not_submitted, icon: STAT_ICONS.cap, color: '#8b5cf6', bg: '#edeafd' },
+])
+const majorOptions = computed(() => filters.value.majors.filter(m => !query.collegeId || m.college_id === query.collegeId))
+const detailVisible = ref(false)
+const detail = ref<MaterialRow | null>(null)
+const reviewVisible = ref(false)
+const reviewRow = ref<MaterialRow | null>(null)
+const comment = ref('')
+const reviewing = ref(false)
+
+function params(extra: Record<string, unknown> = {}) {
+  return { page: page.value, page_size: pageSize.value, status: applied.value.status || undefined,
+    academic_year: applied.value.year || undefined, college_id: applied.value.collegeId,
+    major_id: applied.value.majorId, teacher_id: applied.value.teacherId,
+    student: applied.value.student || undefined, material_type: applied.value.materialType || undefined,
+    from_date: applied.value.dateRange?.[0] || undefined, to_date: applied.value.dateRange?.[1] || undefined, ...extra }
+}
+async function load() {
+  loading.value = true
+  try {
+    const res = await materialApi.adminList(params())
+    rows.value = res.data.items || []
+    total.value = res.data.total || 0
+  } finally { loading.value = false }
+}
+async function loadStats() {
+  const res = await materialApi.adminStats(query.year || undefined)
+  stats.value = res.data
+}
+async function loadFilters() {
+  const res = await materialApi.adminFilters()
+  filters.value = res.data
+}
+async function search() {
+  applied.value = { ...query, dateRange: [...query.dateRange] }
+  page.value = 1
+  await Promise.all([load(), loadStats()])
+}
+async function chooseTab(value: string) {
+  query.status = value
+  await search()
+}
+async function reset() {
+  Object.assign(query, { year: '', collegeId: undefined, majorId: undefined, teacherId: undefined,
+    student: '', materialType: '', status: '', dateRange: [] })
+  await search()
+}
+watch([page, pageSize], () => { load() })
+watch(() => query.collegeId, () => { query.majorId = undefined })
+function openReview(row: MaterialRow) { reviewRow.value = row; comment.value = ''; reviewVisible.value = true }
+function selectMobile(row: MaterialRow, checked: boolean) {
+  selected.value = checked ? [...selected.value.filter(item => item.id !== row.id), row]
+    : selected.value.filter(item => item.id !== row.id)
+}
+async function review(approve: boolean) {
+  if (!reviewRow.value) return
+  if (!approve && !comment.value.trim()) { ElMessage.warning('驳回时请填写审核意见'); return }
+  reviewing.value = true
+  try {
+    if (approve) await materialApi.adminApprove(reviewRow.value.id, comment.value || undefined)
+    else await materialApi.adminReject(reviewRow.value.id, comment.value)
+    ElMessage.success(approve ? '审核通过' : '已驳回')
+    reviewVisible.value = false
+    await Promise.all([load(), loadStats()])
+  } finally { reviewing.value = false }
+}
+async function batchApprove() {
+  const pending = selected.value.filter(r => r.status === 'SUBMITTED')
+  if (!pending.length) { ElMessage.warning('请先勾选待审核的材料'); return }
+  await ElMessageBox.confirm(`确认通过选中的 ${pending.length} 份待审核材料？`, '批量审核', { type: 'warning' })
+  for (const row of pending) await materialApi.adminApprove(row.id)
+  ElMessage.success(`已审核 ${pending.length} 份材料`)
+  selected.value = []
+  await Promise.all([load(), loadStats()])
+}
+function csvCell(value: unknown) { return `"${String(value ?? '').replaceAll('"', '""')}"` }
+async function exportCsv() {
+  const first = await materialApi.adminList(params({ page: 1, page_size: 100 }))
+  const all: MaterialRow[] = [...(first.data.items || [])]
+  const pages = Math.ceil((first.data.total || 0) / 100)
+  for (let p = 2; p <= pages; p++) {
+    const res = await materialApi.adminList(params({ page: p, page_size: 100 }))
+    all.push(...(res.data.items || []))
+  }
+  const lines = [['学年', '学生姓名', '学号', '学院', '专业', '指导教师', '状态', '提交时间', '文件', '审核意见'].join(',')]
+  for (const row of all) lines.push([row.academic_year, row.student_name, row.student_no, row.college_name,
+    row.major_name, row.teacher_name, row.status_cn, row.submitted_at,
+    row.files.map(f => f.original_name).join('；'), row.review_comment].map(csvCell).join(','))
+  const url = URL.createObjectURL(new Blob(['\uFEFF', lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }))
+  const a = document.createElement('a'); a.href = url; a.download = '毕业材料清单.csv'; a.click()
+  URL.revokeObjectURL(url)
+}
+onMounted(async () => { await loadFilters(); await Promise.all([load(), loadStats()]) })
+</script>
+
 <template>
   <div class="materials-page">
-    <!-- 统计卡 -->
     <div class="stat-cards">
-      <div v-for="c in statCards" :key="c.label" class="stat-card">
-        <div class="stat-icon" :style="{ background: c.tileBg, color: c.iconColor }">
-          <svg viewBox="0 0 24 24" fill="currentColor" v-html="c.icon" />
-        </div>
-        <div class="stat-info">
-          <div class="stat-label">{{ c.label }}</div>
-          <div class="stat-num">{{ c.value }}</div>
-          <div class="stat-trend"><span class="trend-prefix">较去年</span> <span :style="{ color: c.trendColor }">{{ c.trend }} {{ c.arrow }}</span></div>
-        </div>
-        <div v-if="c.ring !== undefined" class="stat-ring" :class="{ big: c.ringBig }" :style="{ '--pct': c.ring, '--ring-color': c.ringColor }">
-          <span>{{ c.ring }}%</span>
-        </div>
+      <div v-for="card in statCards" :key="card.label" class="stat-card">
+        <div class="stat-icon" :style="{ background: card.bg, color: card.color }"><svg viewBox="0 0 24 24" fill="currentColor" v-html="card.icon" /></div>
+        <div class="stat-info"><div class="stat-label">{{ card.label }}</div><div class="stat-num">{{ card.value }}</div></div>
       </div>
     </div>
-
-    <!-- 筛选区（两行字段 + 右下角按钮行） -->
     <div class="filter-card">
-      <div class="filter-row">
-        <div class="filter-item">
-          <span class="filter-label">学年</span>
-          <el-select v-model="query.year" class="filter-select narrow">
-            <el-option label="2024届" value="2024届" />
-            <el-option label="2023届" value="2023届" />
-          </el-select>
-        </div>
-        <div class="filter-item">
-          <span class="filter-label">学院</span>
-          <el-select v-model="query.college" class="filter-select" placeholder="全部学院">
-            <el-option label="全部学院" value="" />
-            <el-option v-for="c in collegeOptions" :key="c" :label="c" :value="c" />
-          </el-select>
-        </div>
-        <div class="filter-item">
-          <span class="filter-label">专业</span>
-          <el-select v-model="query.major" class="filter-select" placeholder="全部专业">
-            <el-option label="全部专业" value="" />
-            <el-option v-for="m in majorOptions" :key="m" :label="m" :value="m" />
-          </el-select>
-        </div>
-        <div class="filter-item grow">
-          <span class="filter-label">学生姓名</span>
-          <el-input v-model="query.student" placeholder="请输入学生姓名" clearable class="filter-input" />
-        </div>
+      <div class="filter-grid">
+        <label>学年<el-select v-model="query.year" clearable placeholder="全部学年"><el-option v-for="year in filters.years" :key="year" :label="year" :value="year" /></el-select></label>
+        <label>学院<el-select v-model="query.collegeId" clearable placeholder="全部学院"><el-option v-for="c in filters.colleges" :key="c.id" :label="c.name" :value="c.id" /></el-select></label>
+        <label>专业<el-select v-model="query.majorId" clearable placeholder="全部专业"><el-option v-for="m in majorOptions" :key="m.id" :label="m.name" :value="m.id" /></el-select></label>
+        <label>学生姓名 / 学号<el-input v-model="query.student" clearable placeholder="输入姓名或学号" /></label>
+        <label>材料类型<el-select v-model="query.materialType" clearable placeholder="全部类型"><el-option label="毕业论文" value="THESIS" /><el-option label="毕业设计" value="DESIGN" /><el-option label="源代码" value="SOURCE_CODE" /><el-option label="说明文档" value="MANUAL" /><el-option label="演示视频" value="VIDEO" /><el-option label="其他" value="OTHER" /></el-select></label>
+        <label>提交状态<el-select v-model="query.status" clearable placeholder="全部状态"><el-option v-for="tab in tabs.slice(1)" :key="tab.value" :label="tab.label" :value="tab.value" /></el-select></label>
+        <label>指导教师<el-select v-model="query.teacherId" clearable placeholder="全部教师"><el-option v-for="t in filters.teachers" :key="t.id" :label="t.name" :value="t.id" /></el-select></label>
+        <label>提交时间<el-date-picker v-model="query.dateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" /></label>
       </div>
-      <div class="filter-row">
-        <div class="filter-item">
-          <span class="filter-label">材料类型</span>
-          <el-select v-model="query.materialType" class="filter-select" placeholder="全部类型">
-            <el-option label="全部类型" value="" />
-            <el-option label="毕业设计" value="毕业设计" />
-            <el-option label="毕业论文" value="毕业论文" />
-          </el-select>
-        </div>
-        <div class="filter-item">
-          <span class="filter-label">提交状态</span>
-          <el-select v-model="query.status" class="filter-select" placeholder="全部状态">
-            <el-option label="全部状态" value="" />
-            <el-option label="已通过" value="已通过" />
-            <el-option label="审核中" value="审核中" />
-            <el-option label="未通过" value="未通过" />
-            <el-option label="未提交" value="未提交" />
-          </el-select>
-        </div>
-        <div class="filter-item">
-          <span class="filter-label">指导教师</span>
-          <el-select v-model="query.teacher" class="filter-select" placeholder="全部教师">
-            <el-option label="全部教师" value="" />
-            <el-option v-for="t in teacherOptions" :key="t" :label="t" :value="t" />
-          </el-select>
-        </div>
-        <div class="filter-item">
-          <span class="filter-label">提交时间</span>
-          <el-date-picker
-            v-model="query.dateRange" type="daterange" range-separator="至"
-            start-placeholder="开始日期" end-placeholder="结束日期"
-            value-format="YYYY-MM-DD" class="filter-date"
-          />
-        </div>
-      </div>
-      <div class="filter-row btn-row">
-        <el-button type="primary" @click="onSearch"><el-icon><Search /></el-icon>&nbsp;查询</el-button>
-        <el-button class="reset-btn" @click="onReset"><el-icon><Refresh /></el-icon>&nbsp;重置</el-button>
-      </div>
+      <div class="filter-actions"><el-button type="primary" @click="search">查询</el-button><el-button @click="reset">重置</el-button></div>
     </div>
-
-    <!-- 表格卡：页签 + 工具按钮 + 表格 + 分页 -->
     <div class="table-card">
-      <div class="tab-bar">
-        <div class="tabs">
-          <div
-            v-for="t in tabs" :key="t.name"
-            class="tab" :class="{ active: activeTab === t.name }"
-            @click="activeTab = t.name"
-          >{{ t.name }}（{{ t.count }}）</div>
-        </div>
-        <div class="tab-actions">
-          <el-button class="ghost-btn" @click="onExport"><el-icon><Download /></el-icon>&nbsp;导出数据</el-button>
-          <el-button class="ghost-btn" @click="onBatchReview"><el-icon><Setting /></el-icon>&nbsp;批量审核</el-button>
-        </div>
-      </div>
-
-      <el-table :data="pagedRows" class="mat-table" @selection-change="onSelectionChange">
-        <el-table-column type="selection" width="40" />
-        <el-table-column prop="index" label="序号" width="48" />
-        <el-table-column prop="student" label="学生姓名" width="78" />
-        <el-table-column prop="studentNo" label="学号" width="88" />
-        <el-table-column prop="college" label="学院" width="100" />
-        <el-table-column prop="major" label="专业" width="134" />
-        <el-table-column label="材料类型" width="84" align="center">
-          <template #default="{ row }">
-            <span class="type-pill" :class="row.typeClass">{{ row.materialType }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="fileName" label="文件名称" min-width="150" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span class="file-name">{{ row.fileName }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="fileSize" label="文件大小" width="70" align="center" />
-        <el-table-column prop="submitTime" label="提交时间" width="126" />
-        <el-table-column label="审核状态" width="84" align="center">
-          <template #default="{ row }">
-            <span class="status-tag" :class="row.statusClass">{{ row.status }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="评审意见" min-width="110">
-          <template #default="{ row }">
-            <span class="opinion" :class="{ dash: !row.opinion }">{{ row.opinion || '-' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="118" align="center">
-          <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="viewDetail(row)">查看</el-button>
-            <el-button link type="primary" size="small" @click="onDownload(row)">下载</el-button>
-            <el-button link type="primary" size="small" @click="onReview(row)">审核</el-button>
-          </template>
-        </el-table-column>
+      <div class="tab-bar"><div class="tabs"><button v-for="tab in tabs" :key="tab.label" class="tab" :class="{ active: applied.status === tab.value }" @click="chooseTab(tab.value)">{{ tab.label }}（{{ tab.count }}）</button></div><div class="tab-actions"><el-button @click="exportCsv">导出数据</el-button><el-button @click="batchApprove">批量审核</el-button></div></div>
+      <el-table v-loading="loading" :data="rows" class="mat-table" @selection-change="(value: MaterialRow[]) => selected = value" empty-text="暂无符合条件的材料记录">
+        <el-table-column type="selection" width="42" /><el-table-column type="index" label="序号" width="55" :index="(i: number) => (page - 1) * pageSize + i + 1" />
+        <el-table-column prop="student_name" label="学生姓名" min-width="90" /><el-table-column prop="student_no" label="学号" min-width="105" />
+        <el-table-column prop="college_name" label="学院" min-width="110" /><el-table-column prop="major_name" label="专业" min-width="130" />
+        <el-table-column label="材料类型" min-width="95"><template #default="{ row }">{{ row.files.map((f: MaterialFile) => f.material_type_cn).join('、') || '未上传' }}</template></el-table-column>
+        <el-table-column label="文件名称" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.files.map((f: MaterialFile) => f.original_name).join('、') || '—' }}</template></el-table-column>
+        <el-table-column label="提交时间" min-width="140"><template #default="{ row }">{{ row.submitted_at?.replace('T', ' ').slice(0, 16) || '—' }}</template></el-table-column>
+        <el-table-column label="审核状态" min-width="100"><template #default="{ row }"><span class="status-tag" :class="row.status === 'APPROVED' ? 's-passed' : row.status === 'SUBMITTED' ? 's-pending' : row.status === 'DRAFT' ? 's-missing' : 's-failed'">{{ row.status_cn }}</span></template></el-table-column>
+        <el-table-column prop="review_comment" label="评审意见" min-width="130" show-overflow-tooltip />
+        <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="detail = row; detailVisible = true">查看</el-button><el-button v-if="row.status === 'SUBMITTED'" link type="primary" @click="openReview(row)">审核</el-button></template></el-table-column>
       </el-table>
-
-      <div class="pagination-bar">
-        <span class="page-total">共 {{ total }} 条数据</span>
-        <div class="pager-group">
-          <el-select v-model="pageSize" size="small" class="page-size">
-            <el-option label="10条/页" :value="10" />
-            <el-option label="20条/页" :value="20" />
-          </el-select>
-          <el-pagination
-            v-model:current-page="page" :page-size="pageSize" :total="total" :pager-count="7"
-            background layout="prev, pager, next, jumper" class="pager"
-          />
-        </div>
+      <div class="material-mobile-list">
+        <div v-if="!rows.length" class="mobile-empty">暂无符合条件的材料记录</div>
+        <article v-for="row in rows" :key="row.id" class="material-mobile-item">
+          <div class="mobile-top"><el-checkbox :model-value="selected.some(item => item.id === row.id)" :disabled="row.status !== 'SUBMITTED'" @change="(checked: string | number | boolean) => selectMobile(row, Boolean(checked))" /><strong>{{ row.student_name }} <small>{{ row.student_no }}</small></strong><span class="status-tag" :class="row.status === 'APPROVED' ? 's-passed' : row.status === 'SUBMITTED' ? 's-pending' : row.status === 'DRAFT' ? 's-missing' : 's-failed'">{{ row.status_cn }}</span></div>
+          <p class="mobile-meta">{{ row.college_name || '学院未设置' }} · {{ row.major_name || '专业未设置' }} · {{ row.academic_year || '学年未设置' }}</p>
+          <p class="mobile-files">{{ row.files.map(f => f.original_name).join('、') || '暂无文件' }}</p>
+          <p class="mobile-meta">提交：{{ row.submitted_at?.replace('T', ' ').slice(0, 16) || '未提交' }}</p>
+          <div class="mobile-actions"><el-button link type="primary" @click="detail = row; detailVisible = true">查看材料</el-button><el-button v-if="row.status === 'SUBMITTED'" link type="primary" @click="openReview(row)">审核</el-button></div>
+        </article>
       </div>
+      <div class="pagination-bar"><span>共 {{ total }} 条数据</span><el-pagination v-model:current-page="page" v-model:page-size="pageSize" :total="total" :page-sizes="[10, 20, 50]" layout="sizes, prev, pager, next" /></div>
     </div>
-
-    <!-- 查看详情弹窗 -->
-    <el-dialog v-model="detailVisible" :title="detail?.fileName" width="620px">
-      <el-descriptions :column="2" border>
-        <el-descriptions-item label="学生姓名">{{ detail?.student }}</el-descriptions-item>
-        <el-descriptions-item label="学号">{{ detail?.studentNo }}</el-descriptions-item>
-        <el-descriptions-item label="学院">{{ detail?.college }}</el-descriptions-item>
-        <el-descriptions-item label="专业">{{ detail?.major }}</el-descriptions-item>
-        <el-descriptions-item label="材料类型">{{ detail?.materialType }}</el-descriptions-item>
-        <el-descriptions-item label="文件大小">{{ detail?.fileSize }}</el-descriptions-item>
-        <el-descriptions-item label="提交时间">{{ detail?.submitTime }}</el-descriptions-item>
-        <el-descriptions-item label="审核状态">{{ detail?.status }}</el-descriptions-item>
-        <el-descriptions-item label="评审意见" :span="2">{{ detail?.opinion || '-' }}</el-descriptions-item>
-      </el-descriptions>
+    <el-dialog v-model="detailVisible" :title="`${detail?.student_name || '学生'}的毕业材料`" width="620px">
+      <el-descriptions :column="1" border><el-descriptions-item label="学号">{{ detail?.student_no }}</el-descriptions-item><el-descriptions-item label="指导教师">{{ detail?.teacher_name || '—' }}</el-descriptions-item><el-descriptions-item label="状态">{{ detail?.status_cn }}</el-descriptions-item><el-descriptions-item label="审核意见">{{ detail?.review_comment || '—' }}</el-descriptions-item></el-descriptions>
+      <h4>材料文件</h4><div v-if="!detail?.files.length">暂无文件</div><div v-for="file in detail?.files || []" :key="file.id" class="detail-file"><span>{{ file.material_type_cn }} · {{ file.original_name }}</span><a :href="file.url" target="_blank" rel="noopener">下载</a></div>
     </el-dialog>
+    <el-dialog v-model="reviewVisible" :title="`审核 ${reviewRow?.student_name || ''} 的毕业材料`" width="520px"><el-input v-model="comment" type="textarea" :rows="4" placeholder="审核意见（驳回时必填）" /><template #footer><el-button :loading="reviewing" @click="review(false)">驳回</el-button><el-button type="primary" :loading="reviewing" @click="review(true)">通过</el-button></template></el-dialog>
   </div>
 </template>
 
-<script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { STAT_ICONS } from '@/components/statIcons'
-
-const CHECK_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.2 14.2L6.4 11.8l1.5-1.5 2.9 2.9 5.3-5.3 1.5 1.5-6.8 6.8z"/>'
-const CLOCK_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm.9-12.9h-1.8v5.2l4.4 2.6.9-1.5-3.5-2.1V7.1z"/>'
-const CROSS_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.5 13.1-1.4 1.4L12 14.4l-2.1 2.1-1.4-1.4 2.1-2.1-2.1-2.1 1.4-1.4 2.1 2.1 2.1-2.1 1.4 1.4-2.1 2.1 2.1 2.1z"/>'
-const LAYERS_ICON = '<path d="M12 3 2.5 8 12 13l9.5-5L12 3zm0 11.6L4.9 9.9l-2.4 1.3L12 16.5l9.5-5.3-2.4-1.3L12 14.6zm0 4L4.9 13.9l-2.4 1.3L12 20.5l9.5-5.3-2.4-1.3L12 18.6z"/>'
-
-/* 趋势色遵循设计稿：涨为红、跌为绿，"较去年"前缀灰 */
-const statCards = [
-  { label: '材料提交总数', value: 186, icon: STAT_ICONS.doc, tileBg: '#d7f0fe', iconColor: '#2563eb', trend: '+18%', trendColor: '#ef4444', arrow: '↗' },
-  { label: '已通过', value: 112, icon: CHECK_ICON, tileBg: '#ddfef0', iconColor: '#22c55e', ring: 60, ringColor: '#22c55e', ringBig: true, trend: '+12%', trendColor: '#ef4444', arrow: '↗' },
-  { label: '审核中', value: 36, icon: CLOCK_ICON, tileBg: '#fef5ea', iconColor: '#f59e0b', ring: 19, ringColor: '#f59e0b', trend: '-5%', trendColor: '#22c55e', arrow: '↘' },
-  { label: '未通过', value: 24, icon: CROSS_ICON, tileBg: '#fee7ed', iconColor: '#ef4444', ring: 13, ringColor: '#ef4444', trend: '+6%', trendColor: '#ef4444', arrow: '↗' },
-  { label: '未提交', value: 14, icon: LAYERS_ICON, tileBg: '#edeafd', iconColor: '#8b5cf6', ring: 8, ringColor: '#8b5cf6', trend: '-8%', trendColor: '#22c55e', arrow: '↘' },
-]
-
-const collegeOptions = ['计算机学院', '人工智能学院', '电子信息学院', '管理学院', '经济管理学院', '数学与统计学院']
-const majorOptions = ['计算机科学与技术', '软件工程', '人工智能', '网络工程', '电子信息工程', '信息管理与信息系统', '数据科学与大数据技术', '信息安全', '应用统计学']
-const teacherOptions = ['李老师', '王老师', '张老师', '陈老师', '刘老师', '黄老师', '林老师', '何老师', '宋老师', '高老师']
-
-const tabs = [
-  { name: '全部', count: 186 },
-  { name: '已通过', count: 112 },
-  { name: '审核中', count: 36 },
-  { name: '未通过', count: 24 },
-  { name: '未提交', count: 14 },
-]
-const activeTab = ref('全部')
-
-interface MatRow {
-  student: string
-  studentNo: string
-  college: string
-  major: string
-  materialType: string
-  fileName: string
-  fileSize: string
-  submitTime: string
-  status: string
-  opinion: string
-}
-
-const RAW_ROWS: MatRow[] = [
-  { student: '张三', studentNo: '2021001', college: '计算机学院', major: '计算机科学与技术', materialType: '毕业设计', fileName: '基于大模型的智能问答系统研究.zip', fileSize: '12.6MB', submitTime: '2024-05-20 14:23', status: '已通过', opinion: '' },
-  { student: '李四', studentNo: '2021002', college: '计算机学院', major: '软件工程', materialType: '毕业论文', fileName: '基于SpringBoot的校园二手交易平台设计.docx', fileSize: '8.4MB', submitTime: '2024-05-18 16:20', status: '审核中', opinion: '论文格式需调整' },
-  { student: '王五', studentNo: '2021003', college: '人工智能学院', major: '人工智能', materialType: '毕业设计', fileName: '基于深度学习的图像识别算法研究.zip', fileSize: '15.2MB', submitTime: '2024-05-17 11:12', status: '未通过', opinion: '研究内容不够深入，请补充实验。' },
-  { student: '赵六', studentNo: '2021004', college: '计算机学院', major: '软件工程', materialType: '毕业论文', fileName: '面向高校的毕业设计管理系统设计.docx', fileSize: '10.8MB', submitTime: '2024-05-16 10:36', status: '已通过', opinion: '' },
-  { student: '孙七', studentNo: '2021005', college: '计算机学院', major: '网络工程', materialType: '毕业设计', fileName: '基于Vue3的在线学习平台前端设计.zip', fileSize: '9.1MB', submitTime: '2024-05-16 09:20', status: '审核中', opinion: '缺少实验数据' },
-  { student: '周八', studentNo: '2021006', college: '电子信息学院', major: '电子信息工程', materialType: '毕业论文', fileName: '基于物联网的智能家居系统设计.docx', fileSize: '11.3MB', submitTime: '2024-05-15 15:48', status: '已通过', opinion: '' },
-  { student: '吴九', studentNo: '2021007', college: '管理学院', major: '信息管理与信息系统', materialType: '毕业设计', fileName: '基于大数据的高校教学质量分析.zip', fileSize: '13.7MB', submitTime: '2024-05-14 16:12', status: '已通过', opinion: '' },
-  { student: '郑十', studentNo: '2021008', college: '经济管理学院', major: '数据科学与大数据技术', materialType: '毕业论文', fileName: '基于Python的金融数据分析与可视化.docx', fileSize: '7.8MB', submitTime: '2024-05-14 10:25', status: '未通过', opinion: '创新性不足，需进一步完善。' },
-  { student: '刘一', studentNo: '2021009', college: '计算机学院', major: '信息安全', materialType: '毕业设计', fileName: '基于区块链的文件存证系统研究.zip', fileSize: '14.5MB', submitTime: '2024-05-13 14:22', status: '已通过', opinion: '' },
-  { student: '陈二', studentNo: '2021010', college: '数学与统计学院', major: '应用统计学', materialType: '毕业论文', fileName: '基于机器学习的学生成绩预测模型.docx', fileSize: '6.9MB', submitTime: '2024-05-12 11:36', status: '审核中', opinion: '数据分析部分需补充图表说明。' },
-]
-
-const rows = ref<MatRow[]>([...RAW_ROWS])
-const total = 186
-const page = ref(1)
-const pageSize = ref(10)
-const selected = ref<MatRow[]>([])
-
-const query = reactive({
-  year: '2024届',
-  college: '',
-  major: '',
-  student: '',
-  materialType: '',
-  status: '',
-  teacher: '',
-  dateRange: null as [string, string] | null,
-})
-
-const filtered = computed(() => {
-  return rows.value.filter((r) => {
-    if (activeTab.value !== '全部' && r.status !== activeTab.value) return false
-    if (query.college && r.college !== query.college) return false
-    if (query.major && r.major !== query.major) return false
-    if (query.student && !r.student.includes(query.student)) return false
-    if (query.materialType && r.materialType !== query.materialType) return false
-    if (query.status && r.status !== query.status) return false
-    if (query.dateRange && query.dateRange[0] && r.submitTime.slice(0, 10) < query.dateRange[0]) return false
-    if (query.dateRange && query.dateRange[1] && r.submitTime.slice(0, 10) > query.dateRange[1]) return false
-    return true
-  })
-})
-
-const pagedRows = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  const slice = filtered.value.slice(start, start + pageSize.value)
-  return slice.map((r, i) => ({
-    ...r,
-    index: start + i + 1,
-    typeClass: r.materialType === '毕业设计' ? 'tp-design' : 'tp-thesis',
-    statusClass: r.status === '审核中' ? 's-pending' : r.status === '已通过' ? 's-passed' : r.status === '未通过' ? 's-failed' : 's-missing',
-  }))
-})
-
-function onSearch() {
-  page.value = 1
-}
-
-function onReset() {
-  query.year = '2024届'
-  query.college = ''
-  query.major = ''
-  query.student = ''
-  query.materialType = ''
-  query.status = ''
-  query.teacher = ''
-  query.dateRange = null
-  page.value = 1
-}
-
-function onSelectionChange(sel: MatRow[]) {
-  selected.value = sel
-}
-
-const detailVisible = ref(false)
-const detail = ref<MatRow | null>(null)
-
-function viewDetail(row: MatRow) {
-  detail.value = row
-  detailVisible.value = true
-}
-
-function onDownload(row: MatRow) {
-  ElMessage.success(`「${row.fileName}」下载中`)
-}
-
-function onReview(row: MatRow) {
-  ElMessageBox.confirm(`审核「${row.student}」提交的《${row.fileName}》吗？`, '审核确认', { type: 'success', confirmButtonText: '通过', cancelButtonText: '不通过' })
-    .then(() => {
-      row.status = '已通过'
-      row.opinion = ''
-      ElMessage.success('审核通过')
-    })
-    .catch(() => {})
-}
-
-function onBatchReview() {
-  if (!selected.value.length) {
-    ElMessage.warning('请先勾选要审核的材料')
-    return
-  }
-  ElMessageBox.confirm(`确定批量审核选中的 ${selected.value.length} 份材料吗？`, '批量审核', { type: 'info' })
-    .then(() => {
-      selected.value.forEach((s) => {
-        if (s.status === '审核中') s.status = '已通过'
-      })
-      ElMessage.success('批量审核完成')
-    })
-    .catch(() => {})
-}
-
-function onExport() {
-  ElMessage.success('导出成功')
-}
-</script>
-
 <style scoped>
-/* 统计卡（标签在数值上方） */
-.stat-cards {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-  margin-bottom: 12px;
+.materials-page { min-width: 0; }
+.stat-cards { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:12px; }
+.stat-card, .filter-card, .table-card { background:#fff; border-radius:8px; box-shadow:0 1px 4px rgba(15,46,93,.06); }
+.stat-card { display:flex; align-items:center; gap:12px; min-width:0; padding:16px; }
+.stat-icon { width:42px; height:42px; border-radius:10px; flex-shrink:0; display:grid; place-items:center; }
+.stat-icon svg { width:22px; height:22px; }
+.stat-label { color:#8a97ad; font-size:12px; }
+.stat-num { font-size:24px; font-weight:700; color:#1f2d3d; }
+.filter-card { padding:18px; margin-bottom:12px; }
+.filter-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; }
+.filter-grid label { display:grid; gap:7px; min-width:0; font-size:13px; color:#3b4a5f; }
+.filter-grid :deep(.el-select), .filter-grid :deep(.el-input), .filter-grid :deep(.el-date-editor) { width:100%; min-width:0; }
+.filter-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+.table-card { padding:14px; min-width:0; }
+.tab-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; border-bottom:1px solid #ebeef5; margin-bottom:8px; flex-wrap:wrap; }
+.tabs { display:flex; gap:18px; overflow-x:auto; }
+.tab { border:0; background:transparent; white-space:nowrap; cursor:pointer; color:#5a6b80; padding:8px 2px 10px; }
+.tab.active { color:#1878fd; border-bottom:2px solid #1878fd; font-weight:600; }
+.tab-actions { display:flex; gap:8px; }
+.mat-table :deep(thead th) { background:#f0f6ff; color:#2c3e5d; font-size:12px; }
+.mat-table :deep(td) { font-size:12px; }
+.status-tag { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; white-space:nowrap; }
+.s-pending { color:#e67e22; background:#fdf1e3; }.s-passed { color:#27ae60; background:#e4f7ec; }.s-failed { color:#e74c3c; background:#fdeaea; }.s-missing { color:#8b5cf6; background:#ede9fe; }
+.pagination-bar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-top:12px; color:#8a97a8; font-size:12px; flex-wrap:wrap; }
+.detail-file { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #eef1f6; overflow-wrap:anywhere; }
+.detail-file a { flex-shrink:0; }
+.material-mobile-list { display:none; }
+@media (max-width:1100px) { .stat-cards { grid-template-columns:repeat(2,minmax(0,1fr)); } .filter-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:640px) {
+  .stat-cards, .filter-grid { grid-template-columns:minmax(0,1fr); }
+  .tab-actions { width:100%; }.filter-actions { flex-wrap:wrap; }
+  .mat-table { display:none; }.material-mobile-list { display:grid; gap:12px; }
+  .material-mobile-item { border:1px solid #e5eaf2; border-radius:8px; padding:14px; min-width:0; }
+  .mobile-top { display:flex; align-items:center; gap:8px; }.mobile-top strong { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .mobile-top small, .mobile-meta { color:#8995a7; font-weight:400; font-size:12px; }
+  .mobile-top .status-tag { flex-shrink:0; }.mobile-files { overflow-wrap:anywhere; line-height:1.5; }
+  .mobile-actions { display:flex; gap:12px; }.mobile-empty { color:#8995a7; text-align:center; padding:20px; }
 }
-.stat-card {
-  position: relative;
-  background: #fff;
-  border-radius: 8px;
-  padding: 10px 10px;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
-  min-height: 76px;
-}
-.stat-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.stat-icon svg { width: 22px; height: 22px; }
-.stat-info { flex: 1; min-width: 0; padding-right: 30px; }
-.stat-label {
-  font-size: 12.5px;
-  color: #8a97ad;
-}
-.stat-num {
-  font-size: 24px;
-  font-weight: 700;
-  color: #1f2d3d;
-  font-family: 'DIN Alternate', 'Helvetica Neue', sans-serif;
-  line-height: 1.2;
-  margin-top: 2px;
-}
-.stat-trend {
-  font-size: 11.5px;
-  margin-top: 4px;
-}
-.trend-prefix {
-  color: #8a97ad;
-}
-.stat-ring {
-  --pct: 0;
-  --ring-color: #f59e0b;
-  position: absolute;
-  right: 10px;
-  top: 12px;
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background:
-    radial-gradient(closest-side, #fff 72%, transparent 73% 100%),
-    conic-gradient(var(--ring-color) calc(var(--pct) * 1%), #eef1f6 0);
-}
-.stat-ring.big { width: 48px; height: 48px; right: 8px; }
-.stat-ring span {
-  font-size: 9.5px;
-  font-weight: 600;
-  color: #2c3e5d;
-}
-
-/* 筛选区 */
-.filter-card {
-  background: #fff;
-  border-radius: 8px;
-  padding: 10px 14px;
-  box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
-  margin-bottom: 12px;
-}
-.filter-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.filter-row + .filter-row { margin-top: 8px; }
-.filter-row.btn-row { justify-content: flex-end; margin-top: 10px; }
-.filter-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.filter-item.grow { flex: 1; min-width: 0; }
-.filter-label {
-  font-size: 13px;
-  color: #3b4a5f;
-  white-space: nowrap;
-}
-.filter-input { width: 170px; }
-.filter-select { width: 128px; }
-.filter-select.narrow { width: 100px; }
-.filter-date { width: 250px; }
-.reset-btn { border: 1px solid #dcdfe6; color: #2c3e5d; }
-
-/* 表格卡 */
-.table-card {
-  background: #fff;
-  border-radius: 8px;
-  padding: 4px 14px 8px;
-  box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
-}
-.tab-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #ebeef5;
-  padding: 6px 0 0;
-}
-.tabs {
-  display: flex;
-  gap: 26px;
-}
-.tab {
-  position: relative;
-  font-size: 13.5px;
-  color: #5a6b80;
-  padding: 8px 2px 9px;
-  cursor: pointer;
-}
-.tab.active {
-  color: #1878fd;
-  font-weight: 500;
-}
-.tab.active::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  background: #1878fd;
-  border-radius: 1px;
-}
-.tab-actions { display: flex; gap: 8px; }
-.ghost-btn { border: 1px solid #dcdfe6; color: #2c3e5d; }
-
-.mat-table :deep(thead th) {
-  background: #f0f6ff;
-  color: #2c3e5d;
-  font-weight: 600;
-  font-size: 12px;
-  padding: 6px 0;
-}
-.mat-table :deep(td) {
-  font-size: 12px;
-  color: #3b4a5f;
-  padding: 5px 0;
-}
-.mat-table :deep(.cell) { padding: 0 6px; }
-.mat-table :deep(.el-button + .el-button) { margin-left: 6px; }
-
-.file-name { color: #1f2d3d; font-weight: 500; }
-.opinion {
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: #5a6b80;
-}
-.opinion.dash { color: #c2cbd8; }
-
-/* 材料类型药丸 */
-.type-pill {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 18px;
-}
-.tp-design { color: #1878fd; background: #e3effe; }
-.tp-thesis { color: #7c3aed; background: #ede9fe; }
-
-/* 状态标签 */
-.status-tag {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 18px;
-}
-.s-pending { color: #e67e22; background: #fdf1e3; }
-.s-passed { color: #27ae60; background: #e4f7ec; }
-.s-failed { color: #e74c3c; background: #fdeaea; }
-.s-missing { color: #ee6d7a; background: #fdeef1; }
-
-/* 分页 */
-.pagination-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 4px 2px;
-}
-.pager-group {
-  display: flex;
-  align-items: center;
-}
-.page-total {
-  font-size: 12px;
-  color: #8a97a8;
-  margin-right: 12px;
-}
-.page-size { width: 96px; margin-right: 12px; }
 </style>

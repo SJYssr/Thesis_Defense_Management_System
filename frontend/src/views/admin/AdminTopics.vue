@@ -16,7 +16,6 @@
         <div class="stat-info">
           <div class="stat-num">{{ c.value }}</div>
           <div class="stat-label">{{ c.label }}</div>
-          <div class="stat-trend" :style="{ color: c.trendColor }">{{ c.trend }} {{ c.arrow }}</div>
         </div>
       </div>
     </div>
@@ -30,37 +29,34 @@
         </div>
         <div class="filter-item">
           <span class="filter-label">所属学院</span>
-          <el-select v-model="query.college" class="filter-select">
-            <el-option label="全部学院" value="" />
-            <el-option v-for="c in collegeOptions" :key="c" :label="c" :value="c" />
+          <el-select v-model="query.college_id" class="filter-select" clearable placeholder="全部学院" @change="query.major_id = null">
+            <el-option v-for="c in collegeOptions" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
         </div>
         <div class="filter-item">
           <span class="filter-label">所属专业</span>
-          <el-select v-model="query.major" class="filter-select">
-            <el-option label="全部专业" value="" />
-            <el-option v-for="m in majorOptions" :key="m" :label="m" :value="m" />
+          <el-select v-model="query.major_id" class="filter-select" clearable placeholder="全部专业">
+            <el-option v-for="m in filteredMajors" :key="m.id" :label="m.name" :value="m.id" />
           </el-select>
         </div>
         <div class="filter-item">
           <span class="filter-label">指导教师</span>
-          <el-input v-model="query.teacher" placeholder="请输入教师姓名" clearable class="filter-input narrow" />
+          <el-input v-model="query.teacher_name" placeholder="请输入教师姓名" clearable class="filter-input narrow" />
         </div>
       </div>
       <div class="filter-row">
         <div class="filter-item">
           <span class="filter-label">题目类型</span>
-          <el-select v-model="query.type" class="filter-select">
-            <el-option label="全部类型" value="" />
+          <el-select v-model="query.topic_type" class="filter-select" clearable placeholder="全部类型">
             <el-option v-for="t in typeOptions" :key="t" :label="t" :value="t" />
           </el-select>
         </div>
         <div class="filter-item">
           <span class="filter-label">题目状态</span>
-          <el-select v-model="query.status" class="filter-select">
-            <el-option label="全部状态" value="" />
-            <el-option label="已发布" value="已发布" />
-            <el-option label="待发布" value="待发布" />
+          <el-select v-model="query.status" class="filter-select" clearable placeholder="全部状态">
+            <el-option label="已发布" value="PUBLISHED" />
+            <el-option label="待发布" value="DRAFT" />
+            <el-option label="已关闭" value="CLOSED" />
           </el-select>
         </div>
         <div class="filter-item">
@@ -91,7 +87,7 @@
         </el-button>
       </div>
 
-      <el-table :data="pagedRows" class="topic-table" @selection-change="onSelectionChange">
+      <el-table v-loading="loading" :data="pagedRows" class="topic-table" empty-text="暂无符合条件的题目" @selection-change="onSelectionChange">
         <el-table-column type="selection" width="40" />
         <el-table-column prop="index" label="序号" width="46" align="center" />
         <el-table-column prop="title" label="题目名称" min-width="230">
@@ -114,10 +110,10 @@
             <span class="status-tag" :class="row.statusClass">{{ row.status }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="publishTime" label="发布时间" width="102" align="center" sortable />
+        <el-table-column prop="publishTime" label="发布时间" width="120" align="center" />
         <el-table-column label="操作" width="138" align="center">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="row.rawStatus !== 'CLOSED'" link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" size="small" @click="viewDetail(row)">查看</el-button>
             <el-button link type="danger" size="small" @click="onDelete(row)">删除</el-button>
           </template>
@@ -132,7 +128,7 @@
         </el-select>
         <el-pagination
           v-model:current-page="page" :page-size="pageSize" :total="total"
-          background layout="prev, pager, next, jumper" class="pager"
+          background layout="prev, pager, next, jumper" class="pager" @current-change="load"
         />
       </div>
     </div>
@@ -143,14 +139,20 @@
         <el-form-item label="题目名称" required>
           <el-input v-model="form.title" placeholder="请输入题目名称" />
         </el-form-item>
+        <el-form-item label="题目描述">
+          <el-input v-model="form.description" type="textarea" :rows="3" placeholder="请输入题目描述" />
+        </el-form-item>
+        <el-form-item label="选题要求">
+          <el-input v-model="form.requirements" type="textarea" :rows="2" placeholder="请输入选题要求" />
+        </el-form-item>
         <el-form-item label="所属学院">
-          <el-select v-model="form.college" style="width: 100%">
-            <el-option v-for="c in collegeOptions" :key="c" :label="c" :value="c" />
+          <el-select v-model="form.college_id" style="width: 100%" placeholder="请选择学院" @change="form.major_id = null">
+            <el-option v-for="c in collegeOptions" :key="c.id" :label="c.name" :value="c.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="所属专业">
-          <el-select v-model="form.major" style="width: 100%">
-            <el-option v-for="m in majorOptions" :key="m" :label="m" :value="m" />
+          <el-select v-model="form.major_id" style="width: 100%" placeholder="请选择专业">
+            <el-option v-for="m in formMajors" :key="m.id" :label="m.name" :value="m.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="题目类型" required>
@@ -159,8 +161,8 @@
           </el-select>
         </el-form-item>
         <el-form-item label="指导教师" required>
-          <el-select v-model="form.teacher" style="width: 100%">
-            <el-option v-for="t in teacherOptions" :key="t" :label="t" :value="t" />
+          <el-select v-model="form.teacher_id" style="width: 100%" placeholder="请选择教师">
+            <el-option v-for="t in teacherOptions" :key="t.profile_id" :label="t.real_name" :value="t.profile_id" />
           </el-select>
         </el-form-item>
         <el-form-item label="预计人数">
@@ -169,7 +171,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveForm">确定</el-button>
+        <el-button type="primary" :loading="saving" @click="saveForm">确定</el-button>
       </template>
     </el-dialog>
 
@@ -186,230 +188,196 @@
         <el-descriptions-item label="发布时间">{{ detail?.publishTime }}</el-descriptions-item>
       </el-descriptions>
       <h4 style="margin: 16px 0 8px">题目描述</h4>
-      <p class="detail-text">{{ detailDescription }}</p>
+      <p class="detail-text">{{ detail?.description || '暂无描述' }}</p>
+      <h4 style="margin: 16px 0 8px">选题要求</h4>
+      <p class="detail-text">{{ detail?.requirements || '暂无要求' }}</p>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { STAT_ICONS } from '@/components/statIcons'
+import { topicApi } from '@/api/business'
+import { userAdminApi } from '@/api/common'
 
-const CHECK_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.2 14.2L6.4 11.8l1.5-1.5 2.9 2.9 5.3-5.3 1.5 1.5-6.8 6.8z"/>'
-const CLOCK_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 10.4V6.5h-2v7.1l5.2 3-1-1.7-2.2-1.3V12.4z" transform="translate(0 .5)"/>'
-const LAYERS_ICON = '<path d="M12 3 2.5 8 12 13l9.5-5L12 3zm0 11.6L4.9 9.9l-2.4 1.3L12 16.5l9.5-5.3-2.4-1.3L12 14.6zm0 4L4.9 13.9l-2.4 1.3L12 20.5l9.5-5.3-2.4-1.3L12 18.6z"/>'
-
-const statCards = [
-  { label: '题目总数', value: 320, icon: STAT_ICONS.doc, color: '#2563eb', bg: '#d7f0fe', trend: '较去年 +15%', trendColor: '#1878fd', arrow: '↗' },
-  { label: '已发布题目', value: 286, icon: CHECK_ICON, color: '#22c55e', bg: '#ddfef0', trend: '较去年 +12%', trendColor: '#1878fd', arrow: '↗' },
-  { label: '待发布题目', value: 34, icon: CLOCK_ICON, color: '#f59e0b', bg: '#fef5ea', trend: '较去年 -8%', trendColor: '#ef4444', arrow: '↘' },
-  { label: '关联教师数', value: 56, icon: STAT_ICONS.person, color: '#ef4444', bg: '#fee7ed', trend: '较去年 +8%', trendColor: '#1878fd', arrow: '↗' },
-  { label: '涉及专业数', value: 12, icon: LAYERS_ICON, color: '#8b5cf6', bg: '#edeafd', trend: '较去年 +0%', trendColor: '#8a97ad', arrow: '→' },
-]
-
-const typeOptions = ['软件开发', '硬件设计', '算法研究', '应用研究', '其他']
-const teacherOptions = ['王教授', '李教授', '张教授', '刘教授', '陈教授', '赵教授']
-const collegeOptions = ['计算机学院', '电子信息学院', '机械工程学院', '经济管理学院', '艺术设计学院']
-const majorOptions = ['计算机科学与技术', '软件工程', '电子信息工程', '机械设计制造及其自动化', '会计学', '视觉传达设计']
-
+interface CollegeOption { id: number; name: string }
+interface MajorOption { id: number; name: string; college_id: number }
+interface TeacherOption { profile_id: number; real_name: string }
+interface TopicItem {
+  id: number; title: string; description: string | null; requirements: string | null
+  topic_type: string | null; major_id: number | null; major_name: string | null
+  college_name: string | null; teacher_id: number; teacher_name: string | null
+  max_students: number; approved_count: number; status: string; publish_time: string | null
+}
+interface TopicRow extends TopicItem {
+  index: number; college: string; major: string; type: string; teacher: string
+  expect: number; chosen: number; publishTime: string; statusClass: string; typeClass: string; rawStatus: string
+}
 const TYPE_CLASS: Record<string, string> = {
-  软件开发: 't-blue',
-  硬件设计: 't-cyan',
-  算法研究: 't-green',
-  应用研究: 't-purple',
-  其他: 't-gray',
+  软件开发: 't-blue', 硬件设计: 't-cyan', 算法研究: 't-green', 应用研究: 't-purple', 其他: 't-gray',
 }
-
-interface TopicRow {
-  title: string
-  college: string
-  major: string
-  type: string
-  teacher: string
-  expect: number
-  chosen: number
-  status: string
-  publishTime: string
-}
-
-const RAW_ROWS: TopicRow[] = [
-  { title: '基于深度学习的图像识别系统设计与实现', college: '计算机学院', major: '计算机科学与技术', type: '软件开发', teacher: '王教授', expect: 3, chosen: 2, status: '已发布', publishTime: '2024-03-15' },
-  { title: '智能校园信息管理系统设计与实现', college: '计算机学院', major: '软件工程', type: '软件开发', teacher: '李教授', expect: 3, chosen: 2, status: '已发布', publishTime: '2024-03-15' },
-  { title: '基于物联网的智能家居控制系统设计', college: '电子信息学院', major: '电子信息工程', type: '硬件设计', teacher: '刘教授', expect: 3, chosen: 1, status: '已发布', publishTime: '2024-03-14' },
-  { title: '智能交通信号灯优化算法研究', college: '电子信息学院', major: '电子信息工程', type: '算法研究', teacher: '张教授', expect: 2, chosen: 1, status: '已发布', publishTime: '2024-03-14' },
-  { title: '移动应用开发实践平台设计与实现', college: '计算机学院', major: '软件工程', type: '软件开发', teacher: '王教授', expect: 3, chosen: 0, status: '待发布', publishTime: '2024-03-13' },
-  { title: '企业财务数据分析系统设计与实现', college: '经济管理学院', major: '会计学', type: '应用研究', teacher: '陈教授', expect: 3, chosen: 2, status: '已发布', publishTime: '2024-03-13' },
-  { title: '智能校园能耗监测系统设计与实现', college: '计算机学院', major: '软件工程', type: '软件开发', teacher: '李教授', expect: 3, chosen: 2, status: '已发布', publishTime: '2024-03-12' },
-  { title: '基于区块链的分布式存储系统研究', college: '计算机学院', major: '计算机科学与技术', type: '算法研究', teacher: '赵教授', expect: 2, chosen: 0, status: '待发布', publishTime: '2024-03-12' },
-  { title: '数控机床刀具磨损监测系统设计', college: '机械工程学院', major: '机械设计制造及其自动化', type: '硬件设计', teacher: '刘教授', expect: 3, chosen: 1, status: '已发布', publishTime: '2024-03-11' },
-  { title: '非遗文化视觉传达设计与推广研究', college: '艺术设计学院', major: '视觉传达设计', type: '应用研究', teacher: '陈教授', expect: 2, chosen: 1, status: '已发布', publishTime: '2024-03-11' },
-]
-
-const rows = ref<TopicRow[]>([...RAW_ROWS])
-const total = 320
+const typeOptions = computed(() => [...new Set([...Object.keys(TYPE_CLASS), ...rows.value.map(r => r.topic_type).filter((v): v is string => Boolean(v))])])
+const rows = ref<TopicItem[]>([])
+const collegeOptions = ref<CollegeOption[]>([])
+const majorOptions = ref<MajorOption[]>([])
+const teacherOptions = ref<TeacherOption[]>([])
+const summary = reactive({ total: 0, published: 0, draft: 0, teacher_count: 0, major_count: 0 })
+const total = ref(0)
 const page = ref(1)
 const pageSize = ref(10)
-const selected = ref<(TopicRow & { index?: number })[]>([])
-
+const loading = ref(false)
+const saving = ref(false)
+const selected = ref<TopicRow[]>([])
 const query = reactive({
-  keyword: '',
-  college: '',
-  major: '',
-  teacher: '',
-  type: '',
-  status: '',
-  dateRange: null as [string, string] | null,
+  keyword: '', college_id: null as number | null, major_id: null as number | null,
+  teacher_name: '', topic_type: '', status: '', dateRange: null as [string, string] | null,
 })
+const filteredMajors = computed(() => majorOptions.value.filter(m => !query.college_id || m.college_id === query.college_id))
+const statCards = computed(() => [
+  { label: '题目总数', value: summary.total, icon: STAT_ICONS.doc, color: '#2563eb', bg: '#d7f0fe' },
+  { label: '已发布题目', value: summary.published, icon: STAT_ICONS.doc, color: '#22c55e', bg: '#ddfef0' },
+  { label: '待发布题目', value: summary.draft, icon: STAT_ICONS.doc, color: '#f59e0b', bg: '#fef5ea' },
+  { label: '关联教师数', value: summary.teacher_count, icon: STAT_ICONS.person, color: '#ef4444', bg: '#fee7ed' },
+  { label: '涉及专业数', value: summary.major_count, icon: STAT_ICONS.doc, color: '#8b5cf6', bg: '#edeafd' },
+])
+const pagedRows = computed<TopicRow[]>(() => rows.value.map((r, i) => ({
+  ...r, index: (page.value - 1) * pageSize.value + i + 1,
+  college: r.college_name || '—', major: r.major_name || '—',
+  type: r.topic_type || '其他', teacher: r.teacher_name || '—',
+  expect: r.max_students, chosen: r.approved_count,
+  rawStatus: r.status,
+  status: r.status === 'PUBLISHED' ? '已发布' : r.status === 'DRAFT' ? '待发布' : '已关闭',
+  publishTime: r.publish_time?.slice(0, 10) || '—',
+  typeClass: TYPE_CLASS[r.topic_type || ''] || 't-gray',
+  statusClass: r.status === 'DRAFT' ? 's-pending' : 's-published',
+})))
 
-const filtered = computed(() => {
-  return rows.value.filter((r) => {
-    if (query.keyword && !r.title.includes(query.keyword)) return false
-    if (query.college && r.college !== query.college) return false
-    if (query.major && r.major !== query.major) return false
-    if (query.teacher && !r.teacher.includes(query.teacher)) return false
-    if (query.type && r.type !== query.type) return false
-    if (query.status && r.status !== query.status) return false
-    if (query.dateRange && query.dateRange[0] && r.publishTime < query.dateRange[0]) return false
-    if (query.dateRange && query.dateRange[1] && r.publishTime > query.dateRange[1]) return false
-    return true
-  })
-})
-
-const pagedRows = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  const slice = filtered.value.slice(start, start + pageSize.value)
-  return slice.map((r, i) => ({
-    ...r,
-    index: start + i + 1,
-    typeClass: TYPE_CLASS[r.type] || 't-gray',
-    statusClass: r.status === '待发布' ? 's-pending' : 's-published',
-  }))
-})
-
-function onSearch() {
-  page.value = 1
+function filterParams() {
+    const end = query.dateRange?.[1] ? new Date(query.dateRange[1] + 'T00:00:00Z') : null
+    if (end) end.setUTCDate(end.getUTCDate() + 1)
+    return {
+      keyword: query.keyword || undefined, college_id: query.college_id || undefined,
+      major_id: query.major_id || undefined, teacher_name: query.teacher_name || undefined,
+      topic_type: query.topic_type || undefined, status: query.status || undefined,
+      published_from: query.dateRange?.[0] || undefined,
+      published_to: end ? end.toISOString().slice(0, 10) : undefined,
+    }
 }
-
+async function load() {
+  loading.value = true
+  try {
+    const res = await topicApi.adminList({ page: page.value, page_size: pageSize.value, ...filterParams() })
+    rows.value = res.data.items
+    total.value = res.data.total
+  } finally { loading.value = false }
+}
+async function loadSummary() {
+  const res = await topicApi.adminSummary()
+  Object.assign(summary, res.data)
+}
+async function refresh() { await Promise.all([load(), loadSummary()]) }
+function onSearch() { page.value = 1; load() }
 function onReset() {
-  query.keyword = ''
-  query.college = ''
-  query.major = ''
-  query.teacher = ''
-  query.type = ''
-  query.status = ''
-  query.dateRange = null
-  page.value = 1
+  Object.assign(query, { keyword: '', college_id: null, major_id: null, teacher_name: '',
+                         topic_type: '', status: '', dateRange: null })
+  onSearch()
 }
-
-function onSelectionChange(sel: TopicRow[]) {
-  selected.value = sel
-}
+function onSelectionChange(sel: TopicRow[]) { selected.value = sel }
 
 const dialogVisible = ref(false)
 const editing = ref(false)
-const editIndex = ref(-1)
-const form = reactive({ title: '', college: '计算机学院', major: '计算机科学与技术', type: '软件开发', teacher: '王教授', expect: 3 })
-
+const form = reactive({
+  id: 0, title: '', description: '', requirements: '', college_id: null as number | null,
+  major_id: null as number | null, type: '软件开发', teacher_id: null as number | null, expect: 1,
+})
+const formMajors = computed(() => majorOptions.value.filter(m => !form.college_id || m.college_id === form.college_id))
 function openCreate() {
   editing.value = false
-  form.title = ''
-  form.college = '计算机学院'
-  form.major = '计算机科学与技术'
-  form.type = '软件开发'
-  form.teacher = '王教授'
-  form.expect = 3
+  Object.assign(form, { id: 0, title: '', description: '', requirements: '', college_id: null,
+                        major_id: null, type: '软件开发', teacher_id: null, expect: 1 })
   dialogVisible.value = true
 }
-
 function openEdit(row: TopicRow) {
   editing.value = true
-  editIndex.value = rows.value.indexOf(row)
-  form.title = row.title
-  form.college = row.college
-  form.major = row.major
-  form.type = row.type
-  form.teacher = row.teacher
-  form.expect = row.expect
+  const major = majorOptions.value.find(m => m.id === row.major_id)
+  Object.assign(form, { id: row.id, title: row.title, description: row.description || '',
+    requirements: row.requirements || '', college_id: major?.college_id || null,
+    major_id: row.major_id, type: row.type, teacher_id: row.teacher_id, expect: row.expect })
   dialogVisible.value = true
 }
-
-function saveForm() {
-  if (!form.title.trim()) {
-    ElMessage.warning('请输入题目名称')
-    return
-  }
-  if (editing.value && editIndex.value >= 0) {
-    const row = rows.value[editIndex.value]
-    row.title = form.title
-    row.college = form.college
-    row.major = form.major
-    row.type = form.type
-    row.teacher = form.teacher
-    row.expect = form.expect
-    ElMessage.success('题目已更新')
-  } else {
-    rows.value.push({
-      title: form.title,
-      college: form.college,
-      major: form.major,
-      type: form.type,
-      teacher: form.teacher,
-      expect: form.expect,
-      chosen: 0,
-      status: '待发布',
-      publishTime: '2024-03-15',
-    })
-    ElMessage.success('题目新增成功')
-  }
-  dialogVisible.value = false
+async function saveForm() {
+  if (!form.title.trim() || !form.teacher_id) { ElMessage.warning('请填写题目名称并选择指导教师'); return }
+  saving.value = true
+  try {
+    const body = { title: form.title.trim(), description: form.description, requirements: form.requirements,
+      topic_type: form.type, major_id: form.major_id, teacher_id: form.teacher_id, max_students: form.expect }
+    if (editing.value) await topicApi.adminUpdate(form.id, body)
+    else await topicApi.adminCreate(body)
+    ElMessage.success(editing.value ? '题目已更新' : '题目草稿已创建')
+    dialogVisible.value = false
+    await refresh()
+  } finally { saving.value = false }
 }
-
 const detailVisible = ref(false)
 const detail = ref<TopicRow | null>(null)
-const detailDescription = '基于实际业务场景，综合运用所学专业知识完成系统的分析、设计与实现，并撰写符合规范的设计文档。'
-
-function viewDetail(row: TopicRow) {
-  detail.value = row
-  detailVisible.value = true
+function viewDetail(row: TopicRow) { detail.value = row; detailVisible.value = true }
+async function onDelete(row: TopicRow) {
+  await ElMessageBox.confirm(`确定删除题目「${row.title}」吗？`, '提示', { type: 'warning' })
+  await topicApi.adminRemove(row.id)
+  ElMessage.success('删除成功')
+  await refresh()
 }
-
-function onDelete(row: TopicRow) {
-  ElMessageBox.confirm(`确定删除题目「${row.title}」吗？`, '提示', { type: 'warning' })
-    .then(() => {
-      rows.value = rows.value.filter((r) => r !== row)
-      ElMessage.success('删除成功')
-    })
-    .catch(() => {})
+async function onBatchPublish() {
+  const drafts = selected.value.filter(s => s.rawStatus === 'DRAFT')
+  if (!drafts.length) { ElMessage.warning('请先勾选待发布题目'); return }
+  await ElMessageBox.confirm(`确定发布 ${drafts.length} 个题目吗？`, '批量发布', { type: 'info' })
+  const results = await Promise.allSettled(drafts.map(s => topicApi.adminPublish(s.id)))
+  const success = results.filter(r => r.status === 'fulfilled').length
+  ElMessage[success === drafts.length ? 'success' : 'warning'](`成功发布 ${success}/${drafts.length} 个题目`)
+  await refresh()
 }
-
-function onBatchPublish() {
-  if (!selected.value.length) {
-    ElMessage.warning('请先勾选要发布的题目')
-    return
+async function onBatchDelete() {
+  if (!selected.value.length) { ElMessage.warning('请先勾选要删除的题目'); return }
+  await ElMessageBox.confirm(`确定删除选中的 ${selected.value.length} 个题目吗？`, '提示', { type: 'warning' })
+  const results = await Promise.allSettled(selected.value.map(s => topicApi.adminRemove(s.id)))
+  const success = results.filter(r => r.status === 'fulfilled').length
+  ElMessage[success === selected.value.length ? 'success' : 'warning'](`成功删除 ${success}/${selected.value.length} 个题目`)
+  await refresh()
+}
+async function onExport() {
+  const all: TopicItem[] = []
+  for (let current = 1; current <= Math.ceil(total.value / 100); current++) {
+    const res = await topicApi.adminList({ page: current, page_size: 100, ...filterParams() })
+    all.push(...res.data.items)
   }
-  const count = selected.value.filter((s) => s.status === '待发布').length
-  selected.value.forEach((s) => { s.status = '已发布' })
-  ElMessage.success(count ? `已发布 ${count} 个题目` : '所选题目均已发布')
+  const quote = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`
+  const csv = [['题目名称', '学院', '专业', '类型', '教师', '人数上限', '已选人数', '状态', '发布时间'],
+    ...all.map(r => [r.title, r.college_name, r.major_name, r.topic_type, r.teacher_name,
+                     r.max_students, r.approved_count, r.status, r.publish_time])].map(line => line.map(quote).join(',')).join('\r\n')
+  const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }))
+  const a = document.createElement('a')
+  a.href = url; a.download = 'topics.csv'; a.click(); URL.revokeObjectURL(url)
 }
-
-function onBatchDelete() {
-  if (!selected.value.length) {
-    ElMessage.warning('请先勾选要删除的题目')
-    return
+async function loadTeachers() {
+  const teachers: TeacherOption[] = []
+  for (let current = 1; ; current++) {
+    const res = await userAdminApi.list('TEACHER', { page: current, page_size: 100, status: 1 })
+    teachers.push(...res.data.items.filter((t: TeacherOption) => t.profile_id))
+    if (current * 100 >= res.data.total) break
   }
-  ElMessageBox.confirm(`确定删除选中的 ${selected.value.length} 个题目吗？`, '提示', { type: 'warning' })
-    .then(() => {
-      const del = new Set(selected.value)
-      rows.value = rows.value.filter((r) => !del.has(r))
-      ElMessage.success('批量删除成功')
-    })
-    .catch(() => {})
+  return teachers
 }
-
-function onExport() {
-  ElMessage.success('导出成功')
-}
+onMounted(async () => {
+  const [colleges, majors, teachers] = await Promise.all([
+    userAdminApi.colleges(), userAdminApi.majors(), loadTeachers(),
+  ])
+  collegeOptions.value = colleges.data
+  majorOptions.value = majors.data
+  teacherOptions.value = teachers
+  await refresh()
+})
 </script>
 
 <style scoped>
@@ -582,5 +550,23 @@ function onExport() {
   padding: 12px;
   margin: 0;
   line-height: 1.7;
+}
+@media (max-width: 900px) {
+  .stat-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filter-row { flex-wrap: wrap; }
+  .filter-item { flex: 1 1 220px; min-width: 0; }
+  .filter-item.grow { flex: 1 1 220px; }
+  .filter-item :deep(.el-input), .filter-item :deep(.el-select), .filter-item :deep(.el-date-editor) { width: 100%; }
+  .table-toolbar { flex-wrap: wrap; gap: 10px; }
+  .toolbar-left { flex-wrap: wrap; }
+}
+@media (max-width: 600px) {
+  .stat-cards { grid-template-columns: minmax(0, 1fr); }
+  .stat-card { min-height: 70px; align-items: center; }
+  .filter-item { flex-basis: 100%; }
+  .filter-actions { margin-left: 0; }
+  .table-card { overflow: hidden; }
+  .pagination-bar { flex-wrap: wrap; gap: 10px; }
+  .pager { margin-left: 0; max-width: 100%; overflow-x: auto; }
 }
 </style>

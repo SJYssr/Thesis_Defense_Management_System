@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { STAT_ICONS } from '@/components/statIcons'
+import { dashboardApi } from '@/api/common'
 
 const router = useRouter()
 
@@ -34,247 +35,118 @@ function switchSlide(i: number) {
   slideIndex.value = i
 }
 
-/* ================= 统计卡片 ================= */
-interface StatCard {
-  label: string
-  value: number
-  icon: string
-  color: string
-  bg: string
-  trend: string
-  trendColor: string
-  arrow: string
-  ring?: number
-  ringColor?: string
+/* ================= 实时业务数据 ================= */
+interface NamedValue { name: string; value: number }
+interface Todo { text: string; cat: string; date: string; kind: string; dot: string }
+interface Submission { name: string; content: string; time: string; status: string }
+const cards = reactive({ student_count: 0, teacher_count: 0, topic_count: 0,
+  selected_count: 0, completed_count: 0, pending_count: 0 })
+const stageDistribution = ref<NamedValue[]>([])
+const passRates = ref<NamedValue[]>([])
+const announcements = ref<{ tag: string; title: string; date: string }[]>([])
+const todos = ref<Todo[]>([])
+const submissions = ref<Submission[]>([])
+const pendingCounts = ref<{ label: string; count: number }[]>([])
+const palette = ['#b8c4d4', '#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6']
+const dotColors: Record<string, string> = {
+  选题审核: '#f59e0b', 开题审核: '#3b82f6', 中期审核: '#13c2c2',
+  终期审核: '#8b5cf6', 毕业材料: '#ef4444',
 }
-
-const statCards: StatCard[] = [
-  { label: '学生总数', value: 356, icon: 'users', color: '#2563eb', bg: '#d7f0fe', trend: '较去年 +12%', trendColor: '#1878fd', arrow: '↗' },
-  { label: '教师总数', value: 56, icon: 'person', color: '#22c55e', bg: '#ddfef0', trend: '较去年 +8%', trendColor: '#1878fd', arrow: '↗' },
-  { label: '题目总数', value: 320, icon: 'doc', color: '#8b5cf6', bg: '#edeafd', trend: '较去年 +15%', trendColor: '#1878fd', arrow: '↗' },
-  { label: '已选题人数', value: 298, icon: 'case', color: '#f59e0b', bg: '#fef5ea', trend: '较去年 +10%', trendColor: '#f59e0b', arrow: '↗', ring: 84, ringColor: '#f59e0b' },
-  { label: '已完成人数', value: 186, icon: 'cap', color: '#ef4444', bg: '#fee7ed', trend: '较去年 +18%', trendColor: '#ef4444', arrow: '↑', ring: 52, ringColor: '#ef4444' },
-  { label: '待审核事项', value: 24, icon: 'bars', color: '#3b82f6', bg: '#dcf9fe', trend: '较上周 +6', trendColor: '#ef4444', arrow: '↑' },
-]
-
-/* ================= 图表 ================= */
-const STAGE_NAMES = ['未选题', '已选题', '开题通过', '中期通过', '终期通过', '已完成']
-const STAGE_VALUES = [58, 142, 126, 98, 76, 56]
-const STAGE_PCTS = [16, 40, 35, 27, 21, 16]
-const STAGE_COLORS = ['#b8c4d4', '#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6']
-const TOTAL_STUDENTS = 356
-
-const PASS_NAMES = ['选题', '开题', '中期', '终期', '毕业材料']
-const PASS_VALUES = [95, 86, 71, 58, 52]
-
+function pct(value: number, total: number) { return total ? Math.round(value / total * 100) : 0 }
+const statCards = computed(() => [
+  { label: '学生总数', value: cards.student_count, icon: 'users', color: '#2563eb', bg: '#d7f0fe' },
+  { label: '教师总数', value: cards.teacher_count, icon: 'person', color: '#22c55e', bg: '#ddfef0' },
+  { label: '题目总数', value: cards.topic_count, icon: 'doc', color: '#8b5cf6', bg: '#edeafd' },
+  { label: '已选题人数', value: cards.selected_count, icon: 'case', color: '#f59e0b', bg: '#fef5ea',
+    ring: pct(cards.selected_count, cards.student_count), ringColor: '#f59e0b' },
+  { label: '材料审核完成', value: cards.completed_count, icon: 'cap', color: '#ef4444', bg: '#fee7ed',
+    ring: pct(cards.completed_count, cards.student_count), ringColor: '#ef4444' },
+  { label: '待审核事项', value: cards.pending_count, icon: 'bars', color: '#3b82f6', bg: '#dcf9fe' },
+])
 const barRef = ref<HTMLElement>()
 const lineRef = ref<HTMLElement>()
 const pieRef = ref<HTMLElement>()
-const batchRef = ref('2024届')
-const batches = ['2024届', '2023届', '2022届']
 let charts: echarts.ECharts[] = []
-
-function handleBatch(cmd: string) {
-  batchRef.value = cmd
+function makeChart(el: HTMLElement | undefined) {
+  if (!el) return null
+  const chart = echarts.init(el)
+  charts.push(chart)
+  return chart
 }
-
 function renderCharts() {
-  /* 柱状图: 各阶段学生人数统计 */
-  if (barRef.value) {
-    const chart = echarts.init(barRef.value)
-    chart.setOption({
-      grid: { left: 52, right: 20, top: 36, bottom: 36 },
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      xAxis: {
-        type: 'category',
-        data: STAGE_NAMES,
-        axisLine: { lineStyle: { color: '#dde3ec' } },
-        axisTick: { show: false },
-        axisLabel: { color: '#5e6d82', fontSize: 11, interval: 0 },
-      },
-      yAxis: {
-        type: 'value',
-        name: '人数',
-        nameTextStyle: { color: '#8a97ad', padding: [0, 28, 0, 0] },
-        max: 150,
-        interval: 30,
-        splitLine: { lineStyle: { color: '#eef1f6' } },
-        axisLabel: { color: '#8a97ad' },
-      },
-      series: [
-        {
-          type: 'bar',
-          data: STAGE_VALUES.map((v, i) => ({ value: v, itemStyle: { color: STAGE_COLORS[i] } })),
-          barWidth: 26,
-          itemStyle: { borderRadius: [4, 4, 0, 0] },
-          label: { show: true, position: 'top', color: '#5e6d82', fontSize: 11 },
-        },
-      ],
-    })
-    charts.push(chart)
-  }
-
-  /* 折线图: 各阶段通过率 */
-  if (lineRef.value) {
-    const chart = echarts.init(lineRef.value)
-    chart.setOption({
-      grid: { left: 48, right: 24, top: 36, bottom: 36 },
-      tooltip: { trigger: 'axis', formatter: (p: any) => `${p[0].name}: ${p[0].value}%` },
-      xAxis: {
-        type: 'category',
-        data: PASS_NAMES,
-        boundaryGap: false,
-        axisLine: { lineStyle: { color: '#dde3ec' } },
-        axisTick: { show: false },
-        axisLabel: { color: '#5e6d82', fontSize: 11.5 },
-      },
-      yAxis: {
-        type: 'value',
-        max: 100,
-        interval: 20,
-        axisLabel: { color: '#8a97ad', formatter: '{value}%' },
-        splitLine: { lineStyle: { color: '#eef1f6' } },
-      },
-      series: [
-        {
-          type: 'line',
-          data: PASS_VALUES,
-          smooth: true,
-          symbol: 'circle',
-          symbolSize: 7,
-          lineStyle: { color: '#3b82f6', width: 3 },
-          itemStyle: { color: '#3b82f6', borderColor: '#fff', borderWidth: 2 },
-          label: { show: true, position: 'top', color: '#3b82f6', fontSize: 11, formatter: '{c}%' },
-          areaStyle: {
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: 'rgba(59,130,246,0.22)' },
-              { offset: 1, color: 'rgba(59,130,246,0.02)' },
-            ]),
-          },
-        },
-      ],
-    })
-    charts.push(chart)
-  }
-
-  /* 环形图: 学生进度分布 */
-  if (pieRef.value) {
-    const chart = echarts.init(pieRef.value)
-    const pct = (v: number) => STAGE_PCTS[STAGE_VALUES.indexOf(v)] ?? Math.round((v / TOTAL_STUDENTS) * 100)
-    chart.setOption({
-      title: {
-        text: `${TOTAL_STUDENTS}`,
-        subtext: '学生总数',
-        left: 'center',
-        top: '32%',
-        textStyle: { fontSize: 28, fontWeight: 700, color: '#1f2d3d' },
-        subTextStyle: { fontSize: 12, color: '#8a97ad' },
-      },
-      tooltip: {
-        trigger: 'item',
-        formatter: (p: any) => `${p.name}: ${p.value}人 (${pct(p.value)}%)`,
-      },
-      legend: {
-        bottom: 0,
-        icon: 'circle',
-        itemWidth: 8,
-        itemHeight: 8,
-        itemGap: 10,
-        textStyle: { color: '#5e6d82', fontSize: 11 },
-        formatter: (name: string) => {
-          const item = STAGE_NAMES.indexOf(name)
-          return item >= 0 ? `${name} ${STAGE_VALUES[item]} (${STAGE_PCTS[item]}%)` : name
-        },
-      },
-      series: [
-        {
-          type: 'pie',
-          radius: ['52%', '72%'],
-          center: ['50%', '42%'],
-          avoidLabelOverlap: true,
-          label: { show: false },
-          data: STAGE_NAMES.map((name, i) => ({ name, value: STAGE_VALUES[i], itemStyle: { color: STAGE_COLORS[i] } })),
-        },
-      ],
-    })
-    charts.push(chart)
-  }
+  const names = stageDistribution.value.map(item => item.name)
+  const values = stageDistribution.value.map(item => item.value)
+  makeChart(barRef.value)?.setOption({
+    grid: { left: 50, right: 18, top: 30, bottom: 42 }, tooltip: { trigger: 'axis' },
+    xAxis: { type: 'category', data: names, axisLabel: { interval: 0, rotate: names.length > 5 ? 20 : 0, fontSize: 10 } },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: [{ type: 'bar', barMaxWidth: 26, data: values.map((value, i) => ({ value,
+      itemStyle: { color: palette[i % palette.length], borderRadius: [4, 4, 0, 0] } })) }],
+  })
+  makeChart(lineRef.value)?.setOption({
+    grid: { left: 45, right: 18, top: 35, bottom: 38 }, tooltip: { trigger: 'axis' },
+    xAxis: { type: 'category', data: passRates.value.map(item => item.name) },
+    yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
+    series: [{ type: 'line', smooth: true, data: passRates.value.map(item => item.value),
+      itemStyle: { color: '#3b82f6' }, label: { show: true, position: 'top', formatter: '{c}%' } }],
+  })
+  makeChart(pieRef.value)?.setOption({
+    title: { text: String(cards.student_count), subtext: '学生总数', left: 'center', top: '32%',
+      textStyle: { fontSize: 28, fontWeight: 700 }, subTextStyle: { fontSize: 12 } },
+    tooltip: { trigger: 'item' },
+    legend: { bottom: 0, icon: 'circle', itemWidth: 8, itemHeight: 8,
+      textStyle: { fontSize: 10 }, formatter: (name: string) => {
+        const item = stageDistribution.value.find(entry => entry.name === name)
+        return `${name} ${item?.value || 0} (${pct(item?.value || 0, cards.student_count)}%)`
+      } },
+    series: [{ type: 'pie', radius: ['52%', '72%'], center: ['50%', '42%'], label: { show: false },
+      data: stageDistribution.value.map((item, i) => ({ ...item,
+        itemStyle: { color: palette[i % palette.length] } })) }],
+  })
 }
+function resizeCharts() { charts.forEach(chart => chart.resize()) }
 
-function resizeCharts() {
-  charts.forEach((c) => c.resize())
-}
-
-/* ================= 系统公告 ================= */
 const ANN_TAG: Record<string, { label: string; color: string; bg: string }> = {
   IMPORTANT: { label: '重要', color: '#f0564d', bg: '#fdecec' },
   NOTICE: { label: '通知', color: '#1878fd', bg: '#e8f1fd' },
   NORMAL: { label: '一般', color: '#e6822a', bg: '#fdf1e5' },
+  URGENT: { label: '紧急', color: '#f0564d', bg: '#fdecec' },
 }
-const announcements = [
-  { tag: 'IMPORTANT', title: '关于2024届毕业设计工作安排的通知', date: '2024-03-01' },
-  { tag: 'NOTICE', title: '毕业设计中期检查安排', date: '2024-02-20' },
-  { tag: 'NOTICE', title: '关于答辩论文格式要求的说明', date: '2024-02-15' },
-  { tag: 'NORMAL', title: '毕业设计优秀作品评选通知', date: '2024-01-28' },
-  { tag: 'NORMAL', title: '系统维护通知', date: '2024-01-20' },
-]
-
-/* ================= 待办事项 ================= */
-const todoChips = [
-  { label: '全部', count: 24 },
-  { label: '选题审核', count: 6 },
-  { label: '开题审核', count: 8 },
-  { label: '中期审核', count: 5 },
-  { label: '其他', count: 5 },
-]
-const activeChip = ref('全部')
-
-interface Todo {
-  text: string
-  cat: string
-  date: string
-  dot: string
-}
-const todos: Todo[] = [
-  { text: '张三的选题申请待审核', cat: '选题审核', date: '2024-05-18', dot: '#f59e0b' },
-  { text: '李四的开题报告待审核', cat: '开题审核', date: '2024-05-17', dot: '#3b82f6' },
-  { text: '王五的中期报告待审核', cat: '中期审核', date: '2024-05-16', dot: '#13c2c2' },
-  { text: '赵六的终期答辩材料待审核', cat: '终期审核', date: '2024-05-15', dot: '#8b5cf6' },
-  { text: '系统有 3 条新反馈待处理', cat: '系统提醒', date: '2024-05-14', dot: '#f0564d' },
-]
-const MAIN_CATS = ['选题审核', '开题审核', '中期审核']
-const filteredTodos = ref<Todo[]>(todos)
-function pickChip(label: string) {
-  activeChip.value = label
-  filteredTodos.value = label === '全部' ? todos : label === '其他' ? todos.filter((t) => !MAIN_CATS.includes(t.cat)) : todos.filter((t) => t.cat === label)
-}
-
-/* ================= 最新提交记录 ================= */
 const STATUS_PILL: Record<string, { color: string; bg: string }> = {
   待审核: { color: '#e6822a', bg: '#fdf3e6' },
   审核中: { color: '#1878fd', bg: '#e8f1fd' },
   已通过: { color: '#3fb950', bg: '#e9f9ee' },
   已退回: { color: '#f0564d', bg: '#fdecec' },
 }
-const submissions = [
-  { name: '张三', content: '开题报告', time: '2024-05-18', status: '待审核' },
-  { name: '李四', content: '中期报告', time: '2024-05-17', status: '待审核' },
-  { name: '王五', content: '毕业论文', time: '2024-05-16', status: '审核中' },
-  { name: '赵六', content: '终期答辩材料', time: '2024-05-15', status: '已通过' },
-  { name: '孙七', content: '开题报告', time: '2024-05-15', status: '已退回' },
-]
+const todoChips = computed(() => [{ label: '全部', count: pendingCounts.value.reduce((sum, item) => sum + item.count, 0) },
+  ...pendingCounts.value])
+const activeChip = ref('全部')
+const filteredTodos = computed(() => activeChip.value === '全部' ? todos.value :
+  todos.value.filter(todo => todo.cat === activeChip.value))
+function pickChip(label: string) { activeChip.value = label }
 
-onMounted(() => {
+onMounted(async () => {
+  const [home, analytics, distribution, activity] = await Promise.all([
+    dashboardApi.home(), dashboardApi.analytics(), dashboardApi.stats(), dashboardApi.adminActivity(),
+  ])
+  Object.assign(cards, analytics.data.cards)
+  passRates.value = analytics.data.pass_rates
+  stageDistribution.value = distribution.data.stage_distribution
+  announcements.value = home.data.announcements.map((item: any) => ({
+    tag: item.priority || 'NORMAL', title: item.title, date: item.publish_time?.slice(0, 10) || '',
+  }))
+  pendingCounts.value = activity.data.counts
+  todos.value = activity.data.todos.map((item: Todo) => ({ ...item, dot: dotColors[item.cat] || '#8b5cf6' }))
+  submissions.value = activity.data.submissions
+  await nextTick()
   renderCharts()
   window.addEventListener('resize', resizeCharts)
-  slideTimer = window.setInterval(() => {
-    slideIndex.value = (slideIndex.value + 1) % slides.length
-  }, 5000)
+  slideTimer = window.setInterval(() => { slideIndex.value = (slideIndex.value + 1) % slides.length }, 5000)
 })
 onUnmounted(() => {
   window.removeEventListener('resize', resizeCharts)
   if (slideTimer) window.clearInterval(slideTimer)
-  charts.forEach((c) => c.dispose())
+  charts.forEach(chart => chart.dispose())
   charts = []
 })
 </script>
@@ -370,7 +242,6 @@ onUnmounted(() => {
           <div class="stat-info">
             <div class="value">{{ c.value }}</div>
             <div class="label">{{ c.label }}</div>
-            <div class="trend" :style="{ color: c.trendColor }">{{ c.trend }} {{ c.arrow }}</div>
           </div>
           <div v-if="c.ring !== undefined" class="ring" :style="{ '--pct': c.ring, '--ring-color': c.ringColor }">
             <span>{{ c.ring }}%</span>
@@ -385,17 +256,7 @@ onUnmounted(() => {
         <div class="page-card chart-card">
           <div class="card-head">
             <div class="card-title"><i />各阶段学生人数统计</div>
-            <el-dropdown @command="handleBatch">
-              <span class="batch-select">
-                {{ batchRef }}
-                <el-icon :size="12"><ArrowDown /></el-icon>
-              </span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item v-for="b in batches" :key="b" :command="b">{{ b }}</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <span class="batch-select">全部学年</span>
           </div>
           <div ref="barRef" class="chart-box" />
         </div>
@@ -404,17 +265,7 @@ onUnmounted(() => {
         <div class="page-card chart-card">
           <div class="card-head">
             <div class="card-title"><i />各阶段通过率</div>
-            <el-dropdown @command="handleBatch">
-              <span class="batch-select">
-                {{ batchRef }}
-                <el-icon :size="12"><ArrowDown /></el-icon>
-              </span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item v-for="b in batches" :key="b" :command="b">{{ b }}</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <span class="batch-select">全部学年</span>
           </div>
           <div ref="lineRef" class="chart-box" />
         </div>
@@ -423,17 +274,7 @@ onUnmounted(() => {
         <div class="page-card chart-card">
           <div class="card-head">
             <div class="card-title"><i />学生进度分布</div>
-            <el-dropdown @command="handleBatch">
-              <span class="batch-select">
-                {{ batchRef }}
-                <el-icon :size="12"><ArrowDown /></el-icon>
-              </span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item v-for="b in batches" :key="b" :command="b">{{ b }}</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <span class="batch-select">全部学年</span>
           </div>
           <div ref="pieRef" class="chart-box" />
         </div>
@@ -455,10 +296,11 @@ onUnmounted(() => {
             <a class="more" @click="router.push('/announcements')">更多 ></a>
           </div>
           <div v-for="(a, i) in announcements" :key="i" class="ann-item" @click="router.push('/announcements')">
-            <span class="ann-tag" :style="{ color: ANN_TAG[a.tag].color, background: ANN_TAG[a.tag].bg }">{{ ANN_TAG[a.tag].label }}</span>
+            <span class="ann-tag" :style="{ color: (ANN_TAG[a.tag] || ANN_TAG.NORMAL).color, background: (ANN_TAG[a.tag] || ANN_TAG.NORMAL).bg }">{{ (ANN_TAG[a.tag] || ANN_TAG.NORMAL).label }}</span>
             <span class="ann-title">{{ a.title }}</span>
             <span class="ann-date">{{ a.date }}</span>
           </div>
+          <el-empty v-if="!announcements.length" description="暂无公告" :image-size="60" />
         </div>
       </el-col>
 
@@ -519,10 +361,11 @@ onUnmounted(() => {
               <span class="col-content">{{ r.content }}</span>
               <span class="col-time">{{ r.time }}</span>
               <span class="col-status">
-                <span class="status-pill" :style="{ color: STATUS_PILL[r.status].color, background: STATUS_PILL[r.status].bg }">{{ r.status }}</span>
+                <span class="status-pill" :style="{ color: (STATUS_PILL[r.status] || STATUS_PILL.待审核).color, background: (STATUS_PILL[r.status] || STATUS_PILL.待审核).bg }">{{ r.status }}</span>
               </span>
             </div>
           </div>
+          <el-empty v-if="!submissions.length" description="暂无提交记录" :image-size="60" />
         </div>
       </el-col>
     </el-row>
@@ -945,5 +788,34 @@ onUnmounted(() => {
   line-height: 1;
   padding: 4px 9px;
   border-radius: 10px;
+}
+
+.banner { height: 150px; background: linear-gradient(90deg, #e3f2ff 0%, #e5f3ffc9 32%, #e9f5ff12 65%), url('/media/login-bg.png') right 83% / 100% auto; }
+.banner-illus { display: none; }
+.banner-text h1 { font-size: 31px; color: #091c3d; }
+.banner-art { right: 35px; color: #113b77; }
+.stat-info .label { order: -1; font-size: 13px; color: #637797; }
+.stat-info .value { font-size: 27px; }
+.stat-card { min-height: 114px; align-items: center; }
+.stat-icon { width: 50px; height: 50px; }
+.stat-icon svg { width: 28px; height: 28px; }
+.chart-box { height: 248px; }
+.batch-select { cursor: default; }
+@media (max-width: 1450px) {
+  .stat-row :deep(.el-col) { max-width: 33.333%; flex: 0 0 33.333%; margin-bottom: 12px; }
+  .stat-card:has(.ring) .stat-info { padding-right: 50px; }
+}
+@media (max-width: 900px) {
+  .chart-row :deep(.el-col), .list-row :deep(.el-col) { max-width: 100%; flex: 0 0 100%; margin-bottom: 12px; }
+}
+@media (max-width: 600px) {
+  .stat-row :deep(.el-col) { max-width: 100%; flex: 0 0 100%; }
+  .stat-card:has(.ring) .stat-info { padding-right: 0; }
+  .ring { top: auto; bottom: 12px; }
+  .banner-text { left: 18px; }
+  .banner-text h1 { font-size: 23px; }
+  .banner-art { display: none; }
+  .mini-table { overflow-x: auto; }
+  .mini-thead, .mini-tr { min-width: 420px; }
 }
 </style>

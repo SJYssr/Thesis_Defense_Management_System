@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { useUserStore } from '@/stores/user'
+import { dashboardApi } from '@/api/common'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -18,13 +19,16 @@ const greeting = computed(() => {
 const teacherName = computed(() => `${userStore.user?.real_name || ''}老师`)
 
 /* ===== 统计卡（5 张，按设计稿） ===== */
-const statCards = [
-  { key: 'topics', label: '我的题目', value: 8, icon: 'doc', tileBg: '#d7e9fd', iconColor: '#1878fd', sub: '已发布 <b>8</b>' },
-  { key: 'students', label: '指导学生', value: 15, icon: 'users', tileBg: '#ddf6e7', iconColor: '#34c77b', sub: '进行中 <b class="g">12</b>' },
-  { key: 'pending', label: '待审核任务', value: 5, icon: 'clipboard', tileBg: '#feefdc', iconColor: '#f59e0b', sub: '开题 <b class="o">2</b> 中期 <b class="o">2</b> 终期 <b class="o">1</b>' },
-  { key: 'done', label: '已完成任务', value: 18, icon: 'check', tileBg: '#ece7fc', iconColor: '#8b5cf6', sub: '今年累计' },
-  { key: 'notice', label: '系统公告', value: 3, icon: 'bell', tileBg: '#fde3e3', iconColor: '#e83a3a', sub: '未读 <b class="r">1</b>' },
-]
+const home = ref<any>({ cards: {}, announcements: [], unread: 0 })
+const activity = ref<any>({ published_topics: 0, student_stages: {}, tasks: { pending: [], doing: [], done: [] },
+  task_counts: { pending: 0, doing: 0, done: 0 }, schedules: [] })
+const statCards = computed(() => [
+  { key: 'topics', label: '我的题目', value: home.value.cards.topic_count || 0, icon: 'doc', tileBg: '#d7e9fd', iconColor: '#1878fd', sub: `已发布 <b>${activity.value.published_topics || 0}</b>` },
+  { key: 'students', label: '指导学生', value: home.value.cards.student_count || 0, icon: 'users', tileBg: '#ddf6e7', iconColor: '#34c77b', sub: `进行中 <b class="g">${activity.value.task_counts.doing || 0}</b>` },
+  { key: 'pending', label: '待审核任务', value: activity.value.task_counts.pending || 0, icon: 'clipboard', tileBg: '#feefdc', iconColor: '#f59e0b', sub: '选题、材料待审核' },
+  { key: 'done', label: '已完成审核', value: activity.value.task_counts.done || 0, icon: 'check', tileBg: '#ece7fc', iconColor: '#8b5cf6', sub: '本人审核记录' },
+  { key: 'notice', label: '近期公告', value: home.value.announcements.length, icon: 'bell', tileBg: '#fde3e3', iconColor: '#e83a3a', sub: `未读通知 <b class="r">${home.value.unread || 0}</b>` },
+])
 const CARD_PATH: Record<string, string> = {
   topics: '/teacher/topics',
   students: '/teacher/students',
@@ -44,11 +48,11 @@ const ICON_PATHS: Record<string, string> = {
 
 /* ===== 我的任务 ===== */
 const taskTab = ref<'pending' | 'doing' | 'done'>('pending')
-const TASK_TABS = [
-  { key: 'pending' as const, label: '待处理', count: 5 },
-  { key: 'doing' as const, label: '进行中', count: 12 },
-  { key: 'done' as const, label: '已完成', count: 18 },
-]
+const TASK_TABS = computed(() => [
+  { key: 'pending' as const, label: '待处理', count: activity.value.task_counts.pending || 0 },
+  { key: 'doing' as const, label: '进行中', count: activity.value.task_counts.doing || 0 },
+  { key: 'done' as const, label: '已完成', count: activity.value.task_counts.done || 0 },
+])
 
 interface TaskRow {
   type: string
@@ -59,39 +63,18 @@ interface TaskRow {
   path: string
 }
 
-const PENDING_TASKS: TaskRow[] = [
-  { type: '开题报告审核', student: '李明', topic: '基于深度学习的图像识别系统', time: '2024-05-18 10:20', status: '待审核', path: '/teacher/opening' },
-  { type: '中期答辩审核', student: '王芳', topic: '基于SpringBoot的校园二手交易平台', time: '2024-05-17 14:30', status: '待审核', path: '/teacher/midterm' },
-  { type: '开题报告审核', student: '张华', topic: '大学生心理健康管理系统', time: '2024-05-16 09:15', status: '待审核', path: '/teacher/opening' },
-  { type: '终期答辩审核', student: '刘洋', topic: '基于Vue的在线教育平台', time: '2024-05-15 16:40', status: '待审核', path: '/teacher/final' },
-  { type: '中期答辩审核', student: '陈丽', topic: '基于Python的数据可视化分析', time: '2024-05-14 11:25', status: '待审核', path: '/teacher/midterm' },
-]
-const DOING_TASKS: TaskRow[] = [
-  { type: '选题指导', student: '赵磊', topic: '基于微服务架构的物流管理系统', time: '2024-05-12 09:00', status: '进行中', path: '/teacher/students' },
-  { type: '开题指导', student: '孙悦', topic: '智能宿舍管理系统', time: '2024-05-10 15:30', status: '进行中', path: '/teacher/students' },
-  { type: '中期指导', student: '周涛', topic: '基于区块链的成绩存证系统', time: '2024-05-08 11:20', status: '进行中', path: '/teacher/students' },
-]
-const DONE_TASKS: TaskRow[] = [
-  { type: '选题审核', student: '吴倩', topic: '基于大数据的舆情分析平台', time: '2024-05-06 10:10', status: '已完成', path: '/teacher/selections' },
-  { type: '开题报告审核', student: '郑凯', topic: '基于物联网的环境监测系统', time: '2024-05-04 14:00', status: '已完成', path: '/teacher/opening' },
-  { type: '毕业材料审核', student: '冯雪', topic: '基于机器学习的推荐算法研究', time: '2024-05-02 16:45', status: '已完成', path: '/teacher/materials' },
-]
-const taskRows = computed(() => {
-  if (taskTab.value === 'pending') return PENDING_TASKS
-  if (taskTab.value === 'doing') return DOING_TASKS
-  return DONE_TASKS
-})
+const taskRows = computed<TaskRow[]>(() => activity.value.tasks[taskTab.value] || [])
 
 /* ===== 我的学生情况（环形图） ===== */
 const donutRef = ref<HTMLDivElement>()
 let chart: echarts.ECharts | null = null
-const STAGE_DATA = [
-  { name: '选题中', value: 3, color: '#4a9eff' },
-  { name: '开题阶段', value: 4, color: '#34c77b' },
-  { name: '中期阶段', value: 4, color: '#f5a623' },
-  { name: '终期阶段', value: 3, color: '#b18cf5' },
-  { name: '已完成', value: 1, color: '#c3cad6' },
-]
+const STAGE_DATA = computed(() => [
+  { name: '选题中', value: activity.value.student_stages.SELECTION || 0, color: '#4a9eff' },
+  { name: '开题阶段', value: activity.value.student_stages.OPENING || 0, color: '#34c77b' },
+  { name: '中期阶段', value: activity.value.student_stages.MIDTERM || 0, color: '#f5a623' },
+  { name: '终期及材料', value: (activity.value.student_stages.FINAL || 0) + (activity.value.student_stages.MATERIAL || 0), color: '#b18cf5' },
+  { name: '已完成', value: activity.value.student_stages.COMPLETED || 0, color: '#c3cad6' },
+])
 
 function renderDonut() {
   if (!donutRef.value) return
@@ -106,7 +89,7 @@ function renderDonut() {
         label: { show: false },
         labelLine: { show: false },
         itemStyle: { borderColor: '#fff', borderWidth: 3, borderRadius: 2 },
-        data: STAGE_DATA.map((d) => ({ name: d.name, value: d.value, itemStyle: { color: d.color } })),
+        data: STAGE_DATA.value.map((d) => ({ name: d.name, value: d.value, itemStyle: { color: d.color } })),
       },
     ],
   })
@@ -116,24 +99,28 @@ function resizeChart() {
 }
 
 /* ===== 系统公告 ===== */
-const ANNOUNCEMENTS = [
-  { title: '关于2024届毕业设计工作安排的通知', tag: '重要', tagClass: 't-important', date: '2024-03-01' },
-  { title: '毕业设计中期检查安排', tag: '通知', tagClass: 't-notice', date: '2024-02-20' },
-  { title: '关于答辩论文格式要求的说明', tag: '通知', tagClass: 't-notice', date: '2024-02-15' },
-  { title: '优秀毕业设计作品评选通知', tag: '通知', tagClass: 't-notice', date: '2024-01-28' },
-  { title: '系统维护通知', tag: '一般', tagClass: 't-general', date: '2024-01-20' },
-]
+const ANNOUNCEMENTS = computed(() => (home.value.announcements || []).map((a: any) => ({
+  title: a.title, tag: a.priority === 'URGENT' ? '紧急' : a.priority === 'IMPORTANT' ? '重要' : '通知',
+  tagClass: a.priority === 'URGENT' || a.priority === 'IMPORTANT' ? 't-important' : 't-notice',
+  date: (a.publish_time || '').slice(0, 10),
+})))
 
 /* ===== 近期日程 ===== */
-const SCHEDULES = [
-  { date: '05-20', week: '今天', title: '中期答辩评审', time: '14:00 - 16:00', place: '腾讯会议' },
-  { date: '05-22', week: '周二', title: '指导学生开题汇报', time: '10:00 - 12:00', place: '教学楼A301' },
-  { date: '05-25', week: '周六', title: '毕业设计进度检查', time: '09:00 - 11:00', place: '线上' },
-  { date: '05-28', week: '周二', title: '教研室会议', time: '15:00 - 17:00', place: '行政楼B201' },
-]
+const SCHEDULES = computed(() => (activity.value.schedules || []).map((s: any) => ({
+  id: s.id, date: s.starts_at.slice(5, 10), week: '答辩', title: s.title,
+  time: `${s.starts_at.slice(11, 16)} - ${s.ends_at.slice(11, 16)}`, place: s.location,
+})))
 
-onMounted(() => {
-  renderDonut()
+onMounted(async () => {
+  try {
+    const [homeResponse, activityResponse] = await Promise.all([dashboardApi.home(), dashboardApi.teacherActivity()])
+    home.value = homeResponse.data
+    activity.value = activityResponse.data
+  } catch {
+    /* 请求层展示错误，页面保留空状态 */
+  } finally {
+    renderDonut()
+  }
   window.addEventListener('resize', resizeChart)
 })
 onBeforeUnmount(() => {
@@ -213,7 +200,7 @@ onBeforeUnmount(() => {
             {{ t.label }}（{{ t.count }}）
           </button>
         </div>
-        <el-table :data="taskRows" class="task-table">
+        <el-table :data="taskRows" class="task-table" empty-text="暂无此类任务">
           <el-table-column type="index" label="序号" min-width="46" align="center" />
           <el-table-column prop="type" label="任务类型" min-width="100" />
           <el-table-column prop="student" label="学生姓名" min-width="86" />
@@ -222,7 +209,7 @@ onBeforeUnmount(() => {
               <span class="topic-text">{{ row.topic }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="time" label="提交时间" min-width="130" />
+          <el-table-column label="时间" min-width="130"><template #default="{ row }">{{ row.time ? row.time.replace('T', ' ').slice(0, 16) : '—' }}</template></el-table-column>
           <el-table-column label="状态" min-width="78" align="center">
             <template #default="{ row }">
               <span class="status-tag" :class="row.status === '待审核' ? 's-pending' : row.status === '进行中' ? 's-doing' : 's-done'">{{ row.status }}</span>
@@ -234,6 +221,14 @@ onBeforeUnmount(() => {
             </template>
           </el-table-column>
         </el-table>
+        <div class="task-mobile-list">
+          <div v-if="!taskRows.length" class="home-empty">暂无此类任务</div>
+          <article v-for="(row, index) in taskRows" :key="`${taskTab}-${index}`" class="task-mobile-item">
+            <div class="task-mobile-top"><strong>{{ row.type }}</strong><span class="status-tag" :class="row.status === '待审核' ? 's-pending' : row.status === '进行中' ? 's-doing' : 's-done'">{{ row.status }}</span></div>
+            <p>{{ row.student }} · {{ row.topic }}</p>
+            <div class="task-mobile-bottom"><time>{{ row.time ? row.time.replace('T', ' ').slice(0, 16) : '—' }}</time><el-button link type="primary" @click="router.push(row.path)">查看</el-button></div>
+          </article>
+        </div>
       </div>
 
       <div class="card donut-card">
@@ -245,7 +240,7 @@ onBeforeUnmount(() => {
           <div class="donut-box">
             <div ref="donutRef" class="donut-chart" />
             <div class="donut-center">
-              <div class="donut-num">15</div>
+              <div class="donut-num">{{ home.cards.student_count || 0 }}</div>
               <div class="donut-label">指导学生总数</div>
             </div>
           </div>
@@ -268,6 +263,7 @@ onBeforeUnmount(() => {
           <a class="more-link" @click="router.push('/announcements')">查看更多<el-icon :size="12"><ArrowRight /></el-icon></a>
         </div>
         <div class="ann-list">
+          <div v-if="!ANNOUNCEMENTS.length" class="home-empty">暂无公告</div>
           <div v-for="a in ANNOUNCEMENTS" :key="a.title" class="ann-row">
             <i class="horn-ic"><svg viewBox="0 0 24 24" fill="currentColor" v-html="ICON_PATHS.horn" /></i>
             <span class="ann-title">{{ a.title }}</span>
@@ -280,17 +276,18 @@ onBeforeUnmount(() => {
       <div class="card sched-card">
         <div class="card-head">
           <span class="card-title"><i class="head-ic"><svg viewBox="0 0 24 24" fill="currentColor" v-html="ICON_PATHS.doc" /></i>近期日程</span>
-          <a class="more-link" @click="router.push('/teacher/home')">查看更多<el-icon :size="12"><ArrowRight /></el-icon></a>
+          <a class="more-link" @click="router.push('/teacher/review-workbench')">查看答辩安排<el-icon :size="12"><ArrowRight /></el-icon></a>
         </div>
         <div class="sched-list">
-          <div v-for="(s, i) in SCHEDULES" :key="s.date" class="sched-row">
+          <div v-if="!SCHEDULES.length" class="home-empty">暂无即将开始的答辩场次</div>
+          <div v-for="(s, i) in SCHEDULES" :key="s.id" class="sched-row">
             <div class="date-box">
               <div class="d1">{{ s.date }}</div>
               <div class="d2">{{ s.week }}</div>
             </div>
             <div class="tl">
               <span class="tl-dot" />
-              <span v-if="i < SCHEDULES.length - 1" class="tl-line" />
+              <span v-if="Number(i) < SCHEDULES.length - 1" class="tl-line" />
             </div>
             <div class="sched-title">{{ s.title }}</div>
             <div class="sched-meta">
@@ -309,6 +306,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.home-empty { padding: 24px 12px; color: #8a97ad; text-align: center; font-size: 13px; }
 /* ===== 欢迎横幅 ===== */
 .banner {
   position: relative;
@@ -482,6 +480,7 @@ onBeforeUnmount(() => {
 }
 .task-table :deep(.cell) { padding: 0 8px; }
 .task-table :deep(.el-button.is-link) { font-size: 13px; }
+.task-mobile-list { display: none; }
 .topic-text {
   color: #8a97ad;
   overflow: hidden;
@@ -646,5 +645,17 @@ onBeforeUnmount(() => {
   gap: 5px;
   font-size: 12.5px;
   color: #8a97ad;
+}
+@media (max-width: 700px) {
+  .task-table { display: none; }
+  .task-mobile-list { display: grid; gap: 10px; }
+  .task-mobile-item { padding: 12px; border: 1px solid #e7edf5; border-radius: 8px; min-width: 0; }
+  .task-mobile-top, .task-mobile-bottom { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .task-mobile-item p { line-height: 1.5; overflow-wrap: anywhere; color: #52647f; }
+  .task-mobile-bottom time { color: #8a97ad; font-size: 12px; }
+  .donut-wrap { flex-wrap: wrap; justify-content: center; }
+  .donut-legend { min-width: 100%; }
+  .sched-row { flex-wrap: wrap; }
+  .sched-title { width: auto; flex: 1; }
 }
 </style>

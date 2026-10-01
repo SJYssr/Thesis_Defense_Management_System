@@ -1,53 +1,7 @@
 <template>
   <div class="stats-page">
     <!-- 筛选区 -->
-    <div class="filter-bar">
-      <div class="filter-item">
-        <span class="filter-label">统计年份</span>
-        <el-dropdown trigger="click">
-          <span class="filter-select">2024届 <el-icon><ArrowDown /></el-icon></span>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item>2024届</el-dropdown-item>
-              <el-dropdown-item>2023届</el-dropdown-item>
-              <el-dropdown-item>2022届</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-      </div>
-      <div class="filter-item">
-        <span class="filter-label">学院</span>
-        <el-dropdown trigger="click">
-          <span class="filter-select">全部学院 <el-icon><ArrowDown /></el-icon></span>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item>全部学院</el-dropdown-item>
-              <el-dropdown-item>计算机学院</el-dropdown-item>
-              <el-dropdown-item>电子信息学院</el-dropdown-item>
-              <el-dropdown-item>机械工程学院</el-dropdown-item>
-              <el-dropdown-item>经济管理学院</el-dropdown-item>
-              <el-dropdown-item>艺术设计学院</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-      </div>
-      <div class="filter-item">
-        <span class="filter-label">专业</span>
-        <el-dropdown trigger="click">
-          <span class="filter-select">全部专业 <el-icon><ArrowDown /></el-icon></span>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item>全部专业</el-dropdown-item>
-              <el-dropdown-item>计算机科学与技术</el-dropdown-item>
-              <el-dropdown-item>软件工程</el-dropdown-item>
-              <el-dropdown-item>电子信息工程</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-      </div>
-      <el-button type="primary" class="filter-btn">查询</el-button>
-      <el-button class="filter-btn reset">重置</el-button>
-    </div>
+    <div class="filter-bar"><strong>数据统计</strong><span class="filter-label">全部学年 · 实时业务数据</span></div>
 
     <!-- 统计卡 -->
     <div class="stat-cards">
@@ -58,7 +12,7 @@
         <div class="stat-info">
           <div class="stat-num">{{ c.value }}</div>
           <div class="stat-label">{{ c.label }}</div>
-          <div class="stat-trend" :style="{ color: c.trendColor }">{{ c.trend }} {{ c.arrow }}</div>
+
         </div>
         <div v-if="c.ring !== undefined" class="stat-ring" :style="{ '--pct': c.ring, '--ring-color': c.ringColor }">
           <span>{{ c.ring }}%</span>
@@ -72,15 +26,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />各学院学生人数统计</div>
-            <el-dropdown trigger="click">
-              <span class="head-select">2024届 <el-icon><ArrowDown /></el-icon></span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item>2024届</el-dropdown-item>
-                  <el-dropdown-item>2023届</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <span class="head-select">全部学年</span>
           </div>
           <div ref="collegeChartRef" class="chart-box" />
         </div>
@@ -89,15 +35,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />各阶段通过率统计</div>
-            <el-dropdown trigger="click">
-              <span class="head-select">2024届 <el-icon><ArrowDown /></el-icon></span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item>2024届</el-dropdown-item>
-                  <el-dropdown-item>2023届</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <span class="head-select">全部学年</span>
           </div>
           <div class="chart-body">
             <div class="stage-legend">
@@ -113,28 +51,20 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />题目类型分布</div>
-            <el-dropdown trigger="click">
-              <span class="head-select">2024届 <el-icon><ArrowDown /></el-icon></span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item>2024届</el-dropdown-item>
-                  <el-dropdown-item>2023届</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <span class="head-select">全部学年</span>
           </div>
           <div class="donut-wrap">
             <div class="donut-chart">
               <div ref="typeChartRef" class="chart-box donut-box" />
               <div class="donut-center">
-                <b>320</b><span>题目总数</span>
+                <b>{{ stats.cards.topic_count }}</b><span>题目总数</span>
               </div>
             </div>
             <div class="donut-legend">
               <div v-for="t in topicTypes" :key="t.name" class="dl-item">
                 <i :style="{ background: t.color }" />
                 <span class="dl-name">{{ t.name }}</span>
-                <span class="dl-val">{{ t.value }}（{{ t.pct }}%）</span>
+                <span class="dl-val">{{ t.value }}（{{ pct(t.value, stats.cards.topic_count) }}%）</span>
               </div>
             </div>
           </div>
@@ -148,15 +78,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />各专业选题情况</div>
-            <el-dropdown trigger="click">
-              <span class="head-select">2024届 <el-icon><ArrowDown /></el-icon></span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item>2024届</el-dropdown-item>
-                  <el-dropdown-item>2023届</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <span class="head-select">全部学年</span>
           </div>
           <div class="major-table">
             <div class="mt-head">
@@ -164,7 +86,7 @@
             </div>
             <div v-for="m in majorRows" :key="m.name" class="mt-row">
               <span class="c-name">{{ m.name }}</span><span>{{ m.total }}</span><span>{{ m.chosen }}</span>
-              <span class="rate">{{ m.rate }}</span><span>{{ m.unchosen }}</span>
+              <span class="rate">{{ m.rate }}%</span><span>{{ m.unchosen }}</span>
             </div>
           </div>
         </div>
@@ -173,15 +95,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />各月提交情况趋势</div>
-            <el-dropdown trigger="click">
-              <span class="head-select">2024届 <el-icon><ArrowDown /></el-icon></span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item>2024届</el-dropdown-item>
-                  <el-dropdown-item>2023届</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <span class="head-select">全部学年</span>
           </div>
           <div ref="monthChartRef" class="chart-box" />
         </div>
@@ -190,28 +104,20 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />答辩结果统计</div>
-            <el-dropdown trigger="click">
-              <span class="head-select">2024届 <el-icon><ArrowDown /></el-icon></span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item>2024届</el-dropdown-item>
-                  <el-dropdown-item>2023届</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <span class="head-select">全部学年</span>
           </div>
           <div class="donut-wrap">
             <div class="donut-chart">
               <div ref="defenseChartRef" class="chart-box donut-box" />
               <div class="donut-center">
-                <b>186</b><span>已完成答辩</span>
+                <b>{{ stats.defense_total }}</b><span>正式答辩已发布</span>
               </div>
             </div>
             <div class="donut-legend">
               <div v-for="d in defenseResults" :key="d.name" class="dl-item">
                 <i :style="{ background: d.color }" />
                 <span class="dl-name">{{ d.name }}</span>
-                <span class="dl-val">{{ d.value }}（{{ d.pct }}%）</span>
+                <span class="dl-val">{{ d.value }}（{{ pct(d.value, stats.defense_total) }}%）</span>
               </div>
             </div>
           </div>
@@ -222,9 +128,46 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, nextTick, ref } from 'vue'
+import { onMounted, onBeforeUnmount, nextTick, computed, reactive, ref } from 'vue'
 import * as echarts from 'echarts'
 import { STAT_ICONS } from '@/components/statIcons'
+import { dashboardApi } from '@/api/common'
+
+interface NamedValue { name: string; value: number }
+interface Analytics {
+  cards: { student_count: number; teacher_count: number; topic_count: number;
+           selected_count: number; completed_count: number; pending_count: number }
+  colleges: NamedValue[]
+  majors: { name: string; total: number; chosen: number; rate: number; unchosen: number }[]
+  pass_rates: NamedValue[]
+  topic_types: NamedValue[]
+  months: string[]
+  month_series: { name: string; data: number[] }[]
+  defense_results: NamedValue[]
+  defense_total: number
+}
+const stats = reactive<Analytics>({
+  cards: { student_count: 0, teacher_count: 0, topic_count: 0, selected_count: 0,
+           completed_count: 0, pending_count: 0 },
+  colleges: [], majors: [], pass_rates: [], topic_types: [], months: [], month_series: [],
+  defense_results: [], defense_total: 0,
+})
+const palette = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#13c2c2']
+const statCards = computed(() => [
+  { label: '学生总数', value: stats.cards.student_count, icon: STAT_ICONS.users, color: '#2563eb', bg: '#d7f0fe' },
+  { label: '教师总数', value: stats.cards.teacher_count, icon: STAT_ICONS.person, color: '#22c55e', bg: '#ddfef0' },
+  { label: '题目总数', value: stats.cards.topic_count, icon: STAT_ICONS.doc, color: '#8b5cf6', bg: '#edeafd' },
+  { label: '已选题人数', value: stats.cards.selected_count, icon: STAT_ICONS.case, color: '#f59e0b', bg: '#fef5ea',
+    ring: pct(stats.cards.selected_count, stats.cards.student_count), ringColor: '#f59e0b' },
+  { label: '材料审核完成', value: stats.cards.completed_count, icon: STAT_ICONS.cap, color: '#ef4444', bg: '#fee7ed',
+    ring: pct(stats.cards.completed_count, stats.cards.student_count), ringColor: '#ef4444' },
+  { label: '待审核事项', value: stats.cards.pending_count, icon: STAT_ICONS.bars, color: '#3b82f6', bg: '#dcf9fe' },
+])
+const stagePass = computed(() => stats.pass_rates.map((s, i) => ({ ...s, color: palette[i % palette.length] })))
+const topicTypes = computed(() => stats.topic_types.map((s, i) => ({ ...s, color: palette[i % palette.length] })))
+const defenseResults = computed(() => stats.defense_results.map((s, i) => ({ ...s, color: palette[i % palette.length] })))
+const majorRows = computed(() => stats.majors)
+function pct(value: number, total: number) { return total ? Math.round(value / total * 100) : 0 }
 
 const collegeChartRef = ref<HTMLElement>()
 const passChartRef = ref<HTMLElement>()
@@ -232,153 +175,57 @@ const typeChartRef = ref<HTMLElement>()
 const monthChartRef = ref<HTMLElement>()
 const defenseChartRef = ref<HTMLElement>()
 let charts: echarts.ECharts[] = []
-
-const statCards = [
-  { label: '学生总数', value: 356, icon: STAT_ICONS.users, color: '#2563eb', bg: '#d7f0fe', trend: '较去年 +12%', trendColor: '#1878fd', arrow: '↗' },
-  { label: '教师总数', value: 56, icon: STAT_ICONS.person, color: '#22c55e', bg: '#ddfef0', trend: '较去年 +8%', trendColor: '#1878fd', arrow: '↗' },
-  { label: '题目总数', value: 320, icon: STAT_ICONS.doc, color: '#8b5cf6', bg: '#edeafd', trend: '较去年 +15%', trendColor: '#1878fd', arrow: '↗' },
-  { label: '已选题人数', value: 298, icon: STAT_ICONS.case, color: '#f59e0b', bg: '#fef5ea', trend: '较去年 +10%', trendColor: '#f59e0b', arrow: '↗', ring: 84, ringColor: '#f59e0b' },
-  { label: '已完成答辩', value: 186, icon: STAT_ICONS.cap, color: '#ef4444', bg: '#fee7ed', trend: '较去年 +18%', trendColor: '#ef4444', arrow: '↑', ring: 52, ringColor: '#ef4444' },
-  { label: '待审核事项', value: 24, icon: STAT_ICONS.bars, color: '#3b82f6', bg: '#dcf9fe', trend: '较上周 +6', trendColor: '#ef4444', arrow: '↑' },
-]
-
-const stagePass = [
-  { name: '选题', value: 95, color: '#3b82f6' },
-  { name: '开题', value: 86, color: '#22c55e' },
-  { name: '中期', value: 71, color: '#f59e0b' },
-  { name: '终期', value: 58, color: '#ef4444' },
-  { name: '毕业材料', value: 52, color: '#8b5cf6' },
-]
-
-const topicTypes = [
-  { name: '软件开发类', value: 120, pct: 37, color: '#2e97fe' },
-  { name: '硬件设计类', value: 68, pct: 21, color: '#9c5ef5' },
-  { name: '算法研究类', value: 56, pct: 18, color: '#1ed4a6' },
-  { name: '应用研究类', value: 48, pct: 15, color: '#fe6940' },
-  { name: '其他', value: 28, pct: 9, color: '#f0a050' },
-]
-
-const defenseResults = [
-  { name: '优秀', value: 42, pct: 23, color: '#3b82f6' },
-  { name: '良好', value: 68, pct: 37, color: '#22c55e' },
-  { name: '中等', value: 52, pct: 28, color: '#f59e0b' },
-  { name: '及格', value: 18, pct: 10, color: '#f56c6c' },
-  { name: '不及格', value: 6, pct: 3, color: '#d6303a' },
-]
-
-const majorRows = [
-  { name: '计算机科学与技术', total: 98, chosen: 92, rate: '93.9%', unchosen: 6 },
-  { name: '软件工程', total: 86, chosen: 78, rate: '90.7%', unchosen: 8 },
-  { name: '电子信息工程', total: 76, chosen: 64, rate: '84.2%', unchosen: 12 },
-  { name: '机械设计制造及其自动化', total: 58, chosen: 46, rate: '79.3%', unchosen: 12 },
-  { name: '会计学', total: 38, chosen: 28, rate: '73.7%', unchosen: 10 },
-  { name: '视觉传达设计', total: 32, chosen: 26, rate: '81.3%', unchosen: 6 },
-]
-
-const colleges = [
-  { name: '计算机学院', value: 98, color: '#3b82f6' },
-  { name: '电子信息学院', value: 76, color: '#22c55e' },
-  { name: '机械工程学院', value: 68, color: '#f59e0b' },
-  { name: '经济管理学院', value: 58, color: '#ef4444' },
-  { name: '艺术设计学院', value: 56, color: '#8b5cf6' },
-]
-
-const months = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月']
-const monthSeries = [
-  { name: '开题报告', color: '#3b82f6', data: [22, 44, 73, 66, 122, 83, 52, 62] },
-  { name: '中期报告', color: '#22c55e', data: [15, 31, 45, 52, 76, 55, 39, 41] },
-  { name: '终期报告', color: '#f59e0b', data: [13, 22, 30, 46, 64, 44, 31, 29] },
-  { name: '毕业材料', color: '#ef4444', data: [8, 12, 18, 31, 45, 26, 18, 15] },
-]
-
+function chartOn(el: HTMLElement | undefined) {
+  if (!el) return null
+  const chart = echarts.init(el)
+  charts.push(chart)
+  return chart
+}
 function initCharts() {
-  if (collegeChartRef.value) {
-    const chart = echarts.init(collegeChartRef.value)
-    charts.push(chart)
-    chart.setOption({
-      grid: { left: 42, right: 10, top: 20, bottom: 28 },
-      xAxis: { type: 'category', data: colleges.map((c) => c.name), axisLabel: { interval: 0, fontSize: 10, color: '#7b8794' }, axisTick: { show: false }, axisLine: { lineStyle: { color: '#e4e9f0' } } },
-      yAxis: { type: 'value', max: 120, interval: 20, name: '人数', nameTextStyle: { color: '#7b8794', fontSize: 10, align: 'right' }, axisLabel: { color: '#7b8794' }, splitLine: { lineStyle: { color: '#eef2f8' } } },
-      series: [{
-        type: 'bar', barWidth: 22,
-        data: colleges.map((c) => ({
-          value: c.value,
-          itemStyle: { color: c.color, borderRadius: [4, 4, 0, 0] },
-          label: { show: true, position: 'top', color: '#5a6b80', fontSize: 10 },
-        })),
-      }],
-    })
-  }
-  if (passChartRef.value) {
-    const chart = echarts.init(passChartRef.value)
-    charts.push(chart)
-    chart.setOption({
-      grid: { left: 38, right: 14, top: 26, bottom: 26 },
-      xAxis: { type: 'category', data: stagePass.map((s) => s.name), axisLabel: { color: '#7b8794', fontSize: 11 }, axisTick: { show: false }, axisLine: { lineStyle: { color: '#e4e9f0' } } },
-      yAxis: { type: 'value', max: 100, interval: 20, axisLabel: { formatter: '{value}%', color: '#7b8794' }, splitLine: { lineStyle: { color: '#eef2f8' } } },
-      series: [{
-        type: 'line', smooth: true, symbol: 'circle', symbolSize: 8,
-        lineStyle: { color: '#93b8f5', width: 3 },
-        areaStyle: { color: 'rgba(59,130,246,0.08)' },
-        data: stagePass.map((s) => ({
-          value: s.value,
-          itemStyle: { color: s.color, borderColor: '#fff', borderWidth: 2 },
-          label: { show: true, position: 'top', formatter: '{c}%', color: '#5a6b80', fontSize: 10 },
-        })),
-      }],
-    })
-  }
-  if (typeChartRef.value) {
-    const chart = echarts.init(typeChartRef.value)
-    charts.push(chart)
-    chart.setOption({
-      series: [{
-        type: 'pie', radius: ['56%', '80%'], center: ['50%', '50%'],
-        label: { show: false }, labelLine: { show: false },
-        data: topicTypes.map((t) => ({ value: t.value, name: t.name, itemStyle: { color: t.color } })),
-      }],
-    })
-  }
-  if (monthChartRef.value) {
-    const chart = echarts.init(monthChartRef.value)
-    charts.push(chart)
-    chart.setOption({
-      grid: { left: 42, right: 12, top: 36, bottom: 26 },
-      legend: { top: 2, right: 0, itemWidth: 14, itemHeight: 8, textStyle: { color: '#5a6b80', fontSize: 10 } },
-      xAxis: { type: 'category', data: months, axisLabel: { color: '#7b8794', fontSize: 10 }, axisTick: { show: false }, axisLine: { lineStyle: { color: '#e4e9f0' } } },
-      yAxis: { type: 'value', max: 150, interval: 30, name: '提交数量', nameTextStyle: { color: '#7b8794', fontSize: 10, align: 'right' }, axisLabel: { color: '#7b8794' }, splitLine: { lineStyle: { color: '#eef2f8' } } },
-      series: monthSeries.map((s) => ({
-        name: s.name, type: 'line', smooth: true, symbol: 'circle', symbolSize: 5,
-        lineStyle: { color: s.color, width: 2 }, itemStyle: { color: s.color }, data: s.data,
-      })),
-    })
-  }
-  if (defenseChartRef.value) {
-    const chart = echarts.init(defenseChartRef.value)
-    charts.push(chart)
-    chart.setOption({
-      series: [{
-        type: 'pie', radius: ['56%', '80%'], center: ['50%', '50%'],
-        label: { show: false }, labelLine: { show: false },
-        data: defenseResults.map((d) => ({ value: d.value, name: d.name, itemStyle: { color: d.color } })),
-      }],
-    })
-  }
+  chartOn(collegeChartRef.value)?.setOption({
+    grid: { left: 46, right: 12, top: 30, bottom: 45 }, tooltip: { trigger: 'axis' },
+    xAxis: { type: 'category', data: stats.colleges.map(c => c.name), axisLabel: { interval: 0, rotate: 20, fontSize: 10 } },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: [{ type: 'bar', barMaxWidth: 28, data: stats.colleges.map((c, i) => ({ value: c.value,
+      itemStyle: { color: palette[i % palette.length], borderRadius: [4, 4, 0, 0] } })) }],
+  })
+  chartOn(passChartRef.value)?.setOption({
+    grid: { left: 42, right: 15, top: 30, bottom: 30 }, tooltip: { trigger: 'axis' },
+    xAxis: { type: 'category', data: stats.pass_rates.map(s => s.name) },
+    yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
+    series: [{ type: 'line', smooth: true, data: stats.pass_rates.map(s => s.value),
+      itemStyle: { color: '#3b82f6' }, label: { show: true, position: 'top', formatter: '{c}%' } }],
+  })
+  chartOn(typeChartRef.value)?.setOption({
+    tooltip: { trigger: 'item' },
+    series: [{ type: 'pie', radius: ['56%', '80%'], label: { show: false },
+      data: stats.topic_types.map((t, i) => ({ ...t, itemStyle: { color: palette[i % palette.length] } })) }],
+  })
+  chartOn(monthChartRef.value)?.setOption({
+    grid: { left: 42, right: 12, top: 36, bottom: 28 }, tooltip: { trigger: 'axis' },
+    legend: { top: 0, right: 0, textStyle: { fontSize: 10 } },
+    xAxis: { type: 'category', data: stats.months.map(m => m.slice(5) + '月') },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: stats.month_series.map((s, i) => ({ name: s.name, type: 'line', smooth: true,
+      data: s.data, itemStyle: { color: palette[i % palette.length] } })),
+  })
+  chartOn(defenseChartRef.value)?.setOption({
+    tooltip: { trigger: 'item' },
+    series: [{ type: 'pie', radius: ['56%', '80%'], label: { show: false },
+      data: stats.defense_results.map((d, i) => ({ ...d, itemStyle: { color: palette[i % palette.length] } })) }],
+  })
 }
-
-function handleResize() {
-  charts.forEach((c) => c.resize())
-}
-
+function resizeCharts() { charts.forEach(chart => chart.resize()) }
 onMounted(async () => {
+  const response = await dashboardApi.analytics()
+  Object.assign(stats, response.data)
   await nextTick()
   initCharts()
-  window.addEventListener('resize', handleResize)
+  window.addEventListener('resize', resizeCharts)
 })
-
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', handleResize)
-  charts.forEach((c) => c.dispose())
+  window.removeEventListener('resize', resizeCharts)
+  charts.forEach(chart => chart.dispose())
   charts = []
 })
 </script>
@@ -528,7 +375,7 @@ onBeforeUnmount(() => {
   border: 1px solid #e4e9f0;
   border-radius: 4px;
   padding: 2px 8px;
-  cursor: pointer;
+  cursor: default;
 }
 .head-select .el-icon { font-size: 10px; color: #97a3b4; }
 .chart-box {
@@ -633,4 +480,24 @@ onBeforeUnmount(() => {
 }
 .mt-row:last-child { border-bottom: none; }
 .mt-row .rate { color: #17d09a; font-weight: 500; }
+@media (max-width: 1450px) {
+  .stat-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stat-card:has(.stat-ring) .stat-info { padding-right: 48px; }
+}
+@media (max-width: 900px) {
+  .chart-row :deep(.el-col) { max-width: 100%; flex: 0 0 100%; margin-bottom: 12px; }
+  .major-table { overflow-x: auto; }
+  .mt-head, .mt-row { min-width: 500px; }
+}
+@media (max-width: 600px) {
+  .stat-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat-card { min-height: 90px; padding: 12px; }
+  .stat-icon { width: 34px; height: 34px; }
+  .stat-card:has(.stat-ring) .stat-info { padding-right: 0; }
+  .stat-ring { width: 34px; height: 34px; right: 8px; bottom: 8px; top: auto; }
+  .stat-ring span { font-size: 9px; }
+  .donut-wrap { flex-direction: column; height: auto; }
+  .donut-chart { width: 100%; height: 190px; }
+  .donut-legend { width: 100%; padding-bottom: 10px; }
+}
 </style>
