@@ -414,4 +414,40 @@ async function handleLogin() {
   .login-main { justify-content: center; padding: 20px 16px; }
   .login-card { width: 100%; max-width: 470px; padding: 30px 24px; }
 }
+@media (max-width: 600px) {
+  .login-page { min-height: 100dvh; height: auto; }
+  .topbar { padding: 12px 16px; }
+  .brand { font-size: 16px; }
+  .top-links { display: none; }
+  .login-main { padding: 16px; }
+  .login-card { padding: 24px 20px; }
+  .field input { min-width: 0; }
+  .footer { padding: 12px 16px 18px; }
+}
+
+/* The supplied campus artwork is the left illustration; all login controls remain live. */
+.login-page { min-height: 100dvh; background-color: #cce5ff; background-size: auto 100%; background-position: left bottom; }
+.login-page::before { content: ''; position: absolute; right: 0; bottom: 0; width: 44%; height: 38%; background: url('/media/login-bg.png') right bottom / 100% auto no-repeat; pointer-events: none; }
+.topbar { position: relative; z-index: 1; height: 92px; padding: 0 7%; }
+.brand { visibility: hidden; }
+.top-links { gap: 22px; font-size: 16px; }
+.login-main { position: relative; z-index: 1; padding: 24px 6.3% 64px; align-items: flex-start; }
+.login-card { width: min(34vw, 566px); padding: 46px 44px 40px; border-radius: 22px; box-shadow: 0 12px 36px #477aaf14; }
+.card-brand { gap: 18px; margin: 0 0 34px; }
+.card-cap, .card-cap svg { width: 76px; height: 76px; }
+.card-title { font-size: 27px; color: #071d50; }
+.card-sub { font-size: 17px; margin-top: 8px; }
+.role-tabs { border: 1px solid #dfe7f3; border-radius: 7px; margin-top: 0; }
+.role-tab { padding: 16px 0; font-size: 17px; }
+.role-tab.active::after { width: 84%; }
+.field { height: 53px; margin-top: 24px; border-radius: 7px; background: #f8fafd; }
+.field input { font-size: 17px; }
+.mid-row { margin-top: 18px; }.remember :deep(.el-checkbox__label),.forgot { font-size: 16px; }
+.login-btn { height: 56px; margin-top: 24px; border-radius: 7px; }
+.divider { margin-top: 32px; font-size: 15px; }
+.third-row { margin-top: 26px; gap: 68px; }.third-ic { width: 48px; height: 48px; }.third-item { font-size: 14px; }
+.footer { display: none; }
+@media(max-width:1200px) and (min-width:901px) { .login-card { width: 38vw; padding: 30px; }.card-title { font-size: 21px; }.card-cap,.card-cap svg { width: 54px; height: 54px; }.card-brand { gap: 12px; margin-bottom: 24px; }.login-main { padding-top: 10px; }.field { margin-top: 18px; } }
+@media(max-width:900px) { .login-page { background: #eaf3ff !important; }.login-page::before { display: none; }.brand { visibility: visible; }.topbar { height: 76px; padding: 0 24px; }.top-links { display: none; }.login-main { align-items: center; padding: 20px; }.login-card { width: 100%; max-width: 540px; padding: 30px; }.card-title { font-size: 23px; }.card-cap,.card-cap svg { width: 55px; height: 55px; } }
+@media(max-height:800px) and (min-width:901px) { .topbar { height: 70px; }.login-main { padding-top: 14px; padding-bottom: 24px; }.login-card { padding-top: 28px; padding-bottom: 26px; }.card-brand { margin-bottom: 22px; }.field { margin-top: 16px; }.divider { margin-top: 20px; }.third-row { margin-top: 18px; } }
 </style>
