@@ -46,9 +46,7 @@ const evaluating = ref(false)
 const evaluation = ref<any>(null)
 const turns = reactive<any[]>([])
 const report = ref<any>(null)
-const pptOutline = ref<any>(null)
 const sessions = ref<any[]>([])
-const generatingPpt = ref(false)
 
 const TYPE_CN: Record<string, string> = {
   BASIC: '基础理解', TECHNOLOGY: '技术选型', DESIGN: '系统设计', IMPLEMENTATION: '实现细节',
@@ -90,6 +88,7 @@ async function submitAnswer() {
     phase.value = 'feedback'
     turns.push({
       question: currentQuestion.value.question,
+      question_type: currentQuestion.value.question_type,
       answer: answer.value,
       scores: res.data.scores,
       feedback: res.data.feedback,
@@ -110,6 +109,7 @@ async function nextQuestion() {
   if (data.finished) {
     report.value = data.report
     phase.value = 'finished'
+    router.push({ path: '/student/ai-report', query: { session: String(sessionId.value) } })
     await loadSessions()
     ElMessage.success('答辩结束, 报告已生成')
   } else {
@@ -118,40 +118,17 @@ async function nextQuestion() {
   }
 }
 
-async function viewReport(sid: number) {
-  const res = await aiApi.report(sid)
-  report.value = res.data
-  sessionId.value = sid
-  phase.value = 'finished'
-}
+function viewReport(sid: number) { router.push({ path: '/student/ai-report', query: { session: String(sid) } }) }
 
-async function generatePpt() {
-  generatingPpt.value = true
-  try {
-    const res = await aiApi.pptOutline()
-    pptOutline.value = res.data
-  } catch {
-    /* 已提示 */
-  } finally {
-    generatingPpt.value = false
-  }
-}
-
-const progressPercent = computed(() => {
-  if (!report.value) {
-    const total = questionCount.value
-    return Math.min(Math.round((turns.length / total) * 100), 100)
-  }
-  return 100
-})
+const currentNo = computed(() => turns.length + (phase.value === 'answering' ? 1 : 0))
 
 const scoreDimensions = computed(() => {
   if (!evaluation.value) return []
   const s = evaluation.value.scores
   return [
-    { name: '知识准确性', value: s.accuracy, max: 35 },
-    { name: '逻辑完整性', value: s.logic, max: 25 },
-    { name: '表达清晰度', value: s.clarity, max: 20 },
+    { name: '准确性', value: s.accuracy, max: 35 },
+    { name: '逻辑性', value: s.logic, max: 25 },
+    { name: '表达清晰', value: s.clarity, max: 20 },
     { name: '技术深度', value: s.depth, max: 20 },
   ]
 })
@@ -163,291 +140,272 @@ onMounted(async () => {
 </script>
 
 <template>
-  <!-- 未开始: 引导 -->
-  <div v-if="phase === 'idle'" class="page-card">
-    <div class="page-header">
-      <h3 class="page-title">AI 模拟答辩</h3>
-      <el-button @click="router.push('/student/ai-chat')">知识问答</el-button>
-    </div>
+  <div class="ai-defense">
+    <header class="page-heading"><h1>AI 模拟答辩</h1><p>基于当前论文与阶段材料进行个性化答辩训练</p></header>
 
-    <el-alert :type="docReady ? 'success' : 'warning'" :closable="false" style="margin-bottom: 16px"
-              :title="docReady ? '知识库就绪: 基于您的论文与材料生成针对性答辩问题' : '知识库为空: 请先在「毕业材料」页上传毕业论文, 等待索引完成后即可开始 AI 模拟答辩'" />
+    <!-- 未开始: 引导 -->
+    <div v-if="phase === 'idle'" class="page-card idle-card">
+      <div class="idle-ready" :class="{ ok: docReady }">
+        <span class="ir-dot" />{{ docReady ? '知识库就绪：将基于您的论文与材料生成针对性答辩问题' : '知识库为空：请先在「毕业材料」页上传毕业论文，等待索引完成后开始' }}
+      </div>
 
-    <div v-if="docs.length" style="margin-bottom: 16px">
-      <el-table :data="docs" border size="small">
-        <el-table-column prop="document_name" label="知识文档" min-width="220" show-overflow-tooltip />
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }"><StatusTag :status="row.index_status" /></template>
-        </el-table-column>
-        <el-table-column prop="chunk_count" label="分块" width="70" />
-      </el-table>
-    </div>
+      <div class="idle-grid">
+        <div class="idle-main">
+          <h3>开始一次模拟答辩</h3>
+          <p class="idle-desc">AI 将按「基础理解 / 技术选型 / 系统设计 / 实现细节 / 创新 / 不足」等维度提问，并结合论文原文评价你的回答，支持动态追问。</p>
+          <div class="idle-controls">
+            <div class="count-field">
+              <span>题目数量</span>
+              <el-input-number v-model="questionCount" :min="3" :max="22" />
+            </div>
+            <el-button :loading="generating" :disabled="!docReady" @click="generateQuestions">生成问题库</el-button>
+            <el-button type="primary" size="large" :disabled="!docReady" @click="startDefense">开始模拟答辩</el-button>
+            <el-button link type="primary" @click="router.push('/student/ai-knowledge')">查看知识准备</el-button>
+          </div>
 
-    <div style="display: flex; gap: 12px; align-items: center">
-      <el-input-number v-model="questionCount" :min="3" :max="22" />
-      <span style="color: #909399; font-size: 13px">题数</span>
-      <el-button @click="generateQuestions" :loading="generating" :disabled="!docReady">生成问题库</el-button>
-      <el-button type="primary" size="large" @click="startDefense" :disabled="!docReady">开始模拟答辩</el-button>
-    </div>
-
-    <div v-if="questions.length" style="margin-top: 16px">
-      <el-divider>已生成 {{ questions.length }} 个问题(按维度)</el-divider>
-      <el-tag v-for="(q, i) in questions" :key="i" style="margin: 4px" :type="q.question_type === 'TECHNOLOGY' ? 'success' : q.question_type === 'DESIGN' ? 'warning' : 'info'">
-        {{ TYPE_CN[q.question_type] || q.question_type }}
-      </el-tag>
-    </div>
-
-    <el-divider>历史会话</el-divider>
-    <el-table v-if="sessions.length" :data="sessions" border size="small">
-      <el-table-column prop="id" label="ID" width="60" />
-      <el-table-column label="状态" width="90">
-        <template #default="{ row }"><StatusTag :status="row.status" /></template>
-      </el-table-column>
-      <el-table-column prop="answered_count" label="已答" width="70" />
-      <el-table-column prop="overall_score" label="综合得分" width="90" />
-      <el-table-column prop="finished_at" label="结束时间" width="170">
-        <template #default="{ row }">{{ (row.finished_at || '-').replace('T', ' ').slice(0, 16) }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="100">
-        <template #default="{ row }">
-          <el-button v-if="row.status === 'FINISHED'" size="small" type="primary" plain @click="viewReport(row.id)">查看报告</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-    <el-empty v-else description="暂无历史会话" :image-size="70" />
-  </div>
-
-  <!-- 答辩进行中 -->
-  <el-row v-else-if="phase === 'answering' || phase === 'feedback'" :gutter="16">
-    <el-col :span="6">
-      <div class="page-card">
-        <h3 style="margin: 0 0 12px">答辩进度</h3>
-        <el-progress :percentage="progressPercent" :stroke-width="10" />
-        <div style="text-align: center; margin: 12px 0; font-size: 15px">
-          第 {{ turns.length + (phase === 'answering' ? 1 : 0) }} 轮
+          <template v-if="questions.length">
+            <el-divider>已生成 {{ questions.length }} 个问题（按维度）</el-divider>
+            <div class="q-chips">
+              <span v-for="(q, i) in questions" :key="i" class="q-chip">{{ TYPE_CN[q.question_type] || q.question_type }}</span>
+            </div>
+          </template>
         </div>
-        <div v-for="(t, i) in turns" :key="i" class="turn-chip">
-          <el-icon :color="t.scores.total >= 60 ? '#67c23a' : '#f56c6c'">
-            <CircleCheckFilled v-if="t.scores.total >= 60" /><CircleCloseFilled v-else />
-          </el-icon>
-          第{{ i + 1 }}轮 · {{ t.scores.total }}分
+
+        <div class="idle-side">
+          <h4>知识文档（{{ docs.length }}）</h4>
+          <div v-for="d in docs" :key="d.id" class="doc-row">
+            <span class="doc-name" :title="d.document_name">{{ d.document_name }}</span>
+            <StatusTag :status="d.index_status" />
+          </div>
+          <el-empty v-if="!docs.length" description="暂无知识文档" :image-size="55" />
         </div>
       </div>
-    </el-col>
 
-    <el-col :span="12">
-      <div class="page-card" style="min-height: 420px; display: flex; flex-direction: column">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px">
-          <el-tag type="primary">
-            {{ currentQuestion?.is_follow_up ? '追问' : TYPE_CN[currentQuestion?.question_type] || '问题' }}
-          </el-tag>
-          <span style="color: #909399; font-size: 13px">AI 答辩教师</span>
+      <template v-if="sessions.length">
+        <el-divider>历史会话</el-divider>
+        <div class="session-list">
+          <div v-for="s in sessions" :key="s.id" class="session-row">
+            <span class="se-id">答辩 #{{ s.id }}</span>
+            <StatusTag :status="s.status" />
+            <span class="se-meta">已答 {{ s.answered_count }} 题</span>
+            <span v-if="s.overall_score != null" class="se-score">{{ s.overall_score }} 分</span>
+            <span class="se-time">{{ (s.finished_at || '-').replace('T', ' ').slice(0, 16) }}</span>
+            <el-button v-if="s.status === 'FINISHED'" link type="primary" @click="viewReport(s.id)">查看报告</el-button>
+          </div>
         </div>
-        <div class="question-box">{{ currentQuestion?.question }}</div>
+      </template>
+    </div>
+
+    <!-- 答辩进行中 -->
+    <div v-else-if="phase === 'answering' || phase === 'feedback'" class="defense-grid">
+      <!-- 左: 答辩进度 -->
+      <aside class="page-card side-card">
+        <h3 class="side-title">答辩进度</h3>
+        <div class="big-counter">第 <b>{{ currentNo }}</b> / {{ questionCount }} 题</div>
+        <div class="turn-list">
+          <div v-for="(t, i) in turns" :key="i" class="turn-item" :class="t.scores.total >= 60 ? 'good' : 'bad'">
+            <i class="ti-icon">{{ t.scores.total >= 60 ? '✓' : '✕' }}</i>
+            <div class="ti-body">
+              <span class="ti-name">{{ TYPE_CN[t.question_type] || `第 ${i + 1} 题` }}</span>
+              <small>{{ t.scores.total >= 60 ? '通过' : '待加强' }} · {{ t.scores.total }} 分</small>
+            </div>
+          </div>
+          <div v-if="phase === 'answering'" class="turn-item current">
+            <i class="ti-icon num">{{ currentNo }}</i>
+            <div class="ti-body">
+              <span class="ti-name">{{ TYPE_CN[currentQuestion?.question_type] || '当前题目' }}</span>
+              <small>回答中</small>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 中: AI 答辩老师 -->
+      <section class="page-card main-card">
+        <h3 class="side-title">AI 答辩老师</h3>
+        <div class="question-card">
+          <span class="q-label">问题 {{ currentNo }} · {{ TYPE_CN[currentQuestion?.question_type] || '综合' }}{{ currentQuestion?.is_follow_up ? ' · 追问' : '' }}</span>
+          <h4 class="q-text">{{ currentQuestion?.question }}</h4>
+          <p class="q-hint">请结合具体业务场景说明，而不是只回答结论。</p>
+        </div>
 
         <template v-if="phase === 'answering'">
-          <el-input v-model="answer" type="textarea" :rows="7" style="margin-top: 16px"
-                    placeholder="请输入您的回答, 建议结合论文内容展开..." />
-          <div style="margin-top: 12px; text-align: right">
+          <el-input v-model="answer" type="textarea" :rows="7" class="answer-input" placeholder="输入你的回答……" />
+          <div class="main-actions">
             <el-button type="primary" :loading="evaluating" @click="submitAnswer">
-              {{ evaluating ? 'AI 评价中...' : '提交回答' }}
+              {{ evaluating ? 'AI 评价中…' : '提交回答' }}
             </el-button>
           </div>
         </template>
 
         <template v-else>
-          <div class="feedback-box">
-            <div class="fb-label">您的回答</div>
-            <div class="fb-content">{{ turns[turns.length - 1]?.answer }}</div>
-            <div class="fb-label" style="margin-top: 12px">AI 评价</div>
-            <div class="fb-content markdown-body">
-              <MarkdownViewer :content="evaluation?.feedback || ''" />
-            </div>
-            <div v-if="evaluation?.sources?.length" class="fb-label" style="margin-top: 12px">
-              评价依据(论文检索)
-            </div>
-            <div v-for="s in evaluation?.sources || []" :key="s.chunk_id" class="source-chip">
-              {{ s.section || s.document_type }} · chunk#{{ s.chunk_id }}
-            </div>
+          <h4 class="fb-heading">上一轮反馈</h4>
+          <div class="fb-card">
+            <div class="fb-label">你的回答</div>
+            <p class="fb-answer">{{ turns[turns.length - 1]?.answer }}</p>
+            <div class="fb-label">AI 评价</div>
+            <div class="fb-feedback markdown-body"><MarkdownViewer :content="evaluation?.feedback || ''" /></div>
           </div>
-          <div style="margin-top: 12px; text-align: right">
+          <div class="main-actions">
             <el-button type="primary" @click="nextQuestion">下一题</el-button>
           </div>
         </template>
-      </div>
-    </el-col>
+      </section>
 
-    <el-col :span="8">
-      <div class="page-card">
-        <h3 style="margin: 0 0 12px">当前评分</h3>
+      <!-- 右: 实时评价 -->
+      <aside class="page-card side-card">
+        <h3 class="side-title">实时评价</h3>
         <template v-if="evaluation">
-          <div v-for="d in scoreDimensions" :key="d.name" style="margin-bottom: 12px">
-            <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px">
-              <span>{{ d.name }}</span><span>{{ d.value }}/{{ d.max }}</span>
-            </div>
-            <el-progress :percentage="Math.round((d.value / d.max) * 100)" :stroke-width="8"
-                         :color="d.value / d.max >= 0.6 ? '#67c23a' : '#e6a23c'" />
+          <div v-for="d in scoreDimensions" :key="d.name" class="dim-row">
+            <div class="dim-head"><span>{{ d.name }}</span><b>{{ Math.round((d.value / d.max) * 100) }}%</b></div>
+            <el-progress :percentage="Math.round((d.value / d.max) * 100)" :stroke-width="8" :show-text="false" color="#1878fd" />
           </div>
-          <el-divider />
-          <div style="text-align: center">
-            <div style="font-size: 28px; font-weight: 700" :style="{ color: (evaluation.scores.total >= 60 ? '#67c23a' : '#f56c6c') }">
-              {{ evaluation.scores.total }}
-            </div>
-            <div style="color: #909399; font-size: 12px">本轮总分</div>
+          <div class="total-row">
+            <span>本轮总分</span>
+            <b :style="{ color: evaluation.scores.total >= 60 ? '#16a34a' : '#e74c3c' }">{{ evaluation.scores.total }}</b>
           </div>
         </template>
-        <el-empty v-else description="提交回答后显示评分" :image-size="70" />
-      </div>
-    </el-col>
-  </el-row>
+        <el-empty v-else description="提交回答后显示评分" :image-size="60" />
 
-  <!-- 答辩结束: 报告 -->
-  <div v-else-if="phase === 'finished' && report" class="page-card">
-    <div class="page-header">
-      <h3 class="page-title">答辩报告</h3>
-      <div style="display: flex; gap: 8px">
-        <el-button @click="generatePpt" :loading="generatingPpt">生成 PPT 大纲</el-button>
-        <el-button type="primary" @click="phase = 'idle'; report = null">返回</el-button>
-      </div>
+        <template v-if="evaluation?.sources?.length">
+          <h4 class="src-heading">论文依据</h4>
+          <div v-for="s in evaluation.sources" :key="s.chunk_id" class="src-row">
+            · {{ s.section || s.document_type }} / chunk#{{ s.chunk_id }}
+          </div>
+        </template>
+      </aside>
     </div>
 
-    <el-row :gutter="16">
-      <el-col :span="6" style="text-align: center">
-        <el-progress type="dashboard" :percentage="Math.min(report.overall_score, 100)" :width="140"
-                     :color="report.overall_score >= 60 ? '#67c23a' : '#f56c6c'" />
-        <div style="font-size: 16px; margin-top: 8px">综合得分: {{ report.overall_score }}</div>
-      </el-col>
-      <el-col :span="18">
-        <p style="color: #606266; line-height: 1.8">{{ report.summary }}</p>
-        <el-row :gutter="12">
-          <el-col v-for="(v, k) in report.dimension_scores" :key="k" :span="4">
-            <div class="dim-card">
-              <div class="dim-value">{{ v }}</div>
-              <div class="dim-label">{{ k }}</div>
-            </div>
-          </el-col>
-        </el-row>
-      </el-col>
-    </el-row>
-
-    <el-row :gutter="16" style="margin-top: 16px">
-      <el-col :span="8">
-        <h4>✅ 优势</h4>
-        <ul><li v-for="(s, i) in report.strengths" :key="i">{{ s }}</li></ul>
-      </el-col>
-      <el-col :span="8">
-        <h4>⚠️ 薄弱点</h4>
-        <ul><li v-for="(s, i) in report.weaknesses" :key="i">{{ s }}</li></ul>
-      </el-col>
-      <el-col :span="8">
-        <h4>📚 复习建议</h4>
-        <ul><li v-for="(s, i) in report.suggestions" :key="i">{{ s }}</li></ul>
-      </el-col>
-    </el-row>
-
-    <el-divider>容易被追问的问题</el-divider>
-    <el-alert v-for="(q, i) in report.risky_questions" :key="i" :title="q" type="warning" :closable="false"
-              style="margin-bottom: 8px" />
-
-    <el-divider>逐题回顾</el-divider>
-    <el-collapse>
-      <el-collapse-item v-for="(t, i) in report.turns" :key="i"
-                        :title="`第${t.turn_no}题(${t.total_score}分): ${t.question.slice(0, 40)}${t.question.length > 40 ? '...' : ''}`">
-        <div class="fb-label">问题</div>
-        <div class="fb-content">{{ t.question }}</div>
-        <div class="fb-label" style="margin-top: 8px">我的回答</div>
-        <div class="fb-content">{{ t.student_answer }}</div>
-        <div class="fb-label" style="margin-top: 8px">AI 评价</div>
-        <div class="fb-content markdown-body"><MarkdownViewer :content="t.ai_feedback || ''" /></div>
-      </el-collapse-item>
-    </el-collapse>
-
-    <template v-if="pptOutline">
-      <el-divider>答辩 PPT 大纲(AI 生成)</el-divider>
-      <h3 style="text-align: center">{{ pptOutline.title }}</h3>
-      <el-row :gutter="12">
-        <el-col v-for="p in pptOutline.pages" :key="p.page" :span="8" style="margin-bottom: 12px">
-          <el-card shadow="hover">
-            <template #header>
-              <strong>P{{ p.page }} {{ p.title }}</strong>
-            </template>
-            <ul style="padding-left: 18px; margin: 0; font-size: 13px">
-              <li v-for="(k, i) in p.key_points" :key="i">{{ k }}</li>
-            </ul>
-            <div style="color: #909399; font-size: 12px; margin-top: 8px">
-              💬 {{ p.speaker_notes }}<br />📊 建议: {{ p.recommended_visual }}
-            </div>
-          </el-card>
-        </el-col>
-      </el-row>
-    </template>
+    <div v-else class="page-card"><el-result icon="success" title="答辩已完成"><template #extra><el-button type="primary" @click="viewReport(sessionId!)">查看答辩报告</el-button></template></el-result></div>
   </div>
 </template>
 
 <style scoped>
-.question-box {
-  background: #f0f7ff;
-  border-left: 4px solid #409eff;
-  padding: 16px;
-  border-radius: 6px;
-  font-size: 16px;
-  line-height: 1.7;
-}
+.page-heading { margin-bottom: 18px; }
+.page-heading h1 { font-size: 26px; color: #1f2d3d; margin: 0 0 6px; }
+.page-heading p { color: #93a0b4; font-size: 13px; margin: 0; }
 
-.feedback-box {
-  background: #fafafa;
-  border-radius: 6px;
-  padding: 12px;
-  margin-top: 16px;
+/* 引导页 */
+.idle-card { padding: 24px 28px; }
+.idle-ready {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #fef6e7;
+  color: #8a6116;
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 12.5px;
+  margin-bottom: 20px;
 }
-
-.fb-label {
-  font-size: 12px;
-  color: #909399;
-  margin-bottom: 4px;
-}
-
-.fb-content {
-  font-size: 14px;
-  color: #303133;
-  white-space: pre-wrap;
-}
-
-.source-chip {
-  display: inline-block;
-  background: #f4f4f5;
-  color: #909399;
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  margin: 2px 6px 0 0;
-}
-
-.turn-chip {
+.idle-ready.ok { background: #dcfce7; color: #16a34a; }
+.ir-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.idle-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 28px; }
+.idle-main h3 { margin: 0 0 8px; font-size: 17px; color: #1f2d3d; }
+.idle-desc { color: #8a97ad; font-size: 13px; line-height: 1.8; margin: 0 0 18px; }
+.idle-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.count-field { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #5a6b80; }
+.q-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.q-chip { background: #e3effe; color: #1878fd; border-radius: 12px; font-size: 12px; padding: 3px 12px; }
+.idle-side h4 { margin: 0 0 12px; font-size: 14px; color: #1f2d3d; }
+.doc-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: #606266;
-  padding: 6px 0;
-  border-bottom: 1px dashed #ebeef5;
+  justify-content: space-between;
+  gap: 10px;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 8px;
 }
-
-.dim-card {
-  background: #f5f7fa;
-  border-radius: 6px;
-  text-align: center;
-  padding: 10px 4px;
+.doc-name { font-size: 12.5px; color: #3b4a5f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-list { display: flex; flex-direction: column; gap: 8px; }
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: #5a6b80;
 }
+.se-id { color: #1f2d3d; font-weight: 600; }
+.se-score { color: #1878fd; font-weight: 600; }
+.se-time { flex: 1; text-align: right; color: #a8b3c5; }
 
-.dim-value {
-  font-size: 20px;
-  font-weight: 700;
-  color: #409eff;
+/* 答辩三栏 */
+.defense-grid {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 280px;
+  gap: 14px;
+  align-items: start;
 }
+.side-card { padding: 20px; min-height: 560px; }
+.main-card { padding: 22px 24px; min-height: 560px; display: flex; flex-direction: column; }
+.side-title { margin: 0 0 16px; font-size: 15px; color: #1f2d3d; }
 
-.dim-label {
+.big-counter { font-size: 15px; color: #5a6b80; margin-bottom: 18px; }
+.big-counter b { font-size: 26px; color: #1878fd; font-family: 'DIN Alternate', 'Helvetica Neue', sans-serif; margin: 0 4px; }
+.turn-list { display: flex; flex-direction: column; gap: 4px; }
+.turn-item { display: flex; gap: 10px; align-items: center; padding: 8px 0; }
+.ti-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
-  color: #909399;
+  font-style: normal;
+  flex-shrink: 0;
+  color: #fff;
+}
+.turn-item.good .ti-icon { background: #22c55e; }
+.turn-item.bad .ti-icon { background: #f1f5f9; color: #e74c3c; }
+.turn-item.current .ti-icon { background: #1878fd; }
+.ti-body { display: flex; flex-direction: column; line-height: 1.4; min-width: 0; }
+.ti-name { font-size: 13px; color: #1f2d3d; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ti-body small { font-size: 11px; color: #a8b3c5; }
+
+/* 中央题目卡 */
+.question-card {
+  background: #e9f1fe;
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+.q-label { font-size: 12px; color: #1878fd; font-weight: 600; }
+.q-text { margin: 10px 0 8px; font-size: 17px; color: #1f2d3d; line-height: 1.6; }
+.q-hint { margin: 0; font-size: 12px; color: #7d95c0; }
+.answer-input :deep(textarea) { border-radius: 10px; }
+.main-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+.fb-heading { margin: 6px 0 10px; font-size: 14px; color: #1f2d3d; }
+.fb-card { background: #eaf8f0; border-radius: 12px; padding: 16px 18px; flex: 1; overflow-y: auto; }
+.fb-label { font-size: 12px; color: #6b9a80; margin-bottom: 6px; }
+.fb-answer { font-size: 13.5px; color: #1f2d3d; line-height: 1.7; white-space: pre-wrap; margin: 0 0 14px; }
+.fb-feedback { font-size: 13px; color: #2f4f3f; line-height: 1.7; }
+
+/* 右栏评价 */
+.dim-row { margin-bottom: 16px; }
+.dim-head { display: flex; justify-content: space-between; font-size: 12.5px; color: #5a6b80; margin-bottom: 6px; }
+.dim-head b { color: #1f2d3d; }
+.total-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid #eef2f8;
+  padding-top: 14px;
+  font-size: 13px;
+  color: #5a6b80;
+}
+.total-row b { font-size: 24px; }
+.src-heading { margin: 20px 0 10px; font-size: 14px; color: #1f2d3d; }
+.src-row { font-size: 12px; color: #8a97ad; line-height: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 1200px) {
+  .defense-grid { grid-template-columns: 1fr; }
+  .side-card, .main-card { min-height: 0; }
+  .idle-grid { grid-template-columns: 1fr; }
 }
 </style>
