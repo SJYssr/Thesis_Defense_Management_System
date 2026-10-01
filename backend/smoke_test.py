@@ -192,5 +192,203 @@ check("教师发送提醒", r.json()["code"] == 0, r.text[:200])
 r = client.get(f"{BASE}/notifications?unread_only=true", headers=auth(s1))
 check("学生收到提醒通知", r.json()["data"]["total"] >= 1)
 
+print("== 11. 阶段任务(P1) ==")
+from datetime import datetime, timedelta
+
+now_iso = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+due_ok = (datetime.now() + timedelta(days=7)).isoformat(timespec="seconds")
+due_pass = (datetime.now() - timedelta(days=3)).isoformat(timespec="seconds")
+
+r = client.post(f"{BASE}/stage-tasks", headers=auth(t1),
+                json={"academic_year": "2025-2026", "stage": "OPENING", "title": "提交开题报告并完成文献综述",
+                      "description": "请在截止前完成开题报告提交", "requirements": ["开题报告", "文献综述"],
+                      "opens_at": now_iso, "due_at": due_ok, "late_policy": "ALLOW"})
+check("教师创建阶段任务", r.json()["code"] == 0, r.text[:200])
+task_id = r.json()["data"]["id"]
+
+r = client.put(f"{BASE}/stage-tasks/{task_id}", headers=auth(t1),
+               json={"academic_year": "2025-2026", "stage": "OPENING", "title": "提交开题报告并完成文献综述(修订)",
+                     "description": "补充文献综述要求", "requirements": ["开题报告", "文献综述", "技术路线图"],
+                     "opens_at": now_iso, "due_at": due_ok, "late_policy": "ALLOW"})
+check("教师修改任务(版本化)", r.json()["code"] == 0 and r.json()["data"]["current_version"] == 2, r.text[:200])
+
+r = client.post(f"{BASE}/stage-tasks", headers=auth(t1),
+                json={"academic_year": "2025-2026", "stage": "OPENING", "title": "逾期示例任务",
+                      "requirements": ["开题报告"], "opens_at": now_iso, "due_at": due_pass})
+overdue_task_id = r.json()["data"]["id"]
+
+r = client.get(f"{BASE}/stage-tasks/mine", headers=auth(s6))
+my_tasks = r.json()["data"]["tasks"]
+check("学生待办包含所属学年任务", r.json()["code"] == 0 and any(t["id"] == task_id for t in my_tasks), r.text[:300])
+overdue_item = next((t for t in my_tasks if t["id"] == overdue_task_id), None)
+check("逾期任务被标记", overdue_item is not None and overdue_item["overdue"] is True)
+rev_item = next((t for t in my_tasks if t["id"] == task_id), None)
+check("待办携带服务端材料状态", rev_item is not None and rev_item["material_status"] in ("NOT_SUBMITTED", "DRAFT"), str(rev_item)[:200])
+
+r = client.get(f"{BASE}/stage-tasks", headers=auth(s6))
+check("学生无权查看任务配置列表", r.json()["code"] == 40300, r.text[:120])
+
+print("== 12. 答辩排期(P1) ==")
+r = client.get(f"{BASE}/student/progress", headers=auth(s6))
+cycle6 = r.json()["data"]["formal_defense"]["cycle_id"]
+check("学生6流程实例存在", cycle6 is not None, r.text[:300])
+
+start1 = (datetime.now() + timedelta(hours=2)).isoformat(timespec="seconds")
+end1 = (datetime.now() + timedelta(hours=4)).isoformat(timespec="seconds")
+r = client.post(f"{BASE}/defense-sessions", headers=auth(admin),
+                json={"academic_year": "2025-2026", "stage": "FINAL", "title": "终期答辩第3场(冒烟)",
+                      "starts_at": start1, "ends_at": end1, "location": "教学楼C-401", "capacity": 5})
+check("管理员创建场次草稿", r.json()["code"] == 0, r.text[:200])
+S1 = r.json()["data"]["id"]
+
+r = client.post(f"{BASE}/defense-sessions/{S1}/publish", headers=auth(admin))
+check("无评委发布被拒", r.json()["code"] != 0, r.text[:200])
+
+r = client.post(f"{BASE}/defense-sessions/{S1}/examiners", headers=auth(admin), json={"teacher_id": 1, "examiner_role": "CHAIR"})
+check("分配评委主席", r.json()["code"] == 0, r.text[:200])
+r = client.post(f"{BASE}/defense-sessions/{S1}/examiners", headers=auth(admin), json={"teacher_id": 2})
+check("分配评委", r.json()["code"] == 0)
+
+r = client.post(f"{BASE}/defense-sessions/{S1}/validate", headers=auth(admin))
+check("冲突校验通过", r.json()["data"]["pass"] is True, r.text[:200])
+
+r = client.post(f"{BASE}/defense-sessions/{S1}/publish", headers=auth(admin))
+check("场次发布成功", r.json()["code"] == 0 and r.json()["data"]["status"] == "PUBLISHED", r.text[:200])
+
+# 同场地时间重叠 → 发布必须被拒
+r = client.post(f"{BASE}/defense-sessions", headers=auth(admin),
+                json={"academic_year": "2025-2026", "stage": "MIDTERM", "title": "冲突场次",
+                      "starts_at": (datetime.now() + timedelta(hours=3)).isoformat(timespec="seconds"),
+                      "ends_at": (datetime.now() + timedelta(hours=5)).isoformat(timespec="seconds"),
+                      "location": "教学楼C-401", "capacity": 5})
+S_bad = r.json()["data"]["id"]
+r = client.post(f"{BASE}/defense-sessions/{S_bad}/publish", headers=auth(admin))
+check("场地冲突发布被拒(P1验收)", r.json()["code"] == 40900, r.text[:200])
+
+# 排入学生6 → 已发布场次改期留痕
+r = client.post(f"{BASE}/defense-sessions/{S1}/assignments", headers=auth(admin), json={"cycle_ids": [cycle6]})
+check("学生排入场次", r.json()["code"] == 0, r.text[:200])
+
+r = client.get(f"{BASE}/defense-sessions/{S1}", headers=auth(admin))
+rev = r.json()["data"]["revision"]
+new_start = (datetime.now() + timedelta(hours=6)).isoformat(timespec="seconds")
+new_end = (datetime.now() + timedelta(hours=8)).isoformat(timespec="seconds")
+r = client.patch(f"{BASE}/defense-sessions/{S1}", headers=auth(admin),
+                 json={"starts_at": new_start, "ends_at": new_end, "revision": rev, "change_reason": "教室调整"})
+check("已发布场次改期成功", r.json()["code"] == 0, r.text[:200])
+r = client.patch(f"{BASE}/defense-sessions/{S1}", headers=auth(admin),
+                 json={"starts_at": new_start, "revision": rev, "change_reason": "旧版本号"})
+check("乐观锁拦截并发修改", r.json()["code"] == 40900, r.text[:150])
+
+r = client.get(f"{BASE}/defense-sessions/mine", headers=auth(s6))
+mine = r.json()["data"]
+my_seat = next((x for x in mine if x["id"] == S1), None)
+check("学生仅看到自己相关场次", my_seat is not None and my_seat["assignment"]["cycle_id"] == cycle6, r.text[:200])
+check("学生看到改期后最新时间", my_seat and my_seat["starts_at"] == new_start, str(my_seat)[:150] if my_seat else "")
+check("改期留痕可查", my_seat and len(my_seat["changes"]) >= 1)
+
+r = client.get(f"{BASE}/defense-sessions/mine", headers=auth(t1))
+check("评委看到被指派场次", any(x["id"] == S1 for x in r.json()["data"]))
+
+print("== 13. 评审与成绩闭环(P2) ==")
+r = client.get(f"{BASE}/defense-assignments/mine", headers=auth(t1))
+queue = [x for x in r.json()["data"] if x["session"]["id"] == S1]
+check("评委评审队列包含新席位", len(queue) == 1, r.text[:300])
+seat6 = queue[0]["id"] if queue else None
+
+# 越权: 教师尝试访问其未指派场次的评审(teacher02 对草稿场次无权)
+r = client.post(f"{BASE}/defense-sessions", headers=auth(admin),
+                json={"academic_year": "2025-2026", "stage": "MIDTERM", "title": "仅教师1的场次",
+                      "starts_at": (datetime.now() + timedelta(hours=100)).isoformat(timespec="seconds"),
+                      "ends_at": (datetime.now() + timedelta(hours=102)).isoformat(timespec="seconds"),
+                      "location": "教学楼D-101", "capacity": 5})
+S3 = r.json()["data"]["id"]
+client.post(f"{BASE}/defense-sessions/{S3}/examiners", headers=auth(admin), json={"teacher_id": 1, "examiner_role": "CHAIR"})
+r = client.post(f"{BASE}/defense-sessions/{S3}/assignments", headers=auth(admin), json={"cycle_ids": [cycle6]})
+seat_s3 = r.json()["data"]["added"][0] if r.json()["code"] == 0 else None
+r = client.get(f"{BASE}/defense-assignments/{seat_s3}/review", headers=auth(t2))
+check("非指派评委访问评审被拒(P2验收)", r.json()["code"] == 40300, r.text[:150])
+r = client.get(f"{BASE}/defense-assignments/{seat6}/review", headers=auth(t1))
+check("被指派评委可见授权材料", r.json()["code"] == 0 and "materials" in r.json()["data"], r.text[:200])
+rubric_weights = r.json()["data"]["rubric"]["weights"]
+check("返回启用评分表", rubric_weights and len(rubric_weights) == 3)
+
+scores_ok = {"报告质量": 90, "系统实现": 88, "答辩表现": 86}
+r = client.put(f"{BASE}/defense-assignments/{seat6}/review", headers=auth(t1), json={"scores": scores_ok, "comment": "暂存"})
+check("评委暂存草稿", r.json()["code"] == 0, r.text[:200])
+r = client.post(f"{BASE}/defense-assignments/{seat6}/scores/submit", headers=auth(t1), json={"scores": scores_ok, "comment": "完成度高"})
+check("评委提交评分锁定", r.json()["code"] == 0 and r.json()["data"]["status"] == "SUBMITTED", r.text[:200])
+r = client.post(f"{BASE}/defense-assignments/{seat6}/scores/submit", headers=auth(t1), json={"scores": scores_ok})
+check("重复提交有效评分被拒", r.json()["code"] != 0, r.text[:150])
+
+r = client.post(f"{BASE}/defense-results/generate", headers=auth(admin), json={"assignment_id": seat6})
+result_id = r.json()["data"]["id"]
+r = client.post(f"{BASE}/defense-results/{result_id}/publish", headers=auth(admin))
+check("未到场不能发布结论", r.json()["code"] != 0, r.text[:150])
+client.post(f"{BASE}/defense-assignments/{seat6}/seat", headers=auth(admin), json={"seat_status": "ATTENDED"})
+r = client.post(f"{BASE}/defense-results/{result_id}/publish", headers=auth(admin))
+check("评委人数不足不能发布结论(P2验收)", r.json()["code"] != 0 and "不足" in r.json()["message"], r.text[:200])
+
+r = client.post(f"{BASE}/defense-assignments/{seat6}/scores/submit", headers=auth(t2),
+                json={"scores": {"报告质量": 84, "系统实现": 82, "答辩表现": 80}, "comment": "整体良好"})
+check("第二位评委提交评分", r.json()["code"] == 0, r.text[:200])
+
+r = client.get(f"{BASE}/defense-results/{result_id}/preview", headers=auth(admin))
+preview = r.json()["data"]
+expected = round((90 + 84) / 2 * 0.3 + (88 + 82) / 2 * 0.4 + (86 + 80) / 2 * 0.3)
+check("服务端复算汇总正确(可复算)", preview["score"] == expected, f"got {preview['score']} expect {expected}")
+check("复算与原始评分一致", preview["valid_count"] == 2 and preview["publishable"] is True)
+
+r = client.post(f"{BASE}/defense-results/{result_id}/publish", headers=auth(admin))
+check("正式结论发布成功", r.json()["code"] == 0 and r.json()["data"]["status"] == "PUBLISHED", r.text[:200])
+r = client.get(f"{BASE}/defense-sessions/mine", headers=auth(s6))
+seat_view = next((x for x in r.json()["data"] if x["id"] == S1), None)
+check("学生查看已发布结论", seat_view and seat_view["result"] and seat_view["result"]["score"] == expected, str(seat_view)[:250] if seat_view else "")
+r = client.post(f"{BASE}/defense-results/{result_id}/withdraw", headers=auth(admin), json={"reason": "汇总复核"})
+check("撤回结论留痕", r.json()["code"] == 0, r.text[:150])
+r = client.get(f"{BASE}/defense-sessions/mine", headers=auth(s6))
+seat_view = next((x for x in r.json()["data"] if x["id"] == S1), None)
+check("撤回后学生端显示复核中", seat_view and seat_view["result"] and seat_view["result"]["status"] == "WITHDRAWN")
+
+print("== 14. 成果归档与文件权限(P3) ==")
+r = client.get(f"{BASE}/archive-packages", headers=auth(s1))
+pkgs = r.json()["data"]["items"]
+check("学生可见本人归档", any(p["cycle_id"] == 1 for p in pkgs), r.text[:200])
+pkg1 = next((p for p in pkgs if p["cycle_id"] == 1), None)
+r = client.get(f"{BASE}/archive-packages/{pkg1['id']}", headers=auth(s1))
+pkg_detail = r.json()["data"]
+thesis_file_id = pkg_detail["files"][0]["file_id"] if pkg_detail["files"] else None
+check("归档文件快照含哈希", bool(pkg_detail["files"]) and bool(pkg_detail["files"][0]["sha256"]))
+
+r = client.get(f"{BASE}/archive-packages", headers=auth(s6))
+check("未公开归档对他人不可见(P3验收)", not any(p["cycle_id"] == 1 for p in r.json()["data"]["items"]), r.text[:300])
+
+r = client.get(f"{BASE}/files/{thesis_file_id}/download", headers=auth(s6))
+check("私有论文文件直链下载被拒(P3验收)", r.status_code == 200 and r.json().get("code") == 40300, r.text[:150])
+r = client.get(f"{BASE}/files/{thesis_file_id}/download", headers=auth(s1))
+check("作者本人可下载", r.status_code == 200 and r.headers.get("content-type", "").startswith(("application/octet-stream", "text/markdown", "application/md", "text/plain")), str(r.status_code))
+
+r = client.get(f"{BASE}/archive-files/{pkg_detail['files'][0]['id']}/download", headers=auth(s6))
+check("未授权归档下载被拒", r.status_code == 200 and r.json().get("code") == 40300, r.text[:150])
+
+r = client.post(f"{BASE}/archive-packages/{pkg1['id']}/consent", headers=auth(s1), json={"visibility": "FULL_TEXT"})
+check("作者授权公开全文", r.json()["code"] == 0, r.text[:150])
+r = client.get(f"{BASE}/archive-packages", headers=auth(s6))
+check("授权后他人可检索到", any(p["cycle_id"] == 1 for p in r.json()["data"]["items"]), r.text[:300])
+r = client.get(f"{BASE}/archive-files/{pkg_detail['files'][0]['id']}/download", headers=auth(s6))
+check("授权后他人可下载全文", r.status_code == 200 and b"LangChain" in r.content, str(r.status_code))
+r = client.delete(f"{BASE}/archive-packages/{pkg1['id']}/consent", headers=auth(s1))
+check("作者撤回公开", r.json()["code"] == 0)
+r = client.get(f"{BASE}/archive-files/{pkg_detail['files'][0]['id']}/download", headers=auth(s6))
+check("撤回后下载立即失效(P3验收)", r.status_code == 200 and r.json().get("code") == 40300, r.text[:150])
+r = client.get(f"{BASE}/archive-packages", headers=auth(s6))
+check("撤回后检索失效", not any(p["cycle_id"] == 1 for p in r.json()["data"]["items"]), r.text[:200])
+
+r = client.get(f"{BASE}/dashboard/defense-stats", headers=auth(admin))
+stats = r.json()["data"]
+check("答辩运营统计(P4)", r.json()["code"] == 0 and "archive_rate" in stats and "pending_review" in stats, r.text[:300])
+r = client.get(f"{BASE}/dashboard/defense-stats", headers=auth(s1))
+check("学生无权看运营统计", r.json()["code"] == 40300)
+
 print(f"\n结果: {passed} 通过, {failed} 失败")
 sys.exit(1 if failed else 0)
