@@ -78,6 +78,9 @@
               </template>
             </el-table-column>
             <el-table-column prop="student_no" label="学号" width="96" align="center" />
+            <el-table-column v-if="isAdmin" label="指导教师" width="90" align="center">
+              <template #default="{ row }">{{ row.teacher_name || '—' }}</template>
+            </el-table-column>
             <el-table-column prop="topic_title" label="题目名称" min-width="200" show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="topic-title">{{ row.topic_title || '题目已删除' }}</span>
@@ -167,10 +170,16 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, Select, CloseBold, Close } from '@element-plus/icons-vue'
 import { reviewList } from '@/utils/reviewList'
 import { selectionApi } from '@/api/business'
+
+const route = useRoute()
+const isAdmin = computed(() => route.meta.reviewer === 'admin')
+const listLoader = (params: Record<string, unknown>) =>
+  isAdmin.value ? selectionApi.adminList(params) : selectionApi.teacherList(params)
 
 const CHECK_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.2 14.2L6.4 11.8l1.5-1.5 2.9 2.9 5.3-5.3 1.5 1.5-6.8 6.8z"/>'
 const CLOCK_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 10.9V6.5h-2v6.4l5 2.9 1-1.7-4-2.3z"/>'
@@ -201,7 +210,7 @@ const STATUS_CLASS: Record<string, string> = { PENDING: 's-pending', APPROVED: '
 async function load() {
   loading.value = true
   try {
-    const result = await reviewList(selectionApi.teacherList, query)
+    const result = await reviewList(listLoader, query)
     items.value = result.items.map((row: any) => ({
       ...row,
       statusCn: STATUS_CN[row.status] || row.status,
@@ -213,7 +222,7 @@ async function load() {
 
 async function loadSummary() {
   const statuses = ['', 'APPROVED', 'PENDING', 'REJECTED']
-  const results = await Promise.all(statuses.map(s => selectionApi.teacherList({ status: s || undefined, page: 1, page_size: 1 })))
+  const results = await Promise.all(statuses.map(s => listLoader({ status: s || undefined, page: 1, page_size: 1 })))
   counts.all = results[0].data.total
   counts.approved = results[1].data.total
   counts.pending = results[2].data.total
@@ -246,8 +255,14 @@ async function review(approve: boolean) {
   if (!approve && !comment.value.trim()) { ElMessage.warning('请填写审核意见'); return }
   reviewing.value = true
   try {
-    if (approve) await selectionApi.approve(current.value.id, comment.value || undefined)
-    else await selectionApi.reject(current.value.id, comment.value)
+    if (isAdmin.value) {
+      if (approve) await selectionApi.adminApprove(current.value.id, comment.value || undefined)
+      else await selectionApi.adminReject(current.value.id, comment.value)
+    } else if (approve) {
+      await selectionApi.approve(current.value.id, comment.value || undefined)
+    } else {
+      await selectionApi.reject(current.value.id, comment.value)
+    }
     ElMessage.success(approve ? '已通过' : '已驳回')
     current.value = null
     await refresh()
@@ -275,7 +290,9 @@ async function onBatch(approve: boolean) {
     { type: approve ? 'success' : 'warning' },
   )
   const results = await Promise.allSettled(pending.map(s =>
-    approve ? selectionApi.approve(s.id, commentText) : selectionApi.reject(s.id, commentText)))
+    isAdmin.value
+      ? (approve ? selectionApi.adminApprove(s.id, commentText) : selectionApi.adminReject(s.id, commentText))
+      : (approve ? selectionApi.approve(s.id, commentText) : selectionApi.reject(s.id, commentText))))
   const success = results.filter(r => r.status === 'fulfilled').length
   ElMessage[success === pending.length ? 'success' : 'warning'](
     `成功${approve ? '通过' : '驳回'} ${success}/${pending.length} 条申请`)

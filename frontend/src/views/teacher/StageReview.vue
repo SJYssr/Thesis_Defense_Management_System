@@ -76,6 +76,9 @@
               <template #default="{ row }"><span class="stu-name">{{ row.student_name || '—' }}</span></template>
             </el-table-column>
             <el-table-column prop="student_no" label="学号" width="96" align="center" />
+            <el-table-column v-if="isAdmin" label="指导教师" width="90" align="center">
+              <template #default="{ row }">{{ row.teacher_name || '—' }}</template>
+            </el-table-column>
             <el-table-column label="题目名称" min-width="190" show-overflow-tooltip>
               <template #default="{ row }">
                 <span class="topic-title">{{ row.content?.title || `${row.student_name || ''}的${STAGE_CN[stage]}` }}</span>
@@ -181,6 +184,9 @@ import ReviewHistory from '@/components/ReviewHistory.vue'
 
 const route = useRoute()
 const stage = computed(() => (route.meta.stage as string) || 'opening')
+const isAdmin = computed(() => route.meta.reviewer === 'admin')
+const listLoader = (params: Record<string, unknown>) =>
+  isAdmin.value ? stageApi.adminList(stage.value, params) : stageApi.teacherList(stage.value, params)
 
 const META: Record<string, { title: string; fields: { key: string; label: string }[] }> = {
   opening: {
@@ -260,7 +266,7 @@ const STATUS_CLASS: Record<string, string> = {
 async function load() {
   loading.value = true
   try {
-    const result = await reviewList((params: Record<string, unknown>) => stageApi.teacherList(stage.value, params), query)
+    const result = await reviewList(listLoader, query)
     items.value = result.items.map((row: any) => ({
       ...row,
       statusCn: STATUS_CN[row.status] || row.status,
@@ -272,7 +278,7 @@ async function load() {
 
 async function loadSummary() {
   const statuses = ['', 'APPROVED', 'SUBMITTED', 'RESUBMIT_REQUIRED']
-  const results = await Promise.all(statuses.map(s => stageApi.teacherList(stage.value, { status: s || undefined, page: 1, page_size: 1 })))
+  const results = await Promise.all(statuses.map(s => listLoader({ status: s || undefined, page: 1, page_size: 1 })))
   counts.all = results[0].data.total
   counts.approved = results[1].data.total
   counts.pending = results[2].data.total
@@ -296,7 +302,7 @@ const selected = ref<any[]>([])
 function onSelectionChange(sel: any[]) { selected.value = sel }
 
 async function openDetail(row: any) {
-  const res = await stageApi.teacherDetail(stage.value, row.id)
+  const res = await (isAdmin.value ? stageApi.adminDetail(stage.value, row.id) : stageApi.teacherDetail(stage.value, row.id))
   current.value = {
     ...res.data,
     statusCn: STATUS_CN[res.data.status] || res.data.status,
@@ -314,8 +320,14 @@ async function review(approve: boolean) {
   if (!approve && !comment.value.trim()) { ElMessage.warning('请填写审核意见'); return }
   reviewing.value = true
   try {
-    if (approve) await stageApi.approve(stage.value, current.value.id, comment.value || undefined, score.value)
-    else await stageApi.reject(stage.value, current.value.id, comment.value || undefined)
+    if (isAdmin.value) {
+      if (approve) await stageApi.adminApprove(stage.value, current.value.id, comment.value || undefined)
+      else await stageApi.adminReject(stage.value, current.value.id, comment.value || undefined)
+    } else if (approve) {
+      await stageApi.approve(stage.value, current.value.id, comment.value || undefined, score.value)
+    } else {
+      await stageApi.reject(stage.value, current.value.id, comment.value || undefined)
+    }
     ElMessage.success(approve ? '已通过' : '已驳回')
     current.value = null
     await refresh()
@@ -342,8 +354,9 @@ async function onBatch(approve: boolean) {
     approve ? '批量通过' : '批量驳回',
     { type: approve ? 'success' : 'warning' },
   )
-  const results = await Promise.allSettled(pending.map(s =>
-    approve ? stageApi.approve(stage.value, s.id, commentText) : stageApi.reject(stage.value, s.id, commentText)))
+  const results = await Promise.allSettled(pending.map(s => (isAdmin.value
+    ? (approve ? stageApi.adminApprove(stage.value, s.id, commentText) : stageApi.adminReject(stage.value, s.id, commentText))
+    : (approve ? stageApi.approve(stage.value, s.id, commentText) : stageApi.reject(stage.value, s.id, commentText)))))
   const success = results.filter(r => r.status === 'fulfilled').length
   ElMessage[success === pending.length ? 'success' : 'warning'](
     `成功${approve ? '通过' : '驳回'} ${success}/${pending.length} 份提交`)
