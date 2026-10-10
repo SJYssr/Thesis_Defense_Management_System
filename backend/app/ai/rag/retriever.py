@@ -57,7 +57,7 @@ class HybridRetriever:
     # ---------- 关键词检索(MySQL 词面匹配) ----------
 
     def keyword_search(self, query: str, student_id: int | None, document_types: list[str] | None, top_k: int = 10) -> list[tuple[int, float]]:
-        grams = list(_ngrams(query))[:12]
+        grams = sorted(_ngrams(query))[:12]  # 排序保证跨进程可复现(set 顺序受哈希种子影响)
         if not grams:
             return []
         conds = [AIDocumentChunk.student_id.in_([student_id, None]) if student_id is not None
@@ -83,35 +83,46 @@ class HybridRetriever:
     # ---------- 融合检索 ----------
 
     def retrieve(self, query: str, student_id: int | None, document_types: list[str] | None = None,
-                 top_k: int = 6, rewrite: bool = False, history: list[dict] | None = None) -> list[RetrievedChunk]:
+                 top_k: int = 6, rewrite: bool = False, history: list[dict] | None = None,
+                 strategy: str = "hybrid") -> list[RetrievedChunk]:
+        """strategy: hybrid(RRF 融合) / vector(仅向量) / keyword(仅关键词), 供评测实验对比(roadmap 九十二章)."""
+        if strategy not in ("hybrid", "vector", "keyword"):
+            raise ValueError(f"未知检索策略: {strategy}")
         search_query = self.rewrite_query(query, history) if rewrite else query
 
         embedding = EmbeddingFactory.get().embed_one(search_query)
         vector_results = vector_store.search(embedding, student_id, document_types, top_k=top_k * 2)
         keyword_results = self.keyword_search(search_query, student_id, document_types, top_k=top_k * 2)
 
-        # Reciprocal Rank Fusion
-        rrf_scores: dict[int, float] = {}
-        sources: dict[int, str] = {}
-        k = 60
-        for rank, (cid, _) in enumerate(vector_results):
-            rrf_scores[cid] = rrf_scores.get(cid, 0) + 1.0 / (k + rank + 1)
-            sources[cid] = "vector"
-        for rank, (cid, _) in enumerate(keyword_results):
-            rrf_scores[cid] = rrf_scores.get(cid, 0) + 1.0 / (k + rank + 1)
-            sources[cid] = sources.get(cid, "vector+keyword") if sources.get(cid) else "keyword"
+        if strategy == "vector":
+            ranked = [(cid, score) for cid, score in vector_results[:top_k]]
+            sources = {cid: "vector" for cid, _ in ranked}
+        elif strategy == "keyword":
+            ranked = [(cid, score) for cid, score in keyword_results[:top_k]]
+            sources = {cid: "keyword" for cid, _ in ranked}
+        else:
+            # Reciprocal Rank Fusion
+            rrf_scores: dict[int, float] = {}
+            sources = {}
+            k = 60
+            for rank, (cid, _) in enumerate(vector_results):
+                rrf_scores[cid] = rrf_scores.get(cid, 0) + 1.0 / (k + rank + 1)
+                sources[cid] = "vector"
+            for rank, (cid, _) in enumerate(keyword_results):
+                rrf_scores[cid] = rrf_scores.get(cid, 0) + 1.0 / (k + rank + 1)
+                sources[cid] = sources.get(cid, "vector+keyword") if sources.get(cid) else "keyword"
+            ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
-        if not rrf_scores:
+        if not ranked:
             return []
-        top_ids = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
         chunks = self.db.execute(
-            select(AIDocumentChunk).where(AIDocumentChunk.id.in_([cid for cid, _ in top_ids]))
+            select(AIDocumentChunk).where(AIDocumentChunk.id.in_([cid for cid, _ in ranked]))
         ).scalars().all()
         chunk_map = {c.id: c for c in chunks}
 
         results = []
-        for cid, fused in top_ids:
+        for cid, fused in ranked:
             c = chunk_map.get(cid)
             if c is None:
                 continue

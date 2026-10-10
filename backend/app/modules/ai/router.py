@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, PermissionDeniedException
-from app.core.permissions import CurrentUser, PermissionService, require_student, require_teacher_or_admin
+from app.core.permissions import CurrentUser, PermissionService, require_admin, require_student, require_teacher_or_admin
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
 from app.db.redis import RedisKeys, redis_client
@@ -208,3 +208,32 @@ def analyse_progress(student_id: int, user: CurrentUser = Depends(require_teache
     PermissionService.ensure_teacher_can_access_student(db, user, student_id)
     _check_ai_rate(user)
     return ResponseUtil.success(ProgressAnalysisService(db).analyse(student_id, user.id))
+
+
+# ---------- RAG 检索质量评测(roadmap 九十一/九十二章, 管理员) ----------
+
+class RagEvalRequest(BaseModel):
+    dataset_name: str | None = Field(default=None, description="内置数据集名, 目前提供 demo_thesis")
+    dataset: dict | None = Field(default=None, description="自定义数据集(与 dataset_name 二选一)")
+    top_k: int = Field(default=5, ge=1, le=20)
+    strategies: list[str] = Field(default_factory=lambda: ["vector", "keyword", "hybrid"])
+
+
+@router.post("/admin/rag/evaluate")
+def admin_rag_evaluate(body: RagEvalRequest, _: CurrentUser = Depends(require_admin),
+                       db: Session = Depends(get_db)):
+    from pathlib import Path
+
+    from app.ai.rag.evaluation import STRATEGIES, evaluate_dataset, load_dataset_file
+
+    if body.dataset:
+        dataset = {**body.dataset, "top_k": body.top_k}
+    elif body.dataset_name:
+        path = Path(__file__).resolve().parents[3] / "eval_datasets" / f"{body.dataset_name}.json"
+        if not path.is_file():
+            raise BusinessException(f"内置评测数据集不存在: {body.dataset_name}")
+        dataset = {**load_dataset_file(str(path)), "top_k": body.top_k}
+    else:
+        raise BusinessException("请提供 dataset 或 dataset_name")
+    strategies = tuple(s for s in body.strategies if s in STRATEGIES) or STRATEGIES
+    return ResponseUtil.success(evaluate_dataset(db, dataset, strategies))

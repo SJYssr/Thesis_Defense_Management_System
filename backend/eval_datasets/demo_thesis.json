@@ -1,0 +1,71 @@
+{
+  "name": "演示论文检索评测集(20230001)",
+  "description": "基于演示论文《基于LangChain与RAG的智能毕业设计管理系统设计与实现》人工标注的检索标准问题集, 覆盖绪论/技术/设计/实现/测试各章节。用于 Recall@K、MRR 与三臂策略对比实验(roadmap 九十一/九十二章)。",
+  "student_no": "20230001",
+  "document_types": ["THESIS"],
+  "top_k": 5,
+  "questions": [
+    {
+      "question": "本课题的研究背景是什么? 为什么传统手工管理方式不能满足需求?",
+      "expected_sections": ["1.1 研究背景"]
+    },
+    {
+      "question": "系统通过什么技术手段降低大语言模型的幻觉?",
+      "expected_sections": ["1.2 研究意义"],
+      "expected_content": ["降低大模型幻觉"]
+    },
+    {
+      "question": "后端为什么选择 FastAPI 框架? 与什么 ORM 配合使用?",
+      "expected_sections": ["2.1 FastAPI 与 SQLAlchemy"]
+    },
+    {
+      "question": "系统为什么使用 Redis 做向量检索而没有引入 Qdrant 或 Milvus?",
+      "expected_sections": ["2.2 Redis 向量检索"],
+      "expected_content": ["减少了部署复杂度"]
+    },
+    {
+      "question": "RAG 的完整流程包括哪些步骤? 分块大小和重叠取多少?",
+      "expected_sections": ["2.3 RAG 检索增强生成"],
+      "expected_content": ["500~900字符"]
+    },
+    {
+      "question": "系统的整体架构采用什么风格? AI 层抽象了哪些服务?",
+      "expected_sections": ["3.1 系统架构"]
+    },
+    {
+      "question": "毕业设计状态机包含哪五个阶段? 阶段内部状态如何迁移?",
+      "expected_sections": ["3.2 毕业设计状态机"],
+      "expected_content": ["选题→开题→中期→终期→毕业材料"]
+    },
+    {
+      "question": "数据库设计了哪些核心表? 如何保证一个学生只有一条有效选题?",
+      "expected_sections": ["3.3 数据库设计"],
+      "expected_content": ["UNIQUE(student_id, active_flag)"]
+    },
+    {
+      "question": "系统的权限模型是什么? RAG 检索如何防止跨学生论文越权?",
+      "expected_sections": ["3.4 权限设计"],
+      "expected_content": ["强制携带 student_id 过滤"]
+    },
+    {
+      "question": "学生上传论文后, 文档入库流水线包含哪些步骤?",
+      "expected_sections": ["4.1 文档入库流水线"],
+      "expected_content": ["文件解析→文本清洗→章节识别→分块→Embedding"]
+    },
+    {
+      "question": "AI 模拟答辩的四维评分细则和分值是如何设置的?",
+      "expected_sections": ["4.2 AI 模拟答辩"],
+      "expected_content": ["知识准确性35分"]
+    },
+    {
+      "question": "进度百分比如何计算? 为什么不直接让大模型判断进度?",
+      "expected_sections": ["4.3 进度风险分析"],
+      "expected_content": ["选题10%/开题20%/中期25%/终期25%/材料20%"]
+    },
+    {
+      "question": "系统对哪些关键场景做了接口测试?",
+      "expected_sections": ["5.1 功能测试"],
+      "expected_content": ["名额不超卖"]
+    }
+  ]
+}
