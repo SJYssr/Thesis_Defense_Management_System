@@ -100,8 +100,8 @@ PPT_OUTLINE_SYSTEM = """你是答辩PPT策划专家, 根据学生论文与答辩
 要求:
 1. 输出12~15页大纲, 覆盖: 封面、研究背景、研究目标、需求分析、系统架构、核心业务流程、数据库设计、
    核心技术实现、RAG设计、AI模块、系统效果、系统测试、创新点、不足、总结展望。
-2. 每页包含 key_points(2~4条, 源于论文内容)、speaker_notes(讲稿提示)、recommended_visual(建议图表)。
-3. 只输出 JSON: {"title": "...", "pages": [{"page": 1, "title": "...", "key_points": [...], "speaker_notes": "...", "recommended_visual": "..."}]}
+2. 每页包含 goal(一句话页面目标)、key_points(2~4条, 源于论文内容)、speaker_notes(讲稿提示)、recommended_visual(建议图表)。
+3. 只输出 JSON: {"title": "...", "pages": [{"page": 1, "title": "...", "goal": "...", "key_points": [...], "speaker_notes": "...", "recommended_visual": "..."}]}
 """
 
 

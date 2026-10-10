@@ -37,16 +37,33 @@ def _check_ai_rate(user: CurrentUser) -> None:
 
 @router.get("/documents")
 def list_documents(_: CurrentUser = Depends(require_student), db: Session = Depends(get_db), user: CurrentUser = Depends(require_student)):
-    docs = db.execute(
-        select(AIDocument).where(AIDocument.student_id == user.profile_id).order_by(AIDocument.id.desc())
-    ).scalars().all()
+    from app.models.system import SysFile
+
+    rows = db.execute(
+        select(AIDocument, SysFile.size)
+        .outerjoin(SysFile, AIDocument.file_id == SysFile.id)
+        .where(AIDocument.student_id == user.profile_id).order_by(AIDocument.id.desc())
+    ).all()
     return ResponseUtil.success([{
         "id": d.id, "document_name": d.document_name, "document_type": d.document_type,
         "index_status": d.index_status, "status_cn": STATUS_CN.get(d.index_status, d.index_status),
         "chunk_count": d.chunk_count, "version": d.version, "error_message": d.error_message,
+        "file_size": size, "file_id": d.file_id,
         "indexed_at": d.indexed_at.isoformat() if d.indexed_at and d.index_status == "SUCCESS" else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
-    } for d in docs])
+    } for d, size in rows])
+
+
+@router.get("/rag/config")
+def rag_config(_: CurrentUser = Depends(require_student)):
+    """学生端知识准备页展示的检索配置(只读, 与 RAGService 实际行为一致)."""
+    return ResponseUtil.success({
+        "personal_scope": ["论文", "开题报告", "中期报告", "终期报告", "题目信息"],
+        "global_scope": ["答辩规范", "专业知识文档"],
+        "default_top_k": 6,
+        "retrieval": "向量 KNN + 关键词检索, RRF 融合排序",
+        "query_rewrite": "多轮对话自动重写为独立问题",
+    })
 
 
 @router.post("/documents/{document_id}/index")

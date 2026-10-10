@@ -1,0 +1,2839 @@
+{
+  "dataset": "演示论文检索评测集(20230001)",
+  "questions": 24,
+  "skipped_unlabeled": 0,
+  "top_k": 5,
+  "vector_mode": "redis",
+  "strategies": {
+    "vector": {
+      "recall_at_k": 0.9583,
+      "mrr": 0.809,
+      "hit_rate": 0.9583,
+      "avg_latency_ms": 1.7,
+      "per_question": [
+        {
+          "question": "本课题的研究背景是什么? 为什么传统手工管理方式不能满足需求?",
+          "retrieved": [
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.219709,
+              "relevant": true
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.139186,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.135552,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.104593,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.102633,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 3.3
+        },
+        {
+          "question": "系统通过什么技术手段降低大语言模型的幻觉?",
+          "retrieved": [
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.179605,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.162176,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.157791,
+              "relevant": false
+            },
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.107107,
+              "relevant": false
+            },
+            {
+              "chunk_id": 13,
+              "section": "5.1 功能测试",
+              "document_type": "THESIS",
+              "score": 0.08394,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.8
+        },
+        {
+          "question": "后端为什么选择 FastAPI 框架? 与什么 ORM 配合使用?",
+          "retrieved": [
+            {
+              "chunk_id": 3,
+              "section": "2.1 FastAPI 与 SQLAlchemy",
+              "document_type": "THESIS",
+              "score": 0.335005,
+              "relevant": true
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.198362,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.126267,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.121426,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.077962,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.8
+        },
+        {
+          "question": "系统为什么使用 Redis 做向量检索而没有引入 Qdrant 或 Milvus?",
+          "retrieved": [
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 0.41332,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.210591,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.158418,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.157998,
+              "relevant": false
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.136139,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "RAG 的完整流程包括哪些步骤? 分块大小和重叠取多少?",
+          "retrieved": [
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.13341,
+              "relevant": true
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.130295,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.113645,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.077411,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.070768,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "系统的整体架构采用什么风格? AI 层抽象了哪些服务?",
+          "retrieved": [
+            {
+              "chunk_id": 3,
+              "section": "2.1 FastAPI 与 SQLAlchemy",
+              "document_type": "THESIS",
+              "score": 0.170484,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.163697,
+              "relevant": true
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.117611,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.115988,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.111,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 0.5,
+          "hit": true,
+          "latency_ms": 2.1
+        },
+        {
+          "question": "毕业设计状态机包含哪五个阶段? 阶段内部状态如何迁移?",
+          "retrieved": [
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.284651,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.177041,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.108481,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.098635,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.060098,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.9
+        },
+        {
+          "question": "数据库设计了哪些核心表? 如何保证一个学生只有一条有效选题?",
+          "retrieved": [
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.245398,
+              "relevant": true
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.143074,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.139109,
+              "relevant": false
+            },
+            {
+              "chunk_id": 13,
+              "section": "5.1 功能测试",
+              "document_type": "THESIS",
+              "score": 0.114228,
+              "relevant": false
+            },
+            {
+              "chunk_id": 3,
+              "section": "2.1 FastAPI 与 SQLAlchemy",
+              "document_type": "THESIS",
+              "score": 0.095498,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "系统的权限模型是什么? RAG 检索如何防止跨学生论文越权?",
+          "retrieved": [
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.312698,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.217512,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.173902,
+              "relevant": false
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.16879,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.142566,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "学生上传论文后, 文档入库流水线包含哪些步骤?",
+          "retrieved": [
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.233502,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.138022,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.124734,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.122397,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.10766,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "AI 模拟答辩的四维评分细则和分值是如何设置的?",
+          "retrieved": [
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.138598,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.128014,
+              "relevant": false
+            },
+            {
+              "chunk_id": 3,
+              "section": "2.1 FastAPI 与 SQLAlchemy",
+              "document_type": "THESIS",
+              "score": 0.114024,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.112101,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.092912,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "进度百分比如何计算? 为什么不直接让大模型判断进度?",
+          "retrieved": [
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.241607,
+              "relevant": true
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.096851,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.085324,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.084038,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.083955,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "系统对哪些关键场景做了接口测试?",
+          "retrieved": [
+            {
+              "chunk_id": 13,
+              "section": "5.1 功能测试",
+              "document_type": "THESIS",
+              "score": 0.216246,
+              "relevant": true
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.088348,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.083837,
+              "relevant": false
+            },
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.065171,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.063307,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "检索质量测试构建了多少个标准问题? Hybrid RAG 相比纯向量检索提升了多少?",
+          "retrieved": [
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.496939,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.227983,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.142541,
+              "relevant": false
+            },
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 0.138978,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.116287,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "系统的创新点有哪些?",
+          "retrieved": [
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.171326,
+              "relevant": false
+            },
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 0.101138,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.074453,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.070267,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.065603,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 0.25,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "系统还有哪些不足? 后续的展望是什么?",
+          "retrieved": [
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.131887,
+              "relevant": true
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.082988,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.078751,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.072926,
+              "relevant": false
+            },
+            {
+              "chunk_id": 13,
+              "section": "5.1 功能测试",
+              "document_type": "THESIS",
+              "score": 0.060697,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "前端和异步任务分别采用什么技术实现?",
+          "retrieved": [
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.118354,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.113046,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.112713,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.092398,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.073053,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 0.3333,
+          "hit": true,
+          "latency_ms": 2.0
+        },
+        {
+          "question": "大模型供应商可以切换到哪些?",
+          "retrieved": [
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.125755,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.103695,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.10285,
+              "relevant": true
+            },
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.094741,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.093632,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 0.3333,
+          "hit": true,
+          "latency_ms": 1.9
+        },
+        {
+          "question": "Redis 在系统里除了向量检索还承担哪些职能?",
+          "retrieved": [
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 0.288901,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.20377,
+              "relevant": false
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.193752,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.182266,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.156822,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.7
+        },
+        {
+          "question": "什么是 Hybrid RAG? 向量检索与关键词检索如何融合?",
+          "retrieved": [
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.34388,
+              "relevant": true
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.312116,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.159347,
+              "relevant": false
+            },
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 0.151866,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.108696,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "如果开题报告没有通过, 学生能提交中期材料吗? 为什么?",
+          "retrieved": [
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.267067,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.126098,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.118024,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.09741,
+              "relevant": false
+            },
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.091733,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "开题/中期/终期三个阶段的材料分别存在哪些表中?",
+          "retrieved": [
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.194194,
+              "relevant": false
+            },
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.192218,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.109355,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.075576,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.074488,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 0.0,
+          "reciprocal_rank": 0.0,
+          "hit": false,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "为什么要开发这个系统? 手工管理毕业设计有什么问题?",
+          "retrieved": [
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.196763,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.190166,
+              "relevant": true
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.151002,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.099178,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.097859,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 0.5,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "答辩问题库按哪些维度生成? 各维度多少道题?",
+          "retrieved": [
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.132506,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.11789,
+              "relevant": true
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.109897,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.106268,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.090095,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 0.5,
+          "hit": true,
+          "latency_ms": 1.7
+        }
+      ]
+    },
+    "keyword": {
+      "recall_at_k": 0.9583,
+      "mrr": 0.9583,
+      "hit_rate": 0.9583,
+      "avg_latency_ms": 1.8,
+      "per_question": [
+        {
+          "question": "本课题的研究背景是什么? 为什么传统手工管理方式不能满足需求?",
+          "retrieved": [
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.8
+        },
+        {
+          "question": "系统通过什么技术手段降低大语言模型的幻觉?",
+          "retrieved": [
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.7
+        },
+        {
+          "question": "后端为什么选择 FastAPI 框架? 与什么 ORM 配合使用?",
+          "retrieved": [
+            {
+              "chunk_id": 3,
+              "section": "2.1 FastAPI 与 SQLAlchemy",
+              "document_type": "THESIS",
+              "score": 0.75,
+              "relevant": true
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.5,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 2.8
+        },
+        {
+          "question": "系统为什么使用 Redis 做向量检索而没有引入 Qdrant 或 Milvus?",
+          "retrieved": [
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 1.0,
+              "relevant": true
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.416667,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.416667,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.7
+        },
+        {
+          "question": "RAG 的完整流程包括哪些步骤? 分块大小和重叠取多少?",
+          "retrieved": [
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "系统的整体架构采用什么风格? AI 层抽象了哪些服务?",
+          "retrieved": [
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "毕业设计状态机包含哪五个阶段? 阶段内部状态如何迁移?",
+          "retrieved": [
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "数据库设计了哪些核心表? 如何保证一个学生只有一条有效选题?",
+          "retrieved": [
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.416667,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.2
+        },
+        {
+          "question": "系统的权限模型是什么? RAG 检索如何防止跨学生论文越权?",
+          "retrieved": [
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.416667,
+              "relevant": true
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": false
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.3
+        },
+        {
+          "question": "学生上传论文后, 文档入库流水线包含哪些步骤?",
+          "retrieved": [
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.583333,
+              "relevant": true
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.3
+        },
+        {
+          "question": "AI 模拟答辩的四维评分细则和分值是如何设置的?",
+          "retrieved": [
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "进度百分比如何计算? 为什么不直接让大模型判断进度?",
+          "retrieved": [
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.7
+        },
+        {
+          "question": "系统对哪些关键场景做了接口测试?",
+          "retrieved": [
+            {
+              "chunk_id": 13,
+              "section": "5.1 功能测试",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 2.9
+        },
+        {
+          "question": "检索质量测试构建了多少个标准问题? Hybrid RAG 相比纯向量检索提升了多少?",
+          "retrieved": [
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.833333,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.666667,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.7
+        },
+        {
+          "question": "系统的创新点有哪些?",
+          "retrieved": [
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.222222,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.222222,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "系统还有哪些不足? 后续的展望是什么?",
+          "retrieved": [
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "前端和异步任务分别采用什么技术实现?",
+          "retrieved": [
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "大模型供应商可以切换到哪些?",
+          "retrieved": [
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "Redis 在系统里除了向量检索还承担哪些职能?",
+          "retrieved": [
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 0.5,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": false
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "什么是 Hybrid RAG? 向量检索与关键词检索如何融合?",
+          "retrieved": [
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.75,
+              "relevant": true
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.666667,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 3.9
+        },
+        {
+          "question": "如果开题报告没有通过, 学生能提交中期材料吗? 为什么?",
+          "retrieved": [
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.333333,
+              "relevant": true
+            },
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 4.1
+        },
+        {
+          "question": "开题/中期/终期三个阶段的材料分别存在哪些表中?",
+          "retrieved": [
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": false
+            },
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 0.0,
+          "reciprocal_rank": 0.0,
+          "hit": false,
+          "latency_ms": 1.7
+        },
+        {
+          "question": "为什么要开发这个系统? 手工管理毕业设计有什么问题?",
+          "retrieved": [
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.25,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "答辩问题库按哪些维度生成? 各维度多少道题?",
+          "retrieved": [
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.166667,
+              "relevant": true
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        }
+      ]
+    },
+    "hybrid": {
+      "recall_at_k": 0.9583,
+      "mrr": 0.9167,
+      "hit_rate": 0.9583,
+      "avg_latency_ms": 1.6,
+      "per_question": [
+        {
+          "question": "本课题的研究背景是什么? 为什么传统手工管理方式不能满足需求?",
+          "retrieved": [
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "系统通过什么技术手段降低大语言模型的幻觉?",
+          "retrieved": [
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.032002,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 13,
+              "section": "5.1 功能测试",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "后端为什么选择 FastAPI 框架? 与什么 ORM 配合使用?",
+          "retrieved": [
+            {
+              "chunk_id": 3,
+              "section": "2.1 FastAPI 与 SQLAlchemy",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.032258,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "系统为什么使用 Redis 做向量检索而没有引入 Qdrant 或 Milvus?",
+          "retrieved": [
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.031754,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.031754,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.031746,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.03031,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "RAG 的完整流程包括哪些步骤? 分块大小和重叠取多少?",
+          "retrieved": [
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.032258,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.031746,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.030777,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.03009,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "系统的整体架构采用什么风格? AI 层抽象了哪些服务?",
+          "retrieved": [
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.032522,
+              "relevant": true
+            },
+            {
+              "chunk_id": 3,
+              "section": "2.1 FastAPI 与 SQLAlchemy",
+              "document_type": "THESIS",
+              "score": 0.016393,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.9
+        },
+        {
+          "question": "毕业设计状态机包含哪五个阶段? 阶段内部状态如何迁移?",
+          "retrieved": [
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.7
+        },
+        {
+          "question": "数据库设计了哪些核心表? 如何保证一个学生只有一条有效选题?",
+          "retrieved": [
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 13,
+              "section": "5.1 功能测试",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 3,
+              "section": "2.1 FastAPI 与 SQLAlchemy",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "系统的权限模型是什么? RAG 检索如何防止跨学生论文越权?",
+          "retrieved": [
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.032002,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.032002,
+              "relevant": false
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.03125,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.03031,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "学生上传论文后, 文档入库流水线包含哪些步骤?",
+          "retrieved": [
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.031754,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "AI 模拟答辩的四维评分细则和分值是如何设置的?",
+          "retrieved": [
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 3,
+              "section": "2.1 FastAPI 与 SQLAlchemy",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "进度百分比如何计算? 为什么不直接让大模型判断进度?",
+          "retrieved": [
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "系统对哪些关键场景做了接口测试?",
+          "retrieved": [
+            {
+              "chunk_id": 13,
+              "section": "5.1 功能测试",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "检索质量测试构建了多少个标准问题? Hybrid RAG 相比纯向量检索提升了多少?",
+          "retrieved": [
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.032258,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.031498,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.03031,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.030077,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 2.0
+        },
+        {
+          "question": "系统的创新点有哪些?",
+          "retrieved": [
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.032522,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.032018,
+              "relevant": true
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.031025,
+              "relevant": false
+            },
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 0.5,
+          "hit": true,
+          "latency_ms": 1.8
+        },
+        {
+          "question": "系统还有哪些不足? 后续的展望是什么?",
+          "retrieved": [
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 13,
+              "section": "5.1 功能测试",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.6
+        },
+        {
+          "question": "前端和异步任务分别采用什么技术实现?",
+          "retrieved": [
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.032266,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.032266,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.031754,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 0.5,
+          "hit": true,
+          "latency_ms": 2.4
+        },
+        {
+          "question": "大模型供应商可以切换到哪些?",
+          "retrieved": [
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.032266,
+              "relevant": true
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.016393,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.7
+        },
+        {
+          "question": "Redis 在系统里除了向量检索还承担哪些职能?",
+          "retrieved": [
+            {
+              "chunk_id": 4,
+              "section": "2.2 Redis 向量检索",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.032258,
+              "relevant": false
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.031258,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.031258,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.03125,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "什么是 Hybrid RAG? 向量检索与关键词检索如何融合?",
+          "retrieved": [
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 14,
+              "section": "5.2 检索质量测试",
+              "document_type": "THESIS",
+              "score": 0.032258,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.031498,
+              "relevant": false
+            },
+            {
+              "chunk_id": 6,
+              "section": "3.1 系统架构",
+              "document_type": "THESIS",
+              "score": 0.030798,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.030536,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 2.1
+        },
+        {
+          "question": "如果开题报告没有通过, 学生能提交中期材料吗? 为什么?",
+          "retrieved": [
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": true
+            },
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.031514,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.016129,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.4
+        },
+        {
+          "question": "开题/中期/终期三个阶段的材料分别存在哪些表中?",
+          "retrieved": [
+            {
+              "chunk_id": 12,
+              "section": "4.3 进度风险分析",
+              "document_type": "THESIS",
+              "score": 0.032787,
+              "relevant": false
+            },
+            {
+              "chunk_id": 7,
+              "section": "3.2 毕业设计状态机",
+              "document_type": "THESIS",
+              "score": 0.032258,
+              "relevant": false
+            },
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 9,
+              "section": "3.4 权限设计",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 0.0,
+          "reciprocal_rank": 0.0,
+          "hit": false,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "为什么要开发这个系统? 手工管理毕业设计有什么问题?",
+          "retrieved": [
+            {
+              "chunk_id": 1,
+              "section": "1.1 研究背景",
+              "document_type": "THESIS",
+              "score": 0.032522,
+              "relevant": true
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.016393,
+              "relevant": false
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 8,
+              "section": "3.3 数据库设计",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        },
+        {
+          "question": "答辩问题库按哪些维度生成? 各维度多少道题?",
+          "retrieved": [
+            {
+              "chunk_id": 11,
+              "section": "4.2 AI 模拟答辩",
+              "document_type": "THESIS",
+              "score": 0.032522,
+              "relevant": true
+            },
+            {
+              "chunk_id": 15,
+              "section": "第六章 总结与展望",
+              "document_type": "THESIS",
+              "score": 0.016393,
+              "relevant": false
+            },
+            {
+              "chunk_id": 2,
+              "section": "1.2 研究意义",
+              "document_type": "THESIS",
+              "score": 0.015873,
+              "relevant": false
+            },
+            {
+              "chunk_id": 5,
+              "section": "2.3 RAG 检索增强生成",
+              "document_type": "THESIS",
+              "score": 0.015625,
+              "relevant": false
+            },
+            {
+              "chunk_id": 10,
+              "section": "4.1 文档入库流水线",
+              "document_type": "THESIS",
+              "score": 0.015385,
+              "relevant": false
+            }
+          ],
+          "relevant_count": 1,
+          "recall": 1.0,
+          "reciprocal_rank": 1.0,
+          "hit": true,
+          "latency_ms": 1.5
+        }
+      ]
+    }
+  }
+}

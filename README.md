@@ -99,11 +99,16 @@ cd backend && .venv/bin/python backfill_cycles.py
 ### 7. 自测
 
 ```bash
-cd backend && .venv/bin/python -m unittest discover -s tests   # 12 项单测(状态分离/冲突/复算/归档)
+cd backend && .venv/bin/python -m unittest discover -s tests   # 27 项单测(状态分离/冲突/复算/归档)
 cd backend && .venv/bin/python smoke_test.py                    # 93 项断言
 # 登录鉴权/RBAC/选题并发/阶段状态机强校验/对象级权限/RAG学生隔离/AI答辩全流程/
 # PPT/进度分析/SSE/Dashboard + 阶段任务/答辩排期冲突/评审成绩闭环/归档与文件权限
+
+cd backend && .venv/bin/python rag_experiment.py               # RAG 三臂检索实验(24题标注集)
+# vector / keyword / hybrid(默认) 对比 Recall@K、MRR、命中率; --with-answers 需真实 LLM Key
 ```
+
+生产环境备份-恢复验收记录见 `docs/prod-restore-drill.md`（五容器部署 + nginx 端到端 + 行级校验闭环）。
 
 ## 三、核心设计
 
@@ -213,7 +218,7 @@ docker compose -f docker-compose.prod.yml exec backend python seed.py   # 首次
 | 执行版P1 | 阶段任务/答辩排期/冲突校验/改期留痕 | ✅ |
 | 执行版P2 | 评分表/评委评分锁定/成绩复算与发布 | ✅ |
 | 执行版P3 | 成果归档/公开授权/下载审计/撤回 | ✅ |
-| 执行版P4 | 测试、运营统计、开发环境隔离恢复演练 ✅ / 旧页移动端全面适配与生产恢复验收 ◐ | ◐ |
+| 执行版P4 | 测试、运营统计、移动端回归、开发与生产两级备份恢复演练与验收 ✅ | ✅ |
 
 > 说明: LLM/Embedding 未配置 API Key 时自动降级为内置离线实现(Mock LLM + 本地哈希向量),
 > 全部链路可离线演示; 配置 Key 后无需改码即切换真实大模型。

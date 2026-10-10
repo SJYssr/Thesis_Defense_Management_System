@@ -116,8 +116,8 @@
             </el-button>
           </div>
           <div v-if="analysis?.suggestions?.length" class="suggestion-list">
-            <div v-for="(s, i) in analysis.suggestions" :key="i" class="suggestion-item" :class="`sg-${i % 4}`">
-              <span class="sg-no">{{ i + 1 }}</span>{{ s }}
+            <div v-for="(s, i) in analysis.suggestions" :key="i" class="suggestion-item" :class="`sg-${Number(i) % 4}`">
+              <span class="sg-no">{{ Number(i) + 1 }}</span>{{ s }}
             </div>
           </div>
           <div v-else class="ai-conclusion empty">生成 AI 分析后，这里将给出针对该生的建议与行动方案。</div>
@@ -207,7 +207,6 @@ function pctOf(value: number | null | undefined, all: number | null | undefined)
   return value !== null && value !== undefined && all ? Math.round((value / all) * 100) : 0
 }
 
-const STAGE_ORDER = ['SELECTION', 'OPENING', 'MIDTERM', 'FINAL', 'MATERIAL', 'COMPLETED']
 const STAGE_CN: Record<string, string> = {
   SELECTION: '选题', OPENING: '开题报告', MIDTERM: '中期答辩', FINAL: '终期答辩', MATERIAL: '毕业材料', COMPLETED: '已完成',
 }

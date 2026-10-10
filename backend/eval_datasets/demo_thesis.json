@@ -1,6 +1,6 @@
 {
   "name": "演示论文检索评测集(20230001)",
-  "description": "基于演示论文《基于LangChain与RAG的智能毕业设计管理系统设计与实现》人工标注的检索标准问题集, 覆盖绪论/技术/设计/实现/测试各章节。用于 Recall@K、MRR 与三臂策略对比实验(roadmap 九十一/九十二章)。",
+  "description": "基于演示论文《基于LangChain与RAG的智能毕业设计管理系统设计与实现》人工标注的检索标准问题集, 覆盖绪论/技术/设计/实现/测试/总结全部章节, 含同义改写与口语化问法。用于 Recall@K、MRR 与三臂策略对比实验(roadmap 九十一/九十二章)。",
   "student_no": "20230001",
   "document_types": ["THESIS"],
   "top_k": 5,
@@ -66,6 +66,61 @@
       "question": "系统对哪些关键场景做了接口测试?",
       "expected_sections": ["5.1 功能测试"],
       "expected_content": ["名额不超卖"]
+    },
+    {
+      "question": "检索质量测试构建了多少个标准问题? Hybrid RAG 相比纯向量检索提升了多少?",
+      "expected_sections": ["5.2 检索质量测试"],
+      "expected_content": ["Recall@5 提升约 12%"]
+    },
+    {
+      "question": "系统的创新点有哪些?",
+      "expected_sections": ["第六章 总结与展望"],
+      "expected_content": ["个性化答辩问题生成"]
+    },
+    {
+      "question": "系统还有哪些不足? 后续的展望是什么?",
+      "expected_sections": ["第六章 总结与展望"],
+      "expected_content": ["语音答辩"]
+    },
+    {
+      "question": "前端和异步任务分别采用什么技术实现?",
+      "expected_sections": ["3.1 系统架构"],
+      "expected_content": ["Celery"]
+    },
+    {
+      "question": "大模型供应商可以切换到哪些?",
+      "expected_sections": ["3.1 系统架构"],
+      "expected_content": ["Ollama"]
+    },
+    {
+      "question": "Redis 在系统里除了向量检索还承担哪些职能?",
+      "expected_sections": ["2.2 Redis 向量检索"],
+      "expected_content": ["JWT 会话"]
+    },
+    {
+      "question": "什么是 Hybrid RAG? 向量检索与关键词检索如何融合?",
+      "expected_sections": ["2.3 RAG 检索增强生成"],
+      "expected_content": ["RRF"]
+    },
+    {
+      "question": "如果开题报告没有通过, 学生能提交中期材料吗? 为什么?",
+      "expected_sections": ["3.2 毕业设计状态机"],
+      "expected_content": ["开题未通过时无法提交中期材料"]
+    },
+    {
+      "question": "开题/中期/终期三个阶段的材料分别存在哪些表中?",
+      "expected_sections": ["3.3 数据库设计"],
+      "expected_content": ["opening_report/midterm_report/final_defense"]
+    },
+    {
+      "question": "为什么要开发这个系统? 手工管理毕业设计有什么问题?",
+      "expected_sections": ["1.1 研究背景"],
+      "expected_content": ["效率低下"]
+    },
+    {
+      "question": "答辩问题库按哪些维度生成? 各维度多少道题?",
+      "expected_sections": ["4.2 AI 模拟答辩"],
+      "expected_content": ["基础理解(3)"]
     }
   ]
 }

@@ -2,6 +2,7 @@ import request from './request'
 
 export const aiApi = {
   listDocuments: () => request.get('/ai/documents'),
+  ragConfig: () => request.get('/ai/rag/config'),
   indexDocument: (id: number) => request.post(`/ai/documents/${id}/index`),
   documentStatus: (id: number) => request.get(`/ai/documents/${id}/status`),
   indexReports: () => request.post('/ai/documents/index-reports'),

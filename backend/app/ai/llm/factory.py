@@ -157,13 +157,13 @@ class MockLLM(BaseLLMService):
             return json.dumps({
                 "title": f"{topic} 毕业设计答辩",
                 "pages": [
-                    {"page": 1, "title": "封面", "key_points": [topic, "姓名 / 指导教师 / 日期"], "speaker_notes": "开场自我介绍", "recommended_visual": "校徽+标题"},
-                    {"page": 2, "title": "研究背景与意义", "key_points": ["行业现状与痛点", "研究价值"], "speaker_notes": "用1-2个例子说明痛点", "recommended_visual": "背景图"},
-                    {"page": 3, "title": "系统总体架构", "key_points": ["前端 Vue3", "后端 FastAPI", "MySQL + Redis"], "speaker_notes": "按调用链讲一遍", "recommended_visual": "架构图"},
-                    {"page": 4, "title": "核心功能实现", "key_points": ["毕业流程状态机", "审核工作流", "进度跟踪"], "speaker_notes": "重点讲状态机设计", "recommended_visual": "流程图"},
-                    {"page": 5, "title": "RAG 智能能力", "key_points": ["文档解析与分块", "向量检索", "AI模拟答辩"], "speaker_notes": "结合检索流程图讲解", "recommended_visual": "RAG流程图"},
-                    {"page": 6, "title": "系统测试", "key_points": ["功能测试", "检索质量测试"], "speaker_notes": "给出关键指标", "recommended_visual": "表格"},
-                    {"page": 7, "title": "总结与展望", "key_points": ["完成工作", "不足与改进"], "speaker_notes": "致谢", "recommended_visual": "简洁文字"},
+                    {"page": 1, "title": "封面", "goal": "呈现题目与个人信息, 建立第一印象", "key_points": [topic, "姓名 / 指导教师 / 日期"], "speaker_notes": "开场自我介绍", "recommended_visual": "校徽+标题"},
+                    {"page": 2, "title": "研究背景与意义", "goal": "说明选题来源与研究价值", "key_points": ["行业现状与痛点", "研究价值"], "speaker_notes": "用1-2个例子说明痛点", "recommended_visual": "背景图"},
+                    {"page": 3, "title": "系统总体架构", "goal": "讲清系统分层与组件职责", "key_points": ["前端 Vue3", "后端 FastAPI", "MySQL + Redis"], "speaker_notes": "按调用链讲一遍", "recommended_visual": "架构图"},
+                    {"page": 4, "title": "核心功能实现", "goal": "展示核心业务流程的技术方案", "key_points": ["毕业流程状态机", "审核工作流", "进度跟踪"], "speaker_notes": "重点讲状态机设计", "recommended_visual": "流程图"},
+                    {"page": 5, "title": "RAG 智能能力", "goal": "解释RAG链路如何服务答辩场景", "key_points": ["文档解析与分块", "向量检索", "AI模拟答辩"], "speaker_notes": "结合检索流程图讲解", "recommended_visual": "RAG流程图"},
+                    {"page": 6, "title": "系统测试", "goal": "用数据证明功能与检索质量达标", "key_points": ["功能测试", "检索质量测试"], "speaker_notes": "给出关键指标", "recommended_visual": "表格"},
+                    {"page": 7, "title": "总结与展望", "goal": "收束工作并指出改进方向", "key_points": ["完成工作", "不足与改进"], "speaker_notes": "致谢", "recommended_visual": "简洁文字"},
                 ],
             }, ensure_ascii=False)
 
