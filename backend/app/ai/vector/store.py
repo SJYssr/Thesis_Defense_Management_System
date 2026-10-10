@@ -21,6 +21,29 @@ def vec_to_bytes(vec: list[float]) -> bytes:
     return np.asarray(vec, dtype=np.float32).tobytes()
 
 
+def _parse_ftsearch_rows(rows: list) -> list[tuple[object, list]]:
+    """兼容 FT.SEARCH 两种应答格式(不同 Redis 版本):
+    扁平:  [total, key1, [f1, v1, ...], key2, [f2, v2, ...], ...]
+    嵌套:  [total, [key1, [f1, v1, ...]], [key2, [f2, v2, ...]], ...]
+    """
+    entries = rows[1:] if len(rows) > 1 else []
+    parsed: list[tuple[object, list]] = []
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        if isinstance(entry, (list, tuple)):
+            parsed.append((entry[0] if len(entry) > 0 else None, list(entry[1]) if len(entry) > 1 else []))
+            i += 1
+        else:
+            key = entry
+            fields: list = []
+            if i + 1 < len(entries) and isinstance(entries[i + 1], (list, tuple)):
+                fields = list(entries[i + 1])
+            parsed.append((key, fields))
+            i += 2
+    return parsed
+
+
 def vec_to_b64(vec: list[float]) -> str:
     return base64.b64encode(vec_to_bytes(vec)).decode()
 
@@ -120,11 +143,7 @@ class VectorStore:
             return self._search_mysql(query_embedding, student_id, document_types, top_k)
 
         results = []
-        items = rows[1] if len(rows) > 1 else []
-        for item in items:
-            if not isinstance(item, (list, tuple)) or len(item) < 2:
-                continue
-            chunk_key = item[0]
+        for chunk_key, fields in _parse_ftsearch_rows(rows):
             if isinstance(chunk_key, bytes):
                 chunk_key = chunk_key.decode()
             try:
@@ -132,7 +151,6 @@ class VectorStore:
             except (ValueError, AttributeError):
                 continue
             score = 1.0
-            fields = item[2] if len(item) > 2 else []
             if fields:
                 for i in range(0, len(fields) - 1, 2):
                     if fields[i] in (b"__score", "__score"):
