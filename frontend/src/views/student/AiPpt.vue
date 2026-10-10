@@ -16,6 +16,15 @@ function download() {
   const text = `# ${outline.value.title}\n\n` + outline.value.pages.map((p: any) => `## ${p.page}. ${p.title}\n\n页面目标：${p.goal || p.title}\n\n${p.key_points.map((k: string) => '- ' + k).join('\n')}\n\n讲解提示：${p.speaker_notes}\n\n建议图表：${p.recommended_visual}`).join('\n\n')
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' })); const a = document.createElement('a'); a.href = url; a.download = '答辩PPT大纲.md'; a.click(); URL.revokeObjectURL(url)
 }
+const exporting = ref(false)
+async function downloadPptx() {
+  if (!outline.value) return
+  exporting.value = true
+  try {
+    const blob = (await aiApi.exportPptx(outline.value)) as unknown as Blob
+    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = '答辩PPT大纲.pptx'; a.click(); URL.revokeObjectURL(url)
+  } finally { exporting.value = false }
+}
 </script>
 <template>
   <header class="student-heading"><h1>AI 答辩 PPT 大纲</h1><p>根据论文文档、阶段材料和模拟答辩结果自动生成演示结构</p></header>
@@ -35,7 +44,10 @@ function download() {
         <div><strong>建议图表</strong><p>{{ page.recommended_visual }}</p></div>
         <div><strong>讲解提示</strong><p>{{ page.speaker_notes }}</p></div>
       </div>
-      <div class="ppt-footer"><el-button type="primary" @click="download">导出大纲</el-button></div>
+      <div class="ppt-footer">
+        <el-button @click="download">导出大纲</el-button>
+        <el-button type="primary" :loading="exporting" @click="downloadPptx">导出 PPTX</el-button>
+      </div>
     </section>
     <section class="page-card" v-else><el-empty description="上传论文并完成索引后，可生成答辩 PPT 大纲"><el-button type="primary" :loading="busy" @click="generate">生成大纲</el-button></el-empty></section>
   </div>

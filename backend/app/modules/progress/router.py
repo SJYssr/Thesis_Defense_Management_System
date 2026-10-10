@@ -283,3 +283,15 @@ def admin_send_reminders(body: AdminReminderRequest, user: CurrentUser = Depends
                         detail=f"向{len(ids)}名学生发送进度提醒：{body.title}"))
     db.commit()
     return ResponseUtil.success({"sent": len(ids)}, message="提醒已发送")
+
+
+@admin_router.post("/overdue-scan")
+def admin_overdue_scan(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """手动触发逾期风险扫描(与每日 01:00 Celery Beat 同一逻辑, roadmap 八十六章)."""
+    from app.tasks.risk_scan import run_overdue_risk_scan
+
+    summary = run_overdue_risk_scan()
+    db.add(OperationLog(user_id=user.id, username=user.username, module="PROGRESS", action="OVERDUE_SCAN",
+                        detail=f"扫描{summary['scanned']}个流程: 高风险{summary['high']} 警告{summary['warning']}"))
+    db.commit()
+    return ResponseUtil.success(summary, message="逾期风险扫描完成")

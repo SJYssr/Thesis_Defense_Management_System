@@ -81,8 +81,8 @@ services:
       - gs-uploads:/data/uploads
     depends_on:
       - backend
-    # Celery Worker: 文档解析/Embedding/索引等重任务
-    command: celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=2
+    # Celery Worker(内嵌 Beat): 文档解析/Embedding/索引等重任务 + 每日逾期风险扫描调度
+    command: celery -A app.tasks.celery_app.celery_app worker -B --loglevel=info --concurrency=2
 
   frontend:
     build: ./frontend

@@ -390,5 +390,42 @@ check("答辩运营统计(P4)", r.json()["code"] == 0 and "archive_rate" in stat
 r = client.get(f"{BASE}/dashboard/defense-stats", headers=auth(s1))
 check("学生无权看运营统计", r.json()["code"] == 40300)
 
+print("== 15. 系统配置 / PPTX 导出 / 逾期扫描(八十五/四十八/八十六章) ==")
+r = client.get(f"{BASE}/config/public")
+check("公开配置默认值", r.json()["data"]["system_name"] == "毕业设计管理系统", r.text[:120])
+r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin),
+               json={"items": {"system_name": "验收专用系统名", "ai_defense_enabled": "false"}})
+check("管理员更新配置", r.json()["code"] == 0, r.text[:150])
+r = client.get(f"{BASE}/config/public")
+check("配置即时生效(缓存失效)", r.json()["data"]["system_name"] == "验收专用系统名"
+      and r.json()["data"]["ai_defense_enabled"] is False, r.text[:150])
+r = client.post(f"{BASE}/ai/rag/query", headers=auth(s1), json={"query": "状态机包含哪几个阶段"})
+check("AI 总开关关闭后拦截调用", r.status_code == 200 and r.json()["code"] == 40300, r.text[:150])
+r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin),
+               json={"items": {"system_name": "毕业设计管理系统", "ai_defense_enabled": "true", "not_a_key": "1"}})
+check("未知配置项整体拒绝", r.json()["code"] == 40001, r.text[:150])
+r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin), json={"items": {"max_upload_size_mb": "abc"}})
+check("非法数值被拒绝", r.json()["code"] == 40001, r.text[:150])
+r = client.get(f"{BASE}/config/public")
+check("拒绝后配置未变", r.json()["data"]["system_name"] == "验收专用系统名", r.text[:120])
+r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin),
+               json={"items": {"system_name": "毕业设计管理系统"}})
+check("恢复系统名称", r.json()["code"] == 0)
+
+r = client.post(f"{BASE}/ai/ppt-outline/export", headers=auth(s1),
+                json={"title": "冒烟测试大纲", "pages": [
+                    {"page": 1, "title": "封面", "goal": "展示题目", "key_points": ["要点A", "要点B"],
+                     "speaker_notes": "开场", "recommended_visual": "校徽"}]})
+check("PPTX 导出为合法 Office 文件", r.status_code == 200 and r.content[:2] == b"PK" and len(r.content) > 10000,
+      f"status={r.status_code} bytes={len(r.content)}")
+r = client.post(f"{BASE}/ai/ppt-outline/export", headers=auth(s1), json={"title": "空大纲", "pages": []})
+check("空大纲导出被拒", r.json().get("code") == 40002, r.text[:150])
+
+r = client.post(f"{BASE}/admin/progress/overdue-scan", headers=auth(admin))
+summary = r.json()["data"]
+check("逾期风险扫描可触发", r.json()["code"] == 0 and summary["scanned"] >= 1, r.text[:200])
+r = client.post(f"{BASE}/admin/progress/overdue-scan", headers=auth(s1))
+check("学生无权触发扫描", r.json()["code"] == 40300)
+
 print(f"\n结果: {passed} 通过, {failed} 失败")
 sys.exit(1 if failed else 0)

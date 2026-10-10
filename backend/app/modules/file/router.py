@@ -22,7 +22,9 @@ router = APIRouter(prefix="/files", tags=["File"])
 
 @router.post("/upload")
 def upload_file(file: UploadFile, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    content, original_name, mime, size, sha256 = read_upload(file)
+    from app.shared.sysconfig import get_int
+
+    content, original_name, mime, size, sha256 = read_upload(file, get_int(db, "max_upload_size_mb", 50))
     stored_name, storage_path = storage.save(content, original_name)
     record = SysFile(
         original_name=original_name, stored_name=stored_name,

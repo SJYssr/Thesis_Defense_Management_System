@@ -13,7 +13,7 @@
 → 终期答辩 → 终期审核 → 毕业材料 → 材料审核 → 毕业
 ```
 
-- **管理员**: 数据统计(ECharts)、题目/选题/四阶段全局视图、用户管理、公告管理、全局进度
+- **管理员**: 数据统计(ECharts)、题目/选题/四阶段全局视图、用户管理、公告管理、全局进度、系统配置(名称/AI开关/限流/上传上限, 即时生效)
 - **教师**: 我的题目、四阶段审核(含终期评分)、学生进度、AI 进度分析、一键提醒
 - **学生**: 题目中心、我的选题、四阶段材料(版本管理+审核轨迹)、毕业材料上传、进度时间轴
 
@@ -99,8 +99,8 @@ cd backend && .venv/bin/python backfill_cycles.py
 ### 7. 自测
 
 ```bash
-cd backend && .venv/bin/python -m unittest discover -s tests   # 27 项单测(状态分离/冲突/复算/归档)
-cd backend && .venv/bin/python smoke_test.py                    # 93 项断言
+cd backend && .venv/bin/python -m unittest discover -s tests   # 33 项单测(状态分离/冲突/复算/归档/配置/PPTX)
+cd backend && .venv/bin/python smoke_test.py                    # 105 项断言
 # 登录鉴权/RBAC/选题并发/阶段状态机强校验/对象级权限/RAG学生隔离/AI答辩全流程/
 # PPT/进度分析/SSE/Dashboard + 阶段任务/答辩排期冲突/评审成绩闭环/归档与文件权限
 
@@ -181,7 +181,9 @@ frontend/src/
   `/defense-results/*`(复算/发布/撤回)
 - 归档: `/archive-packages*`(检索/授权/撤回/导出) `/archive-files/{id}/download`(授权下载+审计)
 - AI: `/ai/documents/*`(索引) `/ai/rag/query`(检索测试) `/ai/chat/stream`(SSE)
-  `/ai/defense/*`(问题库/会话/回答/追问/报告) `/ai/ppt-outline/generate` `/ai/progress/student/{id}/analyse`
+  `/ai/defense/*`(问题库/会话/回答/追问/报告) `/ai/ppt-outline/generate` `/ai/ppt-outline/export`(真实.pptx)
+  `/ai/progress/student/{id}/analyse`
+- 系统: `/config/public`(登录前公开配置) `/admin/system-configs`(配置读写) `/admin/progress/overdue-scan`(逾期风险扫描, 亦由 Celery Beat 每日 01:00 自动执行)
 - 完整文档: 启动后访问 `http://127.0.0.1:8000/docs`
 
 ## 六、生产部署(Docker Compose 五容器)

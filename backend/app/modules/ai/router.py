@@ -24,13 +24,23 @@ router = APIRouter(prefix="/ai", tags=["AI"])
 STATUS_CN = {"WAITING": "待处理", "PROCESSING": "处理中", "SUCCESS": "已完成", "FAILED": "失败"}
 
 
-def _check_ai_rate(user: CurrentUser) -> None:
+def _check_ai_rate(user: CurrentUser, db: Session) -> None:
+    """AI 总开关 + 每分钟限流, 阈值均来自系统配置(roadmap 七十七/八十五章)."""
+    from app.shared.sysconfig import get_all
+
+    cfg = get_all(db)
+    if cfg.get("ai_defense_enabled") != "true":
+        raise BusinessException("AI 功能已由管理员暂时关闭", 40300)
+    try:
+        limit = int(cfg.get("ai_rate_limit_per_minute") or settings.ai_rate_limit_per_minute)
+    except ValueError:
+        limit = settings.ai_rate_limit_per_minute
     key = RedisKeys.RATE_AI.format(user_id=user.id)
     current = redis_client.incr(key)
     if current == 1:
         redis_client.expire(key, 60)
-    if current > settings.ai_rate_limit_per_minute:
-        raise BusinessException(f"AI 接口调用过于频繁(每分钟限 {settings.ai_rate_limit_per_minute} 次)", 42901)
+    if current > limit:
+        raise BusinessException(f"AI 接口调用过于频繁(每分钟限 {limit} 次)", 42901)
 
 
 # ---------- 文档索引 ----------
@@ -68,7 +78,7 @@ def rag_config(_: CurrentUser = Depends(require_student)):
 
 @router.post("/documents/{document_id}/index")
 def index_document(document_id: int, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     doc = db.get(AIDocument, document_id)
     if doc is None or (user.role == "STUDENT" and doc.student_id != user.profile_id):
         raise BusinessException("文档不存在")
@@ -94,7 +104,7 @@ def document_status(document_id: int, user: CurrentUser = Depends(require_studen
 @router.post("/documents/index-reports")
 def index_stage_reports(user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     """将已通过的开题/中期/终期报告文本纳入知识库."""
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     rag = RAGService(db)
     rag.index_stage_reports(user.profile_id)
     return ResponseUtil.success(message="阶段报告已纳入知识库")
@@ -110,7 +120,7 @@ class RAGQueryRequest(BaseModel):
 
 @router.post("/rag/query")
 def rag_query(body: RAGQueryRequest, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     rag = RAGService(db)
     chunks = rag.retrieve(body.query, user.profile_id, body.document_types, top_k=body.top_k)
     return ResponseUtil.success({
@@ -129,7 +139,7 @@ class ChatRequest(BaseModel):
 @router.post("/chat/stream")
 def chat_stream(body: ChatRequest, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     """RAG 问答 SSE 流式输出(roadmap 七十二章)."""
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     rag = RAGService(db)
 
     def event_stream():
@@ -155,7 +165,7 @@ defense = APIRouter(prefix="/ai/defense", tags=["AI-Defense"])
 
 @defense.post("/questions/generate")
 def generate_questions(user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     service = DefenseService(db)
     items = service.generate_questions(user.profile_id, user.id)
     return ResponseUtil.success({"questions": items, "count": len(items)}, message="问题库已生成")
@@ -164,13 +174,13 @@ def generate_questions(user: CurrentUser = Depends(require_student), db: Session
 @defense.post("/sessions")
 def create_session(question_count: int = Query(8, ge=3, le=22), user: CurrentUser = Depends(require_student),
                    db: Session = Depends(get_db)):
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     return ResponseUtil.success(DefenseService(db).create_session(user.profile_id, question_count))
 
 
 @defense.post("/sessions/{session_id}/start")
 def start_session(session_id: int, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     return ResponseUtil.success(DefenseService(db).start_session(user.profile_id, session_id))
 
 
@@ -182,7 +192,7 @@ class AnswerRequest(BaseModel):
 @defense.post("/sessions/{session_id}/answer")
 def answer_question(session_id: int, body: AnswerRequest, user: CurrentUser = Depends(require_student),
                     db: Session = Depends(get_db)):
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     service = DefenseService(db)
     result = service.evaluate_answer(user.profile_id, session_id, body.question, body.answer, user.id)
     return ResponseUtil.success(result)
@@ -190,7 +200,7 @@ def answer_question(session_id: int, body: AnswerRequest, user: CurrentUser = De
 
 @defense.post("/sessions/{session_id}/next")
 def next_question(session_id: int, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     return ResponseUtil.success(DefenseService(db).next_question(user.profile_id, session_id))
 
 
@@ -213,8 +223,41 @@ def get_report(session_id: int, user: CurrentUser = Depends(require_student), db
 
 @router.post("/ppt-outline/generate")
 def generate_ppt_outline(user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     return ResponseUtil.success(DefenseService(db).generate_ppt_outline(user.profile_id, user.id))
+
+
+class PptOutlinePage(BaseModel):
+    page: int | str | None = None
+    title: str = ""
+    goal: str | None = None
+    key_points: list[str] = Field(default_factory=list, max_length=10)
+    speaker_notes: str | None = None
+    recommended_visual: str | None = None
+
+
+class PptOutlineExportRequest(BaseModel):
+    title: str | None = None
+    pages: list[PptOutlinePage] = Field(min_length=1, max_length=30)
+
+
+@router.post("/ppt-outline/export")
+def export_ppt_outline(body: PptOutlineExportRequest, _: CurrentUser = Depends(require_student)):
+    """把当前大纲导出为真实 .pptx(roadmap 四十八章); 纯内存生成不调 LLM."""
+    from urllib.parse import quote
+
+    from fastapi.responses import Response
+
+    from app.ai.defense.pptx_export import build_pptx
+
+    try:
+        content = build_pptx(body.model_dump())
+    except ValueError as exc:
+        raise BusinessException(str(exc), 40001)
+    filename = quote("答辩PPT大纲.pptx")
+    return Response(content=content,
+                    media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"})
 
 
 # ---------- 教师进度分析 ----------
@@ -223,7 +266,7 @@ def generate_ppt_outline(user: CurrentUser = Depends(require_student), db: Sessi
 def analyse_progress(student_id: int, user: CurrentUser = Depends(require_teacher_or_admin),
                      db: Session = Depends(get_db)):
     PermissionService.ensure_teacher_can_access_student(db, user, student_id)
-    _check_ai_rate(user)
+    _check_ai_rate(user, db)
     return ResponseUtil.success(ProgressAnalysisService(db).analyse(student_id, user.id))
 
 

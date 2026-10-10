@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
+import { loadPublicConfig, systemName } from '@/stores/app'
 import { notificationApi } from '@/api/common'
 
 const router = useRouter()
@@ -200,7 +201,7 @@ const pageTitle = computed(() => {
   }
   if (route.path === '/profile') return '个人中心'
   if (route.path === '/announcements') return '系统公告'
-  return '毕业设计管理系统'
+  return systemName.value
 })
 
 /* ---------- 全屏 ---------- */
@@ -250,6 +251,7 @@ function handleCommand(cmd: string) {
 onMounted(() => {
   syncViewport()
   window.addEventListener('resize', syncViewport)
+  loadPublicConfig()
   loadNotifications()
   timer = window.setInterval(loadNotifications, 30000)
 })
@@ -271,7 +273,7 @@ onUnmounted(() => {
           <path d="M20.4 8.6v5.2" stroke="#fff" stroke-width="1.6" stroke-linecap="round" />
           <circle cx="20.4" cy="14.6" r="1.1" fill="#fff" />
         </svg>
-        <span v-if="!collapsed" class="logo-text">毕业设计管理系统</span>
+        <span v-if="!collapsed" class="logo-text">{{ systemName }}</span>
       </div>
       <el-scrollbar>
         <div class="menu-wrap" :class="{ collapsed }">

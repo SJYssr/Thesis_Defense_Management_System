@@ -118,3 +118,13 @@ class LoginLog(Base):
     success: Mapped[int] = mapped_column(SmallInteger, default=1)
     message: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
+
+class SystemConfig(Base, TimestampMixin):
+    """系统配置键值对(roadmap 八十五章), 管理端可改并即时生效."""
+
+    __tablename__ = "system_config"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(500))
+    updater_id: Mapped[int | None] = mapped_column(BigInteger, comment="最近修改人 sys_user.id")

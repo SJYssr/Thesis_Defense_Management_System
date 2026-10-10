@@ -46,12 +46,13 @@ class LocalStorage(StorageService):
 storage = LocalStorage()
 
 
-def read_upload(file: UploadFile) -> tuple[bytes, str, str, int, str]:
-    """读取并校验上传文件, 返回 (bytes, 原始名, mime, size, sha256)."""
-    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+def read_upload(file: UploadFile, max_upload_mb: int | None = None) -> tuple[bytes, str, str, int, str]:
+    """读取并校验上传文件, 返回 (bytes, 原始名, mime, size, sha256). 大小上限可由系统配置传入."""
+    limit_mb = max_upload_mb if max_upload_mb and max_upload_mb > 0 else settings.max_upload_size_mb
+    max_bytes = limit_mb * 1024 * 1024
     content = file.file.read()
     if len(content) > max_bytes:
-        raise FileException(f"文件超过大小限制 {settings.max_upload_size_mb}MB")
+        raise FileException(f"文件超过大小限制 {limit_mb}MB")
     original_name = file.filename or "unnamed"
     if Path(original_name).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise FileException(f"不支持的文件类型: {Path(original_name).suffix}")

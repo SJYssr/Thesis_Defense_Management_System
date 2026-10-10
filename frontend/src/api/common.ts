@@ -17,6 +17,7 @@ export const aiApi = {
   sessionDetail: (id: number) => request.get(`/ai/defense/sessions/${id}`),
   report: (id: number) => request.get(`/ai/defense/sessions/${id}/report`),
   pptOutline: () => request.post('/ai/ppt-outline/generate'),
+  exportPptx: (data: unknown) => request.post('/ai/ppt-outline/export', data, { responseType: 'blob' }),
   analyseProgress: (studentId: number) => request.post(`/ai/progress/student/${studentId}/analyse`),
 }
 

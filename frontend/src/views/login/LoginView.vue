@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { authApi } from '@/api/auth'
 import { useUserStore } from '@/stores/user'
+import { loadPublicConfig, systemName } from '@/stores/app'
 import { MEDIA } from '@/config/media'
 
 const router = useRouter()
@@ -32,6 +33,7 @@ const ROLES = [
 ]
 
 onMounted(() => {
+  loadPublicConfig()
   const saved = localStorage.getItem('remember_username')
   if (saved) {
     form.username = saved
@@ -87,7 +89,7 @@ async function handleLogin() {
     <header class="topbar">
       <div class="brand">
         <i class="brand-cap"><svg viewBox="0 0 24 24" fill="currentColor" v-html="CAP_ICON" /></i>
-        <span>毕业设计管理系统</span>
+        <span>{{ systemName }}</span>
       </div>
       <nav class="top-links">
         <a @click="ElMessage.info('帮助中心建设中')">帮助中心</a>
@@ -105,7 +107,7 @@ async function handleLogin() {
         <div class="card-brand">
           <i class="card-cap"><svg viewBox="0 0 24 24" fill="currentColor" v-html="CAP_ICON" /></i>
           <div>
-            <div class="card-title">毕业设计管理系统</div>
+            <div class="card-title">{{ systemName }}</div>
             <div class="card-sub">欢迎登录系统</div>
           </div>
         </div>
