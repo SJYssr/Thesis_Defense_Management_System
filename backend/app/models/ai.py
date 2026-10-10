@@ -1,7 +1,7 @@
 """AI/RAG 模型: 知识文档/Chunk元数据/对话/答辩会话/用量."""
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, SmallInteger, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, SmallInteger, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
@@ -126,7 +126,9 @@ class AIUsageLog(Base):
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    # 双默认值兜底: 各 AI 服务插入时未传 created_at, 旧行为会产生 NULL 时间记录
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, server_default=func.now(), index=True)
 
 
 class AIPromptTemplate(Base, TimestampMixin):

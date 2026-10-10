@@ -176,10 +176,10 @@ def seed(force: bool = False):
             db.flush()
             students.append(sp)
 
-        # ---------- 学年时间配置(部分阶段已过, 制造风险多样性) ----------
+        # ---------- 学年时间配置(中期已过制造风险多样性; 选题窗口保持开放供演示/自测) ----------
         schedule = GraduationSchedule(
             academic_year="2025-2026", is_active=1,
-            selection_start=now - timedelta(days=180), selection_end=now - timedelta(days=120),
+            selection_start=now - timedelta(days=180), selection_end=now + timedelta(days=30),
             opening_start=now - timedelta(days=110), opening_end=now - timedelta(days=60),
             midterm_start=now - timedelta(days=50), midterm_end=now - timedelta(days=10),
             final_start=now - timedelta(days=5), final_end=now + timedelta(days=25),

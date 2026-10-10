@@ -82,7 +82,9 @@ const menus = computed<MenuNode[]>(() => {
         ],
       },
       { title: '系统设置', icon: 'gear', path: '/admin/settings', chevron: true },
+      { title: '学年配置', icon: 'gear', path: '/admin/academic-schedule', chevron: true },
       { title: '操作日志', icon: 'doc', path: '/admin/logs' },
+      { title: 'AI 调用日志', icon: 'chart', path: '/admin/ai-logs', chevron: true },
     ]
   }
   if (userStore.role === 'TEACHER') {

@@ -409,8 +409,8 @@ check("非法数值被拒绝", r.json()["code"] == 40001, r.text[:150])
 r = client.get(f"{BASE}/config/public")
 check("拒绝后配置未变", r.json()["data"]["system_name"] == "验收专用系统名", r.text[:120])
 r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin),
-               json={"items": {"system_name": "毕业设计管理系统"}})
-check("恢复系统名称", r.json()["code"] == 0)
+               json={"items": {"system_name": "毕业设计管理系统", "ai_defense_enabled": "true"}})
+check("恢复系统名称与AI开关", r.json()["code"] == 0)
 
 r = client.post(f"{BASE}/ai/ppt-outline/export", headers=auth(s1),
                 json={"title": "冒烟测试大纲", "pages": [
@@ -426,6 +426,62 @@ summary = r.json()["data"]
 check("逾期风险扫描可触发", r.json()["code"] == 0 and summary["scanned"] >= 1, r.text[:200])
 r = client.post(f"{BASE}/admin/progress/overdue-scan", headers=auth(s1))
 check("学生无权触发扫描", r.json()["code"] == 40300)
+
+print("== 16. 学年配置 / 选题时间窗 / AI调用日志(八十四/七十七章) ==")
+r = client.get(f"{BASE}/admin/academic-schedules", headers=auth(admin))
+schedules = r.json()["data"]
+check("学年配置列表可查", r.json()["code"] == 0 and len(schedules) >= 1, r.text[:150])
+check("同一时间仅一个激活学年", sum(1 for s in schedules if s["is_active"]) == 1)
+origin = next((s for s in schedules if s["is_active"]), None)
+check("存在激活学年配置", origin is not None)
+
+r = client.post(f"{BASE}/admin/academic-schedules", headers=auth(admin),
+                json={"academic_year": "2099-2100", "windows": {
+                    "opening_start": "2100-01-10T00:00:00", "opening_end": "2100-01-01T00:00:00"}})
+check("阶段开始晚于结束被拒", r.json()["code"] == 40002, r.text[:150])
+r = client.post(f"{BASE}/admin/academic-schedules", headers=auth(admin),
+                json={"academic_year": origin["academic_year"], "windows": {}})
+check("重复学年配置被拒", r.json()["code"] == 40002, r.text[:150])
+
+# 激活一个选题窗口早已关闭的学年 → 学生选题应被时间窗拦截
+r = client.post(f"{BASE}/admin/academic-schedules", headers=auth(admin),
+                json={"academic_year": "2099-2100", "is_active": True,
+                      "windows": {"selection_end": "2000-01-01T00:00:00"}})
+check("创建并激活新学年", r.json()["code"] == 0, r.text[:150])
+s7 = login("20230007", "123456")
+r = client.post(f"{BASE}/student/selections", headers=auth(s7),
+                json={"topic_id": 1, "reason": "时间窗校验冒烟测试: 我对RAG方向有浓厚兴趣。"})
+check("选题窗口外提交被拒(40003)", r.json()["code"] == 40003, r.text[:150])
+
+# 恢复原学年激活, 原窗口原样写回
+restore = {"academic_year": origin["academic_year"], "is_active": True,
+           "windows": {k: origin[k] for k in origin if k.endswith(("_start", "_end")) and origin[k]}}
+r = client.put(f"{BASE}/admin/academic-schedules/{origin['id']}", headers=auth(admin), json=restore)
+check("恢复原学年激活", r.json()["code"] == 0 and r.json()["data"]["is_active"] is True, r.text[:150])
+r = client.get(f"{BASE}/admin/academic-schedules", headers=auth(admin))
+after = r.json()["data"]
+check("激活切换后仍唯一生效",
+      sum(1 for s in after if s["is_active"]) == 1
+      and next(s for s in after if s["is_active"])["academic_year"] == origin["academic_year"])
+r = client.get(f"{BASE}/academic-schedule/active", headers=auth(s1))
+check("登录用户可读当前学年", r.json()["code"] == 0 and r.json()["data"]["academic_year"] == origin["academic_year"],
+      r.text[:150])
+r = client.get(f"{BASE}/admin/academic-schedules", headers=auth(s1))
+check("学生无权管理学年配置", r.json()["code"] == 40300)
+
+r = client.get(f"{BASE}/admin/ai-usage-logs?page_size=5", headers=auth(admin))
+usage = r.json()["data"]
+check("AI调用日志可查询", r.json()["code"] == 0 and usage["total"] >= 1, r.text[:200])
+check("汇总与明细一致", usage["summary"]["calls"] == usage["total"]
+      and usage["summary"]["input_tokens"] + usage["summary"]["output_tokens"] > 0)
+first = usage["list"][0] if usage["list"] else {}
+check("明细含场景/模型/Token/耗时", all(k in first for k in ("scene_label", "model", "input_tokens", "latency_ms")))
+r = client.get(f"{BASE}/admin/ai-usage-logs?scene=GENERATE_QUESTIONS", headers=auth(admin))
+scene_rows = r.json()["data"]["list"]
+check("场景筛选生效", all(i["scene"] == "GENERATE_QUESTIONS" for i in scene_rows) and len(scene_rows) >= 1,
+      r.text[:150])
+r = client.get(f"{BASE}/admin/ai-usage-logs", headers=auth(t1))
+check("教师无权查看AI调用日志", r.json()["code"] == 40300)
 
 print(f"\n结果: {passed} 通过, {failed} 失败")
 sys.exit(1 if failed else 0)

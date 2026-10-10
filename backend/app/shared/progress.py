@@ -42,6 +42,22 @@ class ProgressService:
         ).scalars().first()
 
     @classmethod
+    def ensure_selection_window_open(cls, db: Session) -> None:
+        """选题时间窗校验(roadmap 八十五章"允许选题时间"): 当前激活学年的选题窗口外禁止提交."""
+        from app.core.exceptions import BusinessException
+
+        schedule = cls.get_active_schedule(db)
+        if schedule is None:
+            return
+        current = now()
+        if schedule.selection_start and current < schedule.selection_start:
+            raise BusinessException(
+                f"选题尚未开始, 开始时间 {schedule.selection_start:%Y-%m-%d %H:%M}", 40003)
+        if schedule.selection_end and current > schedule.selection_end:
+            raise BusinessException(
+                f"选题已截止, 截止时间 {schedule.selection_end:%Y-%m-%d %H:%M}", 40003)
+
+    @classmethod
     def compute_progress(cls, db: Session, student_id: int) -> tuple[str, int]:
         """返回 (当前阶段, 进度百分比). 全部按学生当前学年流程实例(cycle)归属."""
         from app.shared.cycle import get_active_cycle

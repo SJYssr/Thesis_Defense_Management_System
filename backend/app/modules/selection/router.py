@@ -69,6 +69,9 @@ def apply_selection(body: ApplyRequest, user: CurrentUser = Depends(require_stud
 
     GraduationWorkflowService.require_can_apply_selection(db, user.profile_id)
 
+    # 选题时间窗校验(roadmap 八十五章"允许选题时间"): 以当前激活学年配置为准
+    ProgressService.ensure_selection_window_open(db)
+
     topic = db.execute(
         select(GraduationTopic).where(
             GraduationTopic.id == body.topic_id,

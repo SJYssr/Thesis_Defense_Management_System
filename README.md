@@ -13,7 +13,7 @@
 → 终期答辩 → 终期审核 → 毕业材料 → 材料审核 → 毕业
 ```
 
-- **管理员**: 数据统计(ECharts)、题目/选题/四阶段全局视图、用户管理、公告管理、全局进度、系统配置(名称/AI开关/限流/上传上限, 即时生效)
+- **管理员**: 数据统计(ECharts)、题目/选题/四阶段全局视图、用户管理、公告管理、全局进度、系统配置(名称/AI开关/限流/上传上限, 即时生效)、学年阶段时间配置(选题/开题/中期/终期/材料窗口, 激活即切换; 选题提交按时间窗校验)、AI 调用日志(场景/Token/耗时明细与汇总)
 - **教师**: 我的题目、四阶段审核(含终期评分)、学生进度、AI 进度分析、一键提醒
 - **学生**: 题目中心、我的选题、四阶段材料(版本管理+审核轨迹)、毕业材料上传、进度时间轴
 
@@ -99,8 +99,8 @@ cd backend && .venv/bin/python backfill_cycles.py
 ### 7. 自测
 
 ```bash
-cd backend && .venv/bin/python -m unittest discover -s tests   # 33 项单测(状态分离/冲突/复算/归档/配置/PPTX)
-cd backend && .venv/bin/python smoke_test.py                    # 105 项断言
+cd backend && .venv/bin/python -m unittest discover -s tests   # 42 项单测(状态分离/冲突/复算/归档/配置/PPTX/学年时间窗)
+cd backend && .venv/bin/python smoke_test.py                    # 121 项断言
 # 登录鉴权/RBAC/选题并发/阶段状态机强校验/对象级权限/RAG学生隔离/AI答辩全流程/
 # PPT/进度分析/SSE/Dashboard + 阶段任务/答辩排期冲突/评审成绩闭环/归档与文件权限
 
@@ -164,7 +164,7 @@ backend/
 │   └── shared/        # 工作流状态机/进度规则引擎/学年流程/文件权限/存储/事件
 ├── backfill_cycles.py # P0 迁移: cycle_id 回填 + 唯一约束切换(幂等)
 ├── seed.py            # 种子数据(含演示论文+答辩场次+评分+归档)
-└── smoke_test.py      # 93项核心链路自测
+└── smoke_test.py      # 121项核心链路自测
 
 frontend/src/
 ├── api/ stores/ router/ layouts/
@@ -183,7 +183,7 @@ frontend/src/
 - AI: `/ai/documents/*`(索引) `/ai/rag/query`(检索测试) `/ai/chat/stream`(SSE)
   `/ai/defense/*`(问题库/会话/回答/追问/报告) `/ai/ppt-outline/generate` `/ai/ppt-outline/export`(真实.pptx)
   `/ai/progress/student/{id}/analyse`
-- 系统: `/config/public`(登录前公开配置) `/admin/system-configs`(配置读写) `/admin/progress/overdue-scan`(逾期风险扫描, 亦由 Celery Beat 每日 01:00 自动执行)
+- 系统: `/config/public`(登录前公开配置) `/admin/system-configs`(配置读写) `/admin/academic-schedules`(学年阶段时间配置, 激活唯一) `/academic-schedule/active`(当前学年窗口) `/admin/ai-usage-logs`(AI 调用明细+汇总) `/admin/progress/overdue-scan`(逾期风险扫描, 亦由 Celery Beat 每日 01:00 自动执行)
 - 完整文档: 启动后访问 `http://127.0.0.1:8000/docs`
 
 ## 六、生产部署(Docker Compose 五容器)
@@ -215,7 +215,7 @@ docker compose -f docker-compose.prod.yml exec backend python seed.py   # 首次
 | P3 RAG | 解析/分块/Embedding/Redis向量/Hybrid检索/测试接口 | ✅ |
 | P4 AI答辩 | 问题库/会话/四维评分/动态追问/报告/PPT大纲 | ✅ |
 | P5 数据统计 | 三角色首页/ECharts 四图/AI用量/答辩运营统计 | ✅ |
-| P6 测试 | 93项核心场景自测(含7个必测场景+RAG隔离) + 12项单测 | ✅ |
+| P6 测试 | 121项核心场景自测(含7个必测场景+RAG隔离/学年时间窗/AI调用日志) + 42项单测 | ✅ |
 | 执行版P0 | 学年流程实例/三状态域分离/迁移脚本 | ✅ |
 | 执行版P1 | 阶段任务/答辩排期/冲突校验/改期留痕 | ✅ |
 | 执行版P2 | 评分表/评委评分锁定/成绩复算与发布 | ✅ |
