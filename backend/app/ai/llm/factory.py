@@ -220,16 +220,40 @@ class MockLLM(BaseLLMService):
 
 class LLMFactory:
     _instance: BaseLLMService | None = None
+    _instance_model: str | None = None
+
+    @staticmethod
+    def _model_override() -> str:
+        """LLM 模型名覆盖(roadmap 八十五章): 读系统配置 Redis 缓存, 未配置/缓存未热/Redis 故障时返回空.
+
+        AI 接口入口都会先读系统配置(AI 开关/限流), 缓存在正常请求路径上必然是热的.
+        """
+        try:
+            import json
+
+            from app.db.redis import redis_client
+            from app.shared.sysconfig import CACHE_KEY
+
+            cached = redis_client.get(CACHE_KEY)
+            if cached:
+                return str(json.loads(cached).get("ai_llm_model") or "").strip()
+        except Exception:  # noqa: BLE001 — 任何读取故障都退回环境变量默认
+            pass
+        return ""
 
     @classmethod
     def get(cls) -> BaseLLMService:
-        if cls._instance is None:
-            from app.core.config import settings
+        from app.core.config import settings
 
-            if settings.llm_use_openai:
-                cls._instance = OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, settings.llm_model)
-            else:
+        if not settings.llm_use_openai:
+            if not isinstance(cls._instance, MockLLM):
                 cls._instance = MockLLM()
+                cls._instance_model = None
+            return cls._instance
+        model = cls._model_override() or settings.llm_model
+        if cls._instance is None or cls._instance_model != model:
+            cls._instance = OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, model)
+            cls._instance_model = model
         return cls._instance
 
     @classmethod

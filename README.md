@@ -13,7 +13,7 @@
 → 终期答辩 → 终期审核 → 毕业材料 → 材料审核 → 毕业
 ```
 
-- **管理员**: 数据统计(ECharts)、题目/选题/四阶段全局视图、用户管理、公告管理、全局进度、系统配置(名称/AI开关/限流/上传上限, 即时生效)、学年阶段时间配置(选题/开题/中期/终期/材料窗口, 激活即切换; 选题提交按时间窗校验)、AI 调用日志(场景/Token/耗时明细与汇总)
+- **管理员**: 数据统计(ECharts)、题目/选题/四阶段全局视图、用户管理、公告管理、全局进度、系统配置(名称/AI开关/限流/上传上限/LLM模型名覆盖, 即时生效)、学年阶段时间配置(选题/开题/中期/终期/材料窗口, 激活即切换; 选题提交按时间窗校验)、Prompt 配置(七场景 System Prompt 覆盖/停用/重置, 版本留痕, 防注入安全声明强制追加不可删改)、AI 调用日志(场景/Token/耗时明细与汇总)
 - **教师**: 我的题目、四阶段审核(含终期评分)、学生进度、AI 进度分析、一键提醒
 - **学生**: 题目中心、我的选题、四阶段材料(版本管理+审核轨迹)、毕业材料上传、进度时间轴
 
@@ -34,6 +34,7 @@
 - **多轮对话**: Query Rewrite 生成 standalone question 再检索; SSE 流式输出
 - **教师进度分析**: 规则引擎算确定性进度/风险(阶段权重 10/20/25/25/20), LLM 只解释不编造
 - **防幻觉与注入防护**: 检索内容标记 UNTRUSTED, System Prompt 限定只依据上下文
+- **Prompt 模板管理**(roadmap 七十三章): 7 个 AI 场景的 System Prompt 内置默认 + 数据库覆盖(ai_prompt_template 版本化留痕), 停用/重置即时生效, 防注入安全声明由系统在解析时强制追加、不随自定义内容存储
 
 ## 二、快速开始
 
@@ -183,7 +184,7 @@ frontend/src/
 - AI: `/ai/documents/*`(索引) `/ai/rag/query`(检索测试) `/ai/chat/stream`(SSE)
   `/ai/defense/*`(问题库/会话/回答/追问/报告) `/ai/ppt-outline/generate` `/ai/ppt-outline/export`(真实.pptx)
   `/ai/progress/student/{id}/analyse`
-- 系统: `/config/public`(登录前公开配置) `/admin/system-configs`(配置读写) `/admin/academic-schedules`(学年阶段时间配置, 激活唯一) `/academic-schedule/active`(当前学年窗口) `/admin/ai-usage-logs`(AI 调用明细+汇总) `/admin/progress/overdue-scan`(逾期风险扫描, 亦由 Celery Beat 每日 01:00 自动执行)
+- 系统: `/config/public`(登录前公开配置) `/admin/system-configs`(配置读写, 含 ai_llm_model 覆盖) `/admin/ai-model-info`(LLM/Embedding 当前生效信息) `/admin/ai-prompts`(Prompt 模板覆盖/停用/重置/版本历史) `/admin/academic-schedules`(学年阶段时间配置, 激活唯一) `/academic-schedule/active`(当前学年窗口) `/admin/ai-usage-logs`(AI 调用明细+汇总) `/admin/progress/overdue-scan`(逾期风险扫描, 亦由 Celery Beat 每日 01:00 自动执行)
 - 完整文档: 启动后访问 `http://127.0.0.1:8000/docs`
 
 ## 六、生产部署(Docker Compose 五容器)

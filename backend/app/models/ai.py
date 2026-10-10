@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, SmallInteger, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, BigIntPK, TimestampMixin
 
 
 class AIDocument(Base, TimestampMixin):
@@ -132,11 +132,28 @@ class AIUsageLog(Base):
 
 
 class AIPromptTemplate(Base, TimestampMixin):
+    """Prompt 模板当前态(roadmap 七十三章): 每场景一行, 内容修改产生新版本并写入历史表."""
+
     __tablename__ = "ai_prompt_template"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(64), unique=True, comment="如 DEFENSE_EVALUATE_ANSWER")
     name: Mapped[str | None] = mapped_column(String(128))
     system_prompt: Mapped[str | None] = mapped_column(Text)
     version: Mapped[int] = mapped_column(Integer, default=1)
-    status: Mapped[int] = mapped_column(SmallInteger, default=1)
+    status: Mapped[int] = mapped_column(SmallInteger, default=1, comment="1=启用自定义内容, 0=停用(回退内置默认)")
+    updated_by: Mapped[int | None] = mapped_column(BigInteger, comment="最近修改人 sys_user.id")
+
+
+class AIPromptTemplateVersion(Base):
+    """Prompt 版本历史: 每次 UPDATE/RESET 留存内容快照, 支持追溯."""
+
+    __tablename__ = "ai_prompt_template_version"
+
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    system_prompt: Mapped[str | None] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(String(16), comment="UPDATE/RESET/STATUS")
+    operator_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, default=datetime.now, index=True)

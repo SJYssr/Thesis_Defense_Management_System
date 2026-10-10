@@ -12,10 +12,21 @@ const form = reactive({
   ai_defense_enabled: true,
   ai_rate_limit_per_minute: 10,
   max_upload_size_mb: 50,
+  ai_llm_model: '',
 })
 
 const BOOL_KEYS = ['ai_defense_enabled']
 const INT_KEYS = ['ai_rate_limit_per_minute', 'max_upload_size_mb']
+
+const modelInfo = ref<{
+  llm_provider: string
+  llm_openai_mode: boolean
+  llm_model_env: string
+  llm_model_effective: string
+  embedding_provider: string
+  embedding_dim: number
+  embedding_model: string | null
+} | null>(null)
 
 async function load() {
   loading.value = true
@@ -26,8 +37,17 @@ async function load() {
       else if (INT_KEYS.includes(item.key)) (form as any)[item.key] = Number(item.value) || 0
       else (form as any)[item.key] = item.value ?? ''
     }
+    await loadModelInfo()
   } finally {
     loading.value = false
+  }
+}
+
+async function loadModelInfo() {
+  try {
+    modelInfo.value = (await request.get('/admin/ai-model-info')).data
+  } catch {
+    modelInfo.value = null
   }
 }
 
@@ -88,6 +108,27 @@ onMounted(load)
       </section>
 
       <section class="settings-block">
+        <h3 class="block-title">AI 模型（roadmap 八十五章）</h3>
+        <el-form label-width="110px" label-position="left">
+          <el-form-item label="LLM 模型覆盖">
+            <el-input v-model="form.ai_llm_model" maxlength="100" clearable
+              :placeholder="`留空使用服务器默认（${modelInfo?.llm_model_env || '环境变量'}）`" />
+            <div class="field-hint">
+              当前生效：{{ modelInfo?.llm_model_effective || '-' }}（供应商 {{ modelInfo?.llm_provider || '-' }}），
+              保存后即时生效{{ modelInfo && !modelInfo.llm_openai_mode ? '；当前为离线演示模式，配置 API Key 后覆盖才会实际切换模型' : '' }}
+            </div>
+          </el-form-item>
+          <el-form-item label="Embedding">
+            <div class="readonly-line">
+              {{ modelInfo?.embedding_model || modelInfo?.embedding_provider || '-' }}
+              <span v-if="modelInfo?.embedding_model" class="dim-tag">{{ modelInfo.embedding_dim }} 维</span>
+            </div>
+            <div class="field-hint">Embedding 模型切换会使既有向量索引失效，需修改服务器环境变量并重建知识库索引，不提供在线修改</div>
+          </el-form-item>
+        </el-form>
+      </section>
+
+      <section class="settings-block">
         <h3 class="block-title">资源限制</h3>
         <el-form label-width="110px" label-position="left">
           <el-form-item label="上传大小上限">
@@ -100,7 +141,7 @@ onMounted(load)
     </div>
 
     <el-alert type="info" :closable="false" show-icon
-      title="配置修改即时生效（Redis 缓存在保存时失效）；AI 模型与 Embedding 供应商仍通过服务器环境变量配置。" />
+      title="配置修改即时生效（Redis 缓存在保存时失效）；LLM API Key 与 Embedding 供应商仍通过服务器环境变量配置。" />
   </div>
 </template>
 
@@ -110,6 +151,8 @@ onMounted(load)
 .settings-block { border: 1px solid #eef0f5; border-radius: 8px; padding: 18px; }
 .unit { margin-left: 10px; color: #8a93a5; font-size: 12px; }
 .field-hint { width: 100%; color: #9aa2b0; font-size: 12px; line-height: 1.6; margin-top: 4px; }
+.readonly-line { color: #2c3e50; font-size: 14px; }
+.dim-tag { margin-left: 8px; font-size: 12px; color: #93a1b4; }
 @media (max-width: 800px) {
   .settings-grid { grid-template-columns: 1fr; }
   .settings-page :deep(.el-form-item__label) { width: 96px !important; }

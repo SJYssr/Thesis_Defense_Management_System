@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, ForeignKey, SmallInteger, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, TimestampMixin
+from app.db.base import Base, BigIntPK, TimestampMixin
 
 
 class SysFile(Base, TimestampMixin):
@@ -93,7 +93,7 @@ class Reminder(Base, TimestampMixin):
 class OperationLog(Base):
     __tablename__ = "operation_log"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     user_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     username: Mapped[str | None] = mapped_column(String(64))
     module: Mapped[str | None] = mapped_column(String(64))

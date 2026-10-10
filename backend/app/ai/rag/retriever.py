@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.embedding.factory import EmbeddingFactory
 from app.ai.llm.factory import LLMFactory, extract_json
+from app.ai.prompts import resolve_system_prompt
 from app.ai.vector.store import vector_store
 from app.models.ai import AIDocumentChunk
 
@@ -43,10 +44,7 @@ class HybridRetriever:
         if not history:
             return query
         recent = [{"role": h["role"], "content": h["content"][:300]} for h in history[-6:]]
-        system = (
-            "你是查询改写助手。根据多轮对话历史, 将用户的最新问题改写为不依赖上下文即可理解的独立检索问题。"
-            '只输出 JSON: {"standalone_query": "改写后的问题"}'
-        )
+        system = resolve_system_prompt(self.db, "QUERY_REWRITE")
         user = f"【历史对话】{recent}\n【最新问题】{query}\n请输出改写后的独立问题。"
         try:
             data = extract_json(LLMFactory.get().complete(system, user))

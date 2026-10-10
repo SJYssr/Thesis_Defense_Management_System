@@ -54,6 +54,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'admin/users', component: () => import('@/views/admin/UserManagement.vue'), meta: { roles: ['ADMIN'] } },
       { path: 'admin/settings', component: () => import('@/views/admin/SystemSettings.vue'), meta: { roles: ['ADMIN'] } },
       { path: 'admin/academic-schedule', component: () => import('@/views/admin/AcademicSchedule.vue'), meta: { roles: ['ADMIN'], title: '系统设置 / 学年与阶段时间' } },
+      { path: 'admin/prompts', component: () => import('@/views/admin/PromptAdmin.vue'), meta: { roles: ['ADMIN'], title: '系统设置 / Prompt 配置' } },
       { path: 'admin/logs', component: () => import('@/views/admin/OperationLogs.vue'), meta: { roles: ['ADMIN'], title: '操作日志' } },
       { path: 'admin/ai-logs', component: () => import('@/views/admin/AiUsageLogs.vue'), meta: { roles: ['ADMIN'], title: '系统设置 / AI 调用日志' } },
       // ===== 通用 =====

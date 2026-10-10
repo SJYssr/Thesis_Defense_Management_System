@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai.llm.factory import LLMFactory, extract_json
-from app.ai.prompts import PROGRESS_ANALYSIS_SYSTEM, progress_analysis_prompt
+from app.ai.prompts import progress_analysis_prompt, resolve_system_prompt
 from app.models.ai import AIUsageLog
 from app.core.exceptions import BusinessException
 from app.models.business import (
@@ -56,7 +56,7 @@ class ProgressAnalysisService:
         # 3. LLM 解释
         llm = LLMFactory.get()
         started = datetime.now()
-        raw = llm.complete(PROGRESS_ANALYSIS_SYSTEM, progress_analysis_prompt(snapshot, materials[:6000]))
+        raw = llm.complete(resolve_system_prompt(self.db, "PROGRESS_ANALYSIS"), progress_analysis_prompt(snapshot, materials[:6000]))
         try:
             data = extract_json(raw)
         except ValueError:

@@ -43,3 +43,25 @@ def update_configs_api(body: ConfigUpdateRequest, user: CurrentUser = Depends(re
     except SystemConfigError as exc:
         raise BusinessException(str(exc), 40001)
     return ResponseUtil.success(values, message="配置已更新并即时生效")
+
+
+@router.get("/admin/ai-model-info")
+def ai_model_info(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """AI 模型信息(roadmap 八十五章): LLM 当前生效模型/覆盖状态 + Embedding 只读展示."""
+    from app.ai.embedding.factory import EmbeddingFactory
+    from app.ai.llm.factory import LLMFactory
+    from app.core.config import settings
+
+    cfg = get_all(db)
+    override = (cfg.get("ai_llm_model") or "").strip()
+    embedding = EmbeddingFactory.get()
+    return ResponseUtil.success({
+        "llm_provider": LLMFactory.provider_name(),
+        "llm_openai_mode": settings.llm_use_openai,
+        "llm_model_env": settings.llm_model,
+        "ai_llm_model": override,
+        "llm_model_effective": override or settings.llm_model,
+        "embedding_provider": embedding.name,
+        "embedding_dim": embedding.dim,
+        "embedding_model": settings.embedding_model if settings.embedding_use_openai else None,
+    })

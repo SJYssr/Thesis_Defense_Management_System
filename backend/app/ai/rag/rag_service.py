@@ -21,11 +21,7 @@ from app.shared.storage import storage
 
 logger = logging.getLogger("app.ai.rag")
 
-DOC_TYPE_CN = {
-    "THESIS": "毕业论文", "OPENING_REPORT": "开题报告", "MIDTERM_REPORT": "中期报告",
-    "FINAL_REPORT": "终期报告", "TOPIC": "题目信息", "TEACHER_COMMENT": "教师评语",
-    "DEFENSE_RULE": "答辩规范", "REFERENCE": "参考资料",
-}
+from app.ai.prompts import DOC_TYPE_CN  # noqa: E402 — 供本模块与外部继续从 rag_service 引用
 
 
 class RAGService:
@@ -177,9 +173,9 @@ class RAGService:
         chunks = self.retrieve(query, student_id, top_k=6, history=history)
         context = self.build_context(chunks)
 
-        from app.ai.prompts import RAG_ANSWER_SYSTEM, untrusted_note
+        from app.ai.prompts import resolve_system_prompt, untrusted_note
 
-        system = RAG_ANSWER_SYSTEM
+        system = resolve_system_prompt(self.db, "RAG_ANSWER")
         user = (
             f"{untrusted_note()}\n【检索上下文】\n{context}\n\n"
             f"【学生问题】{query}\n请依据上下文回答; 上下文无法支持时明确说明。"

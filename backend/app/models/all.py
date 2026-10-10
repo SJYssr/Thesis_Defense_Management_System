@@ -8,6 +8,7 @@ from app.models.ai import (  # noqa: F401
     AIDocumentChunk,
     AIMessage,
     AIPromptTemplate,
+    AIPromptTemplateVersion,
     AIUsageLog,
 )
 from app.models.business import (  # noqa: F401
@@ -48,6 +49,7 @@ from app.models.system import (  # noqa: F401
     Reminder,
     ReviewRecord,
     SysFile,
+    SystemConfig,
     TopicAttachment,
 )
 from app.models.user import (  # noqa: F401

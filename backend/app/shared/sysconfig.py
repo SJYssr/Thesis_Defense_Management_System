@@ -22,6 +22,8 @@ FIELDS: dict[str, tuple[str, str, str]] = {
     "ai_defense_enabled": ("true", "是否开启 AI 功能", "bool"),
     "ai_rate_limit_per_minute": (str(settings.ai_rate_limit_per_minute), "AI 接口每分钟调用上限", "int"),
     "max_upload_size_mb": (str(settings.max_upload_size_mb), "单文件上传大小上限(MB)", "int"),
+    # 留空跟随环境变量 LLM_MODEL(roadmap 八十五章 AI 模型配置; Embedding 涉及向量重建, 仍走环境变量)
+    "ai_llm_model": ("", "LLM 模型名覆盖(留空跟随服务器环境变量)", "str"),
 }
 
 

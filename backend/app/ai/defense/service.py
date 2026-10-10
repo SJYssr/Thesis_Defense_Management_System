@@ -10,14 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.ai.llm.factory import LLMFactory, extract_json
 from app.ai.prompts import (
-    DEFENSE_EVALUATE_SYSTEM,
-    DEFENSE_QUESTION_SYSTEM,
-    DEFENSE_REPORT_SYSTEM,
-    PPT_OUTLINE_SYSTEM,
     defense_evaluate_prompt,
     defense_question_prompt,
     defense_report_prompt,
     ppt_outline_prompt,
+    resolve_system_prompt,
 )
 from app.ai.rag.rag_service import RAGService
 from app.core.exceptions import BusinessException, ResourceNotFoundException
@@ -81,7 +78,7 @@ class DefenseService:
         llm = LLMFactory.get()
         started = datetime.now()
         raw = llm.complete(
-            DEFENSE_QUESTION_SYSTEM,
+            resolve_system_prompt(self.db, "DEFENSE_GENERATE_QUESTIONS"),
             defense_question_prompt(topic.title, context),
         )
         data = extract_json(raw)
@@ -245,7 +242,7 @@ class DefenseService:
         llm = LLMFactory.get()
         started = datetime.now()
         raw = llm.complete(
-            DEFENSE_EVALUATE_SYSTEM,
+            resolve_system_prompt(self.db, "DEFENSE_EVALUATE_ANSWER"),
             defense_evaluate_prompt(topic_title, question, answer, context, summary),
         )
         try:
@@ -355,7 +352,8 @@ class DefenseService:
         turns_data = [{"question": t.question, "student_answer": t.student_answer, "total_score": t.total_score}
                       for t in turns]
         try:
-            data = extract_json(llm.complete(DEFENSE_REPORT_SYSTEM, defense_report_prompt(topic_title, turns_data)))
+            data = extract_json(llm.complete(resolve_system_prompt(self.db, "DEFENSE_REPORT"),
+                                             defense_report_prompt(topic_title, turns_data)))
         except ValueError:
             avg = int(sum(t.total_score or 0 for t in turns) / max(len(turns), 1))
             data = {"overall_score": avg, "summary": "报告生成失败, 已使用平均分兜底。",
@@ -434,7 +432,7 @@ class DefenseService:
                 pass
         llm = LLMFactory.get()
         started = datetime.now()
-        raw = llm.complete(PPT_OUTLINE_SYSTEM, ppt_outline_prompt(topic.title, context, defense_summary))
+        raw = llm.complete(resolve_system_prompt(self.db, "PPT_OUTLINE"), ppt_outline_prompt(topic.title, context, defense_summary))
         data = extract_json(raw)
         self.db.add(AIUsageLog(user_id=user_id, scene="PPT_OUTLINE", model=llm.name,
                                input_tokens=len(context), output_tokens=len(raw),

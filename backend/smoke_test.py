@@ -483,5 +483,66 @@ check("场景筛选生效", all(i["scene"] == "GENERATE_QUESTIONS" for i in scen
 r = client.get(f"{BASE}/admin/ai-usage-logs", headers=auth(t1))
 check("教师无权查看AI调用日志", r.json()["code"] == 40300)
 
+print("== 17. Prompt 配置 / AI 模型信息(七十三/八十五章) ==")
+r = client.get(f"{BASE}/admin/ai-prompts", headers=auth(admin))
+prompts = r.json()["data"]
+check("Prompt 场景清单(注册表为准)", r.json()["code"] == 0 and len(prompts) >= 7
+      and all(p["source"] == "BUILT_IN" for p in prompts), r.text[:200])
+by_code = {p["code"]: p for p in prompts}
+check("场景含描述与安全声明标记", by_code["RAG_ANSWER"]["untrusted"] is True
+      and by_code["DEFENSE_REPORT"]["untrusted"] is False)
+
+custom = "你是冒烟测试专用评价教师, 评分维度不变, 只输出 JSON。"
+r = client.put(f"{BASE}/admin/ai-prompts/DEFENSE_EVALUATE_ANSWER", headers=auth(admin),
+               json={"system_prompt": custom})
+check("覆盖 Prompt 产生 v1", r.json()["code"] == 0 and r.json()["data"]["version"] == 1, r.text[:150])
+r = client.get(f"{BASE}/admin/ai-prompts", headers=auth(admin))
+row = next(p for p in r.json()["data"] if p["code"] == "DEFENSE_EVALUATE_ANSWER")
+check("清单反映自定义来源与内容", row["source"] == "DB" and custom[:12] in row["system_prompt"])
+r = client.put(f"{BASE}/admin/ai-prompts/DEFENSE_EVALUATE_ANSWER", headers=auth(admin),
+               json={"system_prompt": custom + "补充规则。"})
+check("再次修改变为 v2", r.json()["data"]["version"] == 2)
+r = client.put(f"{BASE}/admin/ai-prompts/RAG_ANSWER", headers=auth(admin), json={"system_prompt": "太短"})
+check("过短内容被拒", r.json()["code"] == 40002, r.text[:150])
+r = client.put(f"{BASE}/admin/ai-prompts/NOT_A_SCENE", headers=auth(admin), json={"system_prompt": custom})
+check("未知场景被拒", r.json()["code"] == 40400, r.text[:150])
+r = client.post(f"{BASE}/admin/ai-prompts/DEFENSE_EVALUATE_ANSWER/status", headers=auth(admin),
+                json={"enabled": False})
+check("停用后回退内置默认", r.json()["code"] == 0)
+r = client.get(f"{BASE}/admin/ai-prompts", headers=auth(admin))
+row = next(p for p in r.json()["data"] if p["code"] == "DEFENSE_EVALUATE_ANSWER")
+check("停用场景来源回内置", row["source"] == "BUILT_IN" and row["enabled"] is False)
+r = client.get(f"{BASE}/admin/ai-prompts/DEFENSE_EVALUATE_ANSWER/versions", headers=auth(admin))
+versions = r.json()["data"]
+check("版本历史倒序留痕", r.json()["code"] == 0 and len(versions) == 3
+      and versions[0]["action"] == "STATUS" and versions[-1]["action"] == "UPDATE", r.text[:200])
+r = client.post(f"{BASE}/admin/ai-prompts/DEFENSE_EVALUATE_ANSWER/reset", headers=auth(admin))
+check("重置恢复内置默认", r.json()["code"] == 0 and r.json()["data"]["version"] == 3, r.text[:150])
+r = client.get(f"{BASE}/admin/ai-prompts", headers=auth(admin))
+row = next(p for p in r.json()["data"] if p["code"] == "DEFENSE_EVALUATE_ANSWER")
+check("重置后内容与内置一致", row["source"] == "DB" and "模拟答辩教师" in row["system_prompt"])
+r = client.get(f"{BASE}/admin/ai-prompts", headers=auth(s1))
+check("学生无权管理 Prompt", r.json()["code"] == 40300)
+r = client.put(f"{BASE}/admin/ai-prompts/RAG_ANSWER", headers=auth(t1), json={"system_prompt": custom})
+check("教师无权修改 Prompt", r.json()["code"] == 40300)
+
+r = client.post(f"{BASE}/ai/rag/query", headers=auth(s1), json={"query": "系统使用了哪些状态码"})
+check("自定义/重置后 AI 链路仍可用", r.json()["code"] == 0, r.text[:200])
+
+r = client.get(f"{BASE}/admin/ai-model-info", headers=auth(admin))
+info = r.json()["data"]
+check("AI 模型信息可查", r.json()["code"] == 0 and info["llm_model_effective"]
+      and info["embedding_dim"] >= 0, r.text[:200])
+r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin), json={"items": {"ai_llm_model": "glm-4.7-air"}})
+check("保存 LLM 模型覆盖", r.json()["code"] == 0, r.text[:150])
+r = client.get(f"{BASE}/admin/ai-model-info", headers=auth(admin))
+check("模型信息反映覆盖值", r.json()["data"]["ai_llm_model"] == "glm-4.7-air"
+      and r.json()["data"]["llm_model_effective"] == "glm-4.7-air", r.text[:200])
+r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin), json={"items": {"ai_llm_model": ""}})
+check("清空覆盖回退环境变量", r.json()["code"] == 0
+      and client.get(f"{BASE}/admin/ai-model-info", headers=auth(admin)).json()["data"]["ai_llm_model"] == "")
+r = client.get(f"{BASE}/admin/ai-model-info", headers=auth(s1))
+check("学生无权查看模型信息", r.json()["code"] == 40300)
+
 print(f"\n结果: {passed} 通过, {failed} 失败")
 sys.exit(1 if failed else 0)
