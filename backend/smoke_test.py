@@ -556,8 +556,13 @@ check("AI 模型信息可查", r.json()["code"] == 0 and info["llm_model_effecti
 r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin), json={"items": {"ai_llm_model": "glm-4.7-air"}})
 check("保存 LLM 模型覆盖", r.json()["code"] == 0, r.text[:150])
 r = client.get(f"{BASE}/admin/ai-model-info", headers=auth(admin))
-check("模型信息反映覆盖值", r.json()["data"]["ai_llm_model"] == "glm-4.7-air"
-      and r.json()["data"]["llm_model_effective"] == "glm-4.7-air", r.text[:200])
+info = r.json()["data"]
+# mock/离线 provider 的"生效模型"就是 mock 本身, 不能拿覆盖值去要求它;
+# 真实 provider(openai/ollama)下覆盖值必须真的进到生效模型里
+expected_effective = "mock" if info["llm_provider"] == "mock" else "glm-4.7-air"
+check("模型信息反映覆盖值",
+      info["ai_llm_model"] == "glm-4.7-air" and info["llm_model_effective"] == expected_effective,
+      f"override={info['ai_llm_model']!r} effective={info['llm_model_effective']!r} provider={info['llm_provider']!r}")
 r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin), json={"items": {"ai_llm_model": ""}})
 check("清空覆盖回退环境变量", r.json()["code"] == 0
       and client.get(f"{BASE}/admin/ai-model-info", headers=auth(admin)).json()["data"]["ai_llm_model"] == "")

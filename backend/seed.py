@@ -438,10 +438,19 @@ def seed(force: bool = False):
         db.add(doc)
         db.commit()
 
+        from app.ai.llm.factory import AIServiceUnavailable
         from app.ai.rag.rag_service import RAGService
 
-        result = RAGService(db).index_document(doc.id)
-        print("演示论文索引完成:", result)
+        # 索引演示论文是"锦上添花": 没有可用向量模型时降级为 FAILED 文档,
+        # 绝不能让它把整个种子数据流程打回滚(离线环境/未配置 API Key 都是常态).
+        try:
+            result = RAGService(db).index_document(doc.id)
+            print("演示论文索引完成:", result)
+        except AIServiceUnavailable as exc:
+            print(f"演示论文索引跳过(未配置可用向量模型): {exc}")
+            print("  说明: 配置 EMBEDDING_API_KEY 或启动 ollama 后, 在管理端重建知识库即可")
+        except Exception as exc:  # noqa: BLE001 — 索引失败不阻断种子数据
+            print(f"演示论文索引失败(文档已标记 FAILED, 不阻断种子数据): {type(exc).__name__}: {exc}")
 
         _flush_config_caches()
         print("种子数据完成。")

@@ -471,6 +471,10 @@ def _mysql_engine():
         return None
 
 
+@unittest.skipUnless(
+    os.getenv("P2A_MYSQL") == "1",
+    "真库并发用例: 设置 P2A_MYSQL=1 才运行(会重建 graduation_p2a 库, 并行跑测试时互相冲突)",
+)
 class ConcurrentPublishTest(unittest.TestCase):
     """真库并发: 两个独立连接同时发布同一结论, 只有一个成功(条件更新 rowcount 挡住第二个)."""
 

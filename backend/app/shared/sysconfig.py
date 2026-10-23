@@ -24,9 +24,46 @@ FIELDS: dict[str, tuple[str, str, str]] = {
     "max_upload_size_mb": (str(settings.max_upload_size_mb), "单文件上传大小上限(MB)", "int"),
     # D70: 单用户每日上传总字节配额, 防止任意登录用户无限占用存储
     "max_upload_daily_mb": ("200", "单个用户每日上传总大小上限(MB)", "int"),
-    # 留空跟随环境变量 LLM_MODEL(roadmap 八十五章 AI 模型配置; Embedding 涉及向量重建, 仍走环境变量)
+    # 留空跟随环境变量 LLM_MODEL(roadmap 八十五章 AI 模型配置)
     "ai_llm_model": ("", "LLM 模型名覆盖(留空跟随服务器环境变量)", "str"),
+    # P10: 运行时自定义第三方 OpenAI 兼容服务. 优先级 DB(本表) > 环境变量, 保存即生效(无需重启).
+    # 全部留空 = 跟随环境变量; api_key 只写不读, 见 SECRET_FIELDS
+    "ai_llm_enabled": ("true", "是否启用 LLM 服务", "bool"),
+    "ai_llm_provider": ("", "LLM 提供方(auto/openai/ollama, 留空跟随环境变量)", "str"),
+    "ai_llm_base_url": ("", "LLM 接口地址(如 https://api.deepseek.com/v1, 留空跟随环境变量)", "str"),
+    "ai_llm_api_key": ("", "LLM API Key(只写不读)", "str"),
+    "ai_embedding_enabled": ("true", "是否启用向量模型", "bool"),
+    "ai_embedding_provider": ("", "向量模型提供方(auto/openai/ollama, 留空跟随环境变量)", "str"),
+    "ai_embedding_base_url": ("", "向量模型接口地址(留空跟随环境变量)", "str"),
+    "ai_embedding_api_key": ("", "向量模型 API Key(只写不读)", "str"),
+    "ai_embedding_model": ("", "向量模型名(留空跟随环境变量)", "str"),
+    "ai_embedding_dim": ("", "向量维度(留空由模型实际维度探测, 改维度需重建知识库)", "str"),
+    "ai_rerank_enabled": ("true", "是否启用检索精排", "bool"),
+    "ai_rerank_provider": ("", "精排提供方(auto/onnx/http/none, 留空跟随环境变量)", "str"),
+    "ai_rerank_base_url": ("", "远端精排接口地址(如 https://api.jina.ai/v1, 留空跟随环境变量)", "str"),
+    "ai_rerank_api_key": ("", "远端精排 API Key(只写不读)", "str"),
+    "ai_rerank_model": ("", "精排模型名(留空跟随环境变量)", "str"),
+    "ai_rerank_model_dir": ("", "本地 ONNX 精排模型目录(留空跟随环境变量)", "str"),
 }
+
+# 密钥类配置: 任何 GET 响应都不返回明文, 只回掩码; 只有 ADMIN 能写
+SECRET_FIELDS: frozenset[str] = frozenset({"ai_llm_api_key", "ai_embedding_api_key", "ai_rerank_api_key"})
+
+
+def mask_secret(value: str) -> str:
+    """把密钥压成掩码; 空值仍返回空串, 便于前端判断"是否已配置"."""
+    if not value:
+        return ""
+    tail = value[-4:] if len(value) > 8 else ""
+    return f"***{tail}" if tail else "***"
+
+
+def mask_secrets(values: dict[str, str]) -> dict[str, str]:
+    """返回一份密钥已掩码的副本, 用于对外响应."""
+    masked = dict(values)
+    for key in SECRET_FIELDS & masked.keys():
+        masked[key] = mask_secret(masked[key])
+    return masked
 
 
 class SystemConfigError(ValueError):

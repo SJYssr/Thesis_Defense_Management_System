@@ -14,9 +14,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.ai.embedding.factory import EmbeddingFactory
+from app.ai.llm.factory import LLMFactory, reset_ollama_probe_cache
 from app.ai.rag.rag_service import RAGService
 from app.ai.rag.retriever import HybridRetriever
 from app.ai.vector.store import VectorStore, b64_to_vec, safe_document_types, vec_to_b64, vector_store
+from app.core.config import settings
 from app.db.base import Base
 from app.models import all as _all_models  # noqa: F401
 from app.models.ai import AIDocument, AIDocumentChunk
@@ -52,7 +54,17 @@ def _enable_sqlite_autoincrement(model) -> None:
 
 
 class RagIsolationTest(unittest.TestCase):
+    # 本类只验证检索/隔离口径, 不该依赖任何真实模型服务: provider 显式钉成离线实现。
+    # (旧行为是无 key/无 ollama 时工厂静默回退 Mock/hash, 现在不再静默降级, 必须显式声明)
+    OFFLINE_SETTINGS = {"llm_provider": "mock", "embedding_provider": "hash"}
+
     def setUp(self):
+        self._saved_settings = {k: getattr(settings, k) for k in self.OFFLINE_SETTINGS}
+        for key, value in self.OFFLINE_SETTINGS.items():
+            setattr(settings, key, value)
+        LLMFactory.reset()
+        EmbeddingFactory.reset()
+        reset_ollama_probe_cache()
         # StaticPool: 让 _search_mysql 内部新建的 Session 与测试共用同一条内存库连接
         self.engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                                     poolclass=StaticPool)
@@ -65,6 +77,11 @@ class RagIsolationTest(unittest.TestCase):
     def tearDown(self):
         self.db.close()
         self.engine.dispose()
+        for key, value in self._saved_settings.items():
+            setattr(settings, key, value)
+        LLMFactory.reset()
+        EmbeddingFactory.reset()
+        reset_ollama_probe_cache()
 
     # ---------- 造数据 ----------
 

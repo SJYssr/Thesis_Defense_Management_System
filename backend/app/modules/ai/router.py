@@ -9,7 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, PermissionDeniedException
-from app.core.permissions import CurrentUser, PermissionService, require_admin, require_student, require_teacher_or_admin
+from app.core.permissions import (
+    CurrentUser,
+    PermissionService,
+    get_current_user,
+    require_admin,
+    require_student,
+    require_teacher_or_admin,
+)
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
 from app.db.redis import RedisKeys, redis_client
@@ -160,13 +167,21 @@ def rag_query(body: RAGQueryRequest, user: CurrentUser = Depends(require_student
 class ChatRequest(BaseModel):
     query: str = Field(min_length=2, max_length=2000)
     history: list[dict] | None = Field(default=None, description='[{"role":"user","content":"..."}]')
+    # None = 跟随系统配置 agent_enabled; True/False 显式覆盖(灰度/排障用)
+    agent: bool | None = Field(default=None, description="是否使用多步 Agent 问答")
 
 
 @router.post("/chat/stream")
 def chat_stream(body: ChatRequest, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
-    """RAG 问答 SSE 流式输出(roadmap 七十二章)."""
+    """RAG 问答 SSE 流式输出(roadmap 七十二章).
+
+    agent=True(或未显式指定时系统配置 agent_enabled=True)走多步 Agent 路径:
+    事件名只在 meta/delta/error/done 之外新增 step/citations, 旧事件语义不变;
+    多步路径内部任何异常都会先发 error 再回退单轮 answer_stream, 前端不会白屏。
+    """
     _check_ai_rate(user, db)
     rag = RAGService(db)
+    use_agent = bool(settings.agent_enabled) if body.agent is None else bool(body.agent)
 
     def event_stream():
         # 独立会话: 流式生成中不做数据库写入的依赖
@@ -175,13 +190,52 @@ def chat_stream(body: ChatRequest, user: CurrentUser = Depends(require_student),
         local_db = SessionLocal()
         try:
             local_rag = RAGService(local_db)
-            for event in local_rag.answer_stream(body.query, user.profile_id, body.history, user_id=user.id):
+            if use_agent:
+                events = local_rag.answer_agent_stream(
+                    body.query, user.profile_id, body.history, user_id=user.id)
+            else:
+                events = local_rag.answer_stream(
+                    body.query, user.profile_id, body.history, user_id=user.id)
+            for event in events:
                 yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
         finally:
             local_db.close()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.get("/agent/trace")
+def agent_trace_recent(limit: int = Query(default=20, ge=1, le=200),
+                       user: CurrentUser = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    """Agent 问答轨迹(只读, 进程内环形缓冲 P10-C).
+
+    权限理由: 轨迹含 query 原文与 student_id, 属学生学习数据, 不是运维公共信息。
+    - ADMIN: 可看全部, 用于排障(步数/耗时/是否降级);
+    - STUDENT: 只能看到自己的记录(按 profile_id 过滤), 看不到别人的提问内容;
+    - 教师与其他角色: 不开放 —— 教师已有专门的学情接口, 此处不做学生提问内容的二次暴露。
+    数据来源是进程内 deque(settings.agent_trace_keep), 重启清空、多 worker 各自独立,
+    所以这里显式返回 scope 说明, 避免前端误以为是完整审计日志。
+    """
+    from app.ai.agent.trace import agent_trace
+    from app.models.enums import Role
+
+    role = str(getattr(user, "role", "") or "")
+    if role == Role.ADMIN.value:
+        rows = agent_trace.recent(limit)
+    elif role == Role.STUDENT.value:
+        rows = [item for item in agent_trace.recent(10000)
+                if item.get("student_id") == user.profile_id][-limit:]
+    else:
+        raise PermissionDeniedException("仅管理员或学生本人可查看 Agent 轨迹")
+    rows = list(reversed(rows))  # 最新在前
+    return ResponseUtil.success({
+        "items": rows,
+        "total": len(rows),
+        "scope": "process-local-ring-buffer",
+        "keep": int(getattr(settings, "agent_trace_keep", 50) or 50),
+    })
 
 
 # ---------- AI 模拟答辩 ----------

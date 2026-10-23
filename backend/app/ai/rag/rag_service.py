@@ -102,6 +102,12 @@ class RAGService:
             doc.error_message = None
             self.db.commit()
             logger.info("文档 %s 索引完成: %d chunks (mode=%s)", document_id, len(chunks), vector_store.mode)
+            # 记录本次索引用的 embedding 指纹, 供 /health/ai 判断"换模型后是否需重建知识库"
+            try:
+                from app.ai.health import mark_embedding_indexed
+                mark_embedding_indexed(self.db)
+            except Exception:  # noqa: BLE001 — 指纹标记失败不影响索引结果
+                logger.warning("embedding 指纹标记失败", exc_info=True)
             return {"document_id": document_id, "chunk_count": len(chunks), "status": "SUCCESS"}
         except Exception as exc:
             self.db.rollback()
@@ -256,4 +262,220 @@ class RAGService:
         if failure:
             done_payload["message"] = failure
         yield {"event": "done", "data": done_payload}
+
+    # ---------- Agent 多步问答(P10-C) ----------
+
+    @staticmethod
+    def _invalid_citations(text: str, source_count: int) -> list[int]:
+        """解析 [n] 标记, 返回越界编号(升序去重)."""
+        import re
+
+        bad: list[int] = []
+        for match in re.finditer(r"\[(\d{1,3})\]", text or ""):
+            number = int(match.group(1))
+            if number < 1 or number > source_count:
+                if number not in bad:
+                    bad.append(number)
+        return sorted(bad)
+
+    @staticmethod
+    def _strip_markers(text: str, numbers: list[int]) -> str:
+        """二次核验仍越界时丢弃这些标记(保留正文, 不改事实)."""
+        import re
+
+        out = text or ""
+        for number in numbers:
+            out = re.sub(r"\[" + str(number) + r"\]", "", out)
+        return out
+
+    @staticmethod
+    def _chunks(text: str, size: int = 64) -> list[str]:
+        return [text[i:i + size] for i in range(0, len(text), size)]
+
+    def _regenerate_for_citations(self, query: str, runner, invalid: list[int],
+                                  history: list[dict] | None) -> str:
+        """引用越界后重生成一次: 把"引用了不存在的来源"作为追加约束再问一遍."""
+        from app.ai.prompts import resolve_system_prompt
+
+        system = (
+            resolve_system_prompt(self.db, "AGENT_CITATION_CHECK").rstrip()
+            + "\n\n"
+            + resolve_system_prompt(self.db, "RAG_ANSWER")
+        )
+        bad = ", ".join(f"[{n}]" for n in invalid)
+        user = (
+            runner.answer_user_prompt()
+            + f"\n\n【上一次回答的引用错误】你引用了不存在的来源: {bad}; "
+              f"本次只允许引用 [1]..[{max(1, len(runner.sources))}] 之间真实存在的编号, "
+              f"不得保留错误编号。"
+        )
+        try:
+            return "".join(runner.llm.stream(system, user, history))
+        except Exception:  # noqa: BLE001 — 重生成失败保留原答案, 由 done 标 degraded
+            logger.exception("引用核验重生成失败, 保留首次答案")
+            return runner.answer_text
+
+    def answer_agent_stream(self, query: str, student_id: int | None,
+                            history: list[dict] | None = None, user_id: int | None = None,
+                            scene: str = "QA") -> Generator[dict, None, None]:
+        """多步 agent 问答: meta → step* → delta* → citations → done.
+
+        与 answer_stream 的兼容性:
+        - 事件名只在原有 meta/delta/error/done 之外**新增** step / citations;
+        - done 额外带 agent/degraded/steps/forced, 原有 length/status 不变;
+        - 任何异常都会先发 error, 再回退单轮 answer_stream 的等价逻辑, 绝不 500。
+        """
+        import time as _time
+
+        from app.ai.agent.loop import AgentRunner
+        from app.ai.agent.tools import AgentContext, AgentToolbox
+        from app.ai.agent.trace import agent_trace
+        from app.core.config import settings
+
+        started = datetime.now()
+        wall = _time.monotonic()
+        model_name = "unknown"
+        status = "FAILED"
+        degraded = False
+        failure = ""
+        text = ""
+        emitted_delta = False
+        skip_usage = False
+        runner = None
+        sources: list[dict] = []
+        citations = {"checked": False, "regenerated": False, "invalid": []}
+
+        try:
+            ctx = AgentContext(student_id=student_id, user_id=user_id, scene=scene, history=history)
+        except Exception as exc:  # noqa: BLE001 — 身份非法(如 student_id 缺失)直接降级
+            ctx = None
+            failure = f"AgentContext 构建失败: {exc}"
+
+        toolbox = AgentToolbox()
+        llm = None
+        try:
+            llm = LLMFactory.get()
+            model_name = llm.name
+        except Exception as exc:  # noqa: BLE001 — 模型不可用时后面统一走降级
+            degraded = True
+            failure = f"模型不可用: {exc}"
+            logger.exception("Agent 问答取模型失败, 将降级")
+
+        citation_check = bool(getattr(settings, "agent_citation_check", True))
+
+        try:
+            yield {"event": "meta", "data": {
+                "provider": model_name,
+                "agent": True,
+                "tools": [item["name"] for item in toolbox.describe()],
+                "tool_details": toolbox.describe(),
+                "sources": [],
+                "max_steps": int(getattr(settings, "agent_max_steps", 4) or 4),
+                "scene": scene,
+            }}
+            if ctx is None:
+                raise RuntimeError(failure or "Agent 上下文不可用")
+
+            runner = AgentRunner(self.db, ctx, toolbox=toolbox, llm=llm,
+                                 stream_deltas=not citation_check)
+            for event in runner.run(query, history):
+                name = event["event"]
+                if name == "answer_text":
+                    text = str(event["data"].get("text") or "")
+                    continue
+                if name == "delta":
+                    emitted_delta = True
+                yield event
+
+            sources = [
+                {"index": item["index"], "chunk_id": item.get("chunk_id"),
+                 "document_type": item.get("document_type"), "section": item.get("section"),
+                 "score": item.get("score")}
+                for item in runner.sources
+            ]
+
+            # 引用核验: 越界 → 重生成一次; 二次仍越界 → 丢弃标记并在 citations 里报 invalid
+            if citation_check:
+                citations["checked"] = True
+                invalid = self._invalid_citations(text, len(runner.sources))
+                if invalid:
+                    logger.info("agent 引用越界 %s, 触发一次重生成", invalid)
+                    text = self._regenerate_for_citations(query, runner, invalid, history)
+                    citations["regenerated"] = True
+                    still_bad = self._invalid_citations(text, len(runner.sources))
+                    if still_bad:
+                        citations["invalid"] = still_bad
+                        text = self._strip_markers(text, still_bad)
+                        degraded = True
+
+            if not emitted_delta:
+                # 先核验后下发(或执行期出错情况): 这里才把最终文本按块推给前端
+                for piece in self._chunks(text):
+                    emitted_delta = True
+                    yield {"event": "delta", "data": piece}
+
+            yield {"event": "citations", "data": {
+                "sources": sources,
+                "checked": citations["checked"],
+                "regenerated": citations["regenerated"],
+                "invalid": citations["invalid"],
+            }}
+
+            if runner.forced:
+                degraded = True
+            status = "DEGRADED" if degraded else "SUCCESS"
+        except GeneratorExit:
+            status = "CANCELLED"
+            raise
+        except Exception as exc:  # noqa: BLE001 — D47 延伸: 多步失败必须退回单轮, 不允许白屏
+            status = "DEGRADED"
+            degraded = True
+            failure = f"{type(exc).__name__}: {exc}"[:200]
+            logger.exception("Agent 问答失败, 回退单轮检索回答")
+            yield {"event": "error", "data": {
+                "message": "智能问答多步执行失败, 已回退单轮检索回答",
+                "detail": failure,
+            }}
+            if not emitted_delta:
+                skip_usage = True  # 由 answer_stream 自己记一次用量, 避免重复计费
+                for event in self.answer_stream(query, student_id, history,
+                                                user_id=user_id, scene=scene):
+                    if event["event"] in ("done", "meta"):
+                        continue  # meta 已在前面发过, done 统一在末尾发
+                    if event["event"] == "delta":
+                        emitted_delta = True
+                        text += event["data"]
+                    yield event
+        finally:
+            elapsed_ms = int((datetime.now() - started).total_seconds() * 1000)
+            steps = runner.step_count if runner is not None else 0
+            forced = runner.forced if runner is not None else failure
+            tool_calls = list(runner.tool_calls) if runner is not None else []
+            source_count = len(runner.sources) if runner is not None else len(sources)
+            if not skip_usage:
+                self._write_usage_log(
+                    user_id=user_id, scene=scene, model=model_name,
+                    input_tokens=len(query or ""), output_tokens=len(text),
+                    latency_ms=elapsed_ms, status=status,
+                )
+            try:
+                agent_trace.record(query=query, student_id=student_id, steps=steps,
+                                   elapsed_ms=elapsed_ms, tool_calls=tool_calls,
+                                   status=status, degraded=degraded,
+                                   forced=forced or "", sources=source_count)
+            except Exception:  # noqa: BLE001 — 轨迹记录失败不影响回答
+                logger.exception("agent trace 记录失败")
+
+        logger.info("agent 问答完成: status=%s steps=%s degraded=%s %dms",
+                    status, steps, degraded, int((_time.monotonic() - wall) * 1000))
+        yield {"event": "done", "data": {
+            "length": len(text),
+            "status": status,
+            "agent": True,
+            "degraded": degraded,
+            "steps": steps,
+            "forced": forced or "",
+            "sources": len(sources),
+            "invalid_citations": citations["invalid"],
+        }}
 

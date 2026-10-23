@@ -1,9 +1,139 @@
-"""LLM 服务抽象: OpenAI 兼容接口(智谱/DeepSeek/通义/OpenAI) + 离线 Mock, 切换只改 .env(roadmap 三/AI)."""
+"""LLM 服务抽象: 云端 OpenAI 兼容接口 / 本地 ollama / 显式离线 Mock, 切换只改 .env(roadmap 三/AI).
+
+不静默降级: 没有任何真实模型来源时抛 AIServiceUnavailable(code=50301), 而不是悄悄返回
+MockLLM 继续输出模板文本 —— 假模型必须让 /health 与前台一眼看见, 而不是假装一切正常。
+
+来源(provider)与凭据来自"生效配置": 数据库系统设置(ai_llm_*) > 环境变量(settings),
+见 app/ai/runtime_config.py —— 管理员在系统设置里填 Base URL / API Key / 模型名后保存即生效,
+不需要改 .env, 也不需要重启进程。
+
+- openai: 任意 OpenAI 兼容云端(智谱/DeepSeek/通义/OpenAI/自建), 必须有 API Key
+- ollama: 本地或远端 ollama 的 OpenAI 兼容端点({OLLAMA_BASE_URL}/v1 或系统设置里的 Base URL)
+- auto  : 有 API Key 走云端, 否则探测 ollama, 都不可用即抛异常
+- mock  : 显式启用离线模板拼接(仅供单测与演示, 不是真实模型)
+"""
 import json
+import logging
 import re
+import threading
 import time
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from typing import Generator
+
+from app.ai.net import open_url, openai_http_client
+from app.ai.runtime_config import resolve_ai_config
+from app.core.exceptions import BusinessException
+
+logger = logging.getLogger("app.ai.llm")
+
+# 统一话术: 消息必须能直接指向修复动作(启动 ollama 或配置 key), 前端原样透出
+UNAVAILABLE_MESSAGE = "未检测到可用的模型服务: 请启动 ollama(ollama serve) 或配置 LLM_API_KEY"
+AI_DISABLED_MESSAGE = "AI 功能已在系统设置中关闭(ai_llm_enabled=false): 如需启用请在 系统设置 → AI 服务 中打开"
+
+
+class AIServiceUnavailable(BusinessException):
+    """没有可用的模型来源(而不是降级成 Mock): code 50301 -> HTTP 503."""
+
+    code = 50301
+    message = UNAVAILABLE_MESSAGE
+
+
+class OllamaProbe:
+    """ollama 可达性探测: GET {OLLAMA_BASE_URL}/api/tags, 带 TTL 缓存的线程安全快照.
+
+    探测失败只返回 reachable=False(连 detail), 绝不把网络异常抛给调用方 —— 异常路径由
+    LLMFactory/EmbeddingFactory 统一翻译成 AIServiceUnavailable。tests 里替换 _fetch
+    即可完全离线地验证 TTL 行为。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cached_at = 0.0
+        self._result: dict = self._empty("尚未探测")
+
+    @staticmethod
+    def _empty(detail: str) -> dict:
+        return {"reachable": False, "models": None, "latency_ms": None, "detail": detail}
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._cached_at = 0.0
+            self._result = self._empty("缓存已失效")
+
+    def snapshot(self, force: bool = False) -> dict:
+        """返回 {reachable, models, latency_ms, detail}; TTL 内复用上次结果."""
+        from app.core.config import settings
+
+        ttl = max(0.0, float(settings.ollama_probe_ttl))
+        with self._lock:  # 持锁探测: 并发调用只打一次 /api/tags
+            fresh = self._cached_at > 0 and (time.monotonic() - self._cached_at) < ttl
+            if fresh and not force:
+                return dict(self._result)
+            try:
+                result = self._fetch(settings.ollama_base_url, float(settings.ollama_probe_timeout))
+            except Exception as exc:  # noqa: BLE001 — 探测永远不把异常抛给调用方
+                result = self._empty(f"探测异常: {type(exc).__name__}: {exc}")
+            self._cached_at = time.monotonic()
+            self._result = result
+            return dict(result)
+
+    @staticmethod
+    def _fetch(base_url: str, timeout: float) -> dict:
+        url = base_url.rstrip("/") + "/api/tags"
+        started = time.monotonic()
+        try:
+            # 回环地址必须绕系统代理: 否则 127.0.0.1:11434 被代理转发成 502, 本地 ollama 被误判为不可达
+            with open_url(url, timeout=max(0.1, timeout)) as resp:  # noqa: S310 — 地址来自配置
+                payload = json.loads((resp.read() or b"{}").decode("utf-8", "replace") or "{}")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            return {
+                "reachable": False, "models": None,
+                "latency_ms": int((time.monotonic() - started) * 1000),
+                "detail": f"无法连接 {url}: {type(exc).__name__}: {exc}",
+            }
+        models = []
+        for item in payload.get("models") or []:
+            name = str(item.get("name") or item.get("model") or "").strip()
+            if name:
+                models.append(name)
+        return {
+            "reachable": True, "models": models,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "detail": f"{url} 可达, 已安装 {len(models)} 个模型",
+        }
+
+
+_ollama_probe = OllamaProbe()
+
+
+def probe_ollama(force: bool = False) -> dict:
+    """ollama 探测快照(TTL 缓存): 供 LLM/Embedding 工厂与 ai/health 共用同一份事实."""
+    try:
+        return _ollama_probe.snapshot(force=force)
+    except Exception as exc:  # noqa: BLE001 — 探测失败只体现为 reachable=False
+        logger.warning("ollama 探测失败: %s", exc)
+        return {"reachable": False, "models": None, "latency_ms": None,
+                "detail": f"探测异常: {type(exc).__name__}: {exc}"}
+
+
+def ollama_available() -> bool:
+    return bool(probe_ollama().get("reachable"))
+
+
+def reset_ollama_probe_cache() -> None:
+    """清空探测缓存(配置变更/测试用)."""
+    _ollama_probe.invalidate()
+
+
+def ollama_model_present(models: list[str] | None, target: str) -> bool:
+    """ollama 模型清单里是否有目标模型(models=None 表示清单未知, 不据此判缺失)."""
+    if models is None or not (target or "").strip():
+        return True
+    target = target.strip()
+    base = target.split(":")[0]
+    return any(m == target or m == f"{target}:latest" or m.split(":")[0] == base for m in models)
 
 
 class BaseLLMService(ABC):
@@ -45,10 +175,11 @@ def extract_json(text: str) -> dict:
 class OpenAICompatibleLLM(BaseLLMService):
     """OpenAI 兼容 Chat Completions: 通过 base_url 适配各家模型."""
 
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 120.0):
         from openai import OpenAI
 
-        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=120)
+        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout,
+                             http_client=openai_http_client(base_url))
         self.model = model
         self.name = f"openai:{model}"
 
@@ -75,6 +206,27 @@ class OpenAICompatibleLLM(BaseLLMService):
         for chunk in resp:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+
+
+class OllamaLLM(OpenAICompatibleLLM):
+    """本地 ollama 的 OpenAI 兼容端点({OLLAMA_BASE_URL}/v1): 复用云端实现, 只换 base_url/key/model.
+
+    ollama 的 /v1 同时提供 chat/completions 与 embeddings, 因此不需要独立协议实现;
+    真正决定"能不能用"的是模型是否已 pull, 由 ai/health 单独判定并展示。
+    """
+
+    def __init__(self, model: str | None = None, base_url: str | None = None,
+                 timeout: float | None = None):
+        from app.core.config import settings
+
+        resolved = (model or settings.ollama_llm_model or "").strip()
+        super().__init__(
+            base_url or settings.ollama_v1_url,
+            "ollama",  # ollama 不校验 key, 但 OpenAI SDK 要求非空
+            resolved,
+            timeout=float(timeout if timeout is not None else settings.llm_timeout),
+        )
+        self.name = f"ollama:{resolved}"
 
 
 class MockLLM(BaseLLMService):
@@ -225,6 +377,8 @@ OVERRIDE_CONFIG_KEY = "ai_llm_model"
 class LLMFactory:
     _instance: BaseLLMService | None = None
     _instance_model: str | None = None
+    _instance_key: tuple | None = None  # (来源, 模型): 变了就重建, 防止把旧来源的客户端复用成新来源
+    _lock = threading.Lock()
 
     @staticmethod
     def _model_override(db=None) -> str:
@@ -270,21 +424,93 @@ class LLMFactory:
             if own_session and db is not None:
                 db.close()
 
-    @classmethod
-    def get(cls) -> BaseLLMService:
+    @staticmethod
+    def _provider() -> str:
         from app.core.config import settings
 
-        if not settings.llm_use_openai:
-            if not isinstance(cls._instance, MockLLM):
-                cls._instance = MockLLM()
-                cls._instance_model = None
+        return (settings.llm_provider or "auto").strip().lower()
+
+    @classmethod
+    def _cached(cls, key: tuple, build) -> BaseLLMService:
+        """按 (来源, 模型) 缓存实例; 来源或模型变了就重建, 不跨来源复用旧客户端."""
+        with cls._lock:
+            if cls._instance is None or cls._instance_key != key:
+                cls._instance = build()
+                cls._instance_key = key
+                cls._instance_model = key[1]
             return cls._instance
-        model = cls._model_override() or settings.llm_model
-        if cls._instance is None or cls._instance_model != model:
-            cls._instance = OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, model)
-            cls._instance_model = model
-        return cls._instance
+
+    @staticmethod
+    def _require_key(key: str) -> str:
+        """云端来源必须有 key: 缺 key 属于配置错误, 必须显式失败而不是降级 Mock."""
+        if not (key or "").strip():
+            raise AIServiceUnavailable(
+                f"{UNAVAILABLE_MESSAGE}(云端来源未配置 API Key: "
+                "请在系统设置中填写 API Key, 或设置环境变量 LLM_API_KEY)"
+            )
+        return key.strip()
+
+    @classmethod
+    def _build_openai(cls, cfg) -> BaseLLMService:
+        from app.core.config import settings
+
+        key = cls._require_key(cfg.llm_api_key)
+        return OpenAICompatibleLLM(cfg.llm_base_url, key, cfg.llm_model,
+                                   timeout=float(settings.llm_timeout))
+
+    @classmethod
+    def _build_ollama(cls, cfg) -> BaseLLMService:
+        return OllamaLLM(cfg.ollama_llm_model, cfg.ollama_llm_base_url)
+
+    @classmethod
+    def get(cls, db=None) -> BaseLLMService:
+        """取当前 LLM 实现(配置: 系统设置 > 环境变量); 无可用来源抛 AIServiceUnavailable."""
+        cfg = resolve_ai_config(db)
+        if not cfg.llm_enabled:
+            raise AIServiceUnavailable(AI_DISABLED_MESSAGE)
+
+        provider = cfg.llm_provider
+        if provider == "mock":
+            logger.warning("LLM_PROVIDER=mock: 使用离线模板拼接, 输出不是真实模型回答")
+            return cls._cached(("mock", None), MockLLM)
+        if provider == "openai":
+            # 先判配置, 不要为了一次注定失败的调用去读模型覆盖/建客户端
+            key = cls._require_key(cfg.llm_api_key)
+            return cls._cached(("openai", cfg.llm_base_url, cfg.llm_model, key),
+                               lambda: cls._build_openai(cfg))
+        if provider == "ollama":
+            # 显式指定 ollama 时不做可达性探测: 不可达会在调用时报错, 由 /health 展示
+            return cls._cached(("ollama", cfg.ollama_llm_base_url, cfg.ollama_llm_model),
+                               lambda: cls._build_ollama(cfg))
+        if provider != "auto":
+            raise AIServiceUnavailable(f"{UNAVAILABLE_MESSAGE}(未知 LLM_PROVIDER={provider})")
+
+        # auto: 云端密钥优先, 其次 ollama, 都没有就显式失败
+        if (cfg.llm_api_key or "").strip():
+            key = cls._require_key(cfg.llm_api_key)
+            return cls._cached(("openai", cfg.llm_base_url, cfg.llm_model, key),
+                               lambda: cls._build_openai(cfg))
+        probe = probe_ollama()
+        if probe.get("reachable"):
+            return cls._cached(("ollama", cfg.ollama_llm_base_url, cfg.ollama_llm_model),
+                               lambda: cls._build_ollama(cfg))
+        raise AIServiceUnavailable(
+            f"{UNAVAILABLE_MESSAGE}({probe.get('detail') or 'ollama 不可达'})"
+        )
 
     @classmethod
     def provider_name(cls) -> str:
-        return cls.get().name
+        """展示用来源名: 不可用时是 "unavailable", 不再谎报 "mock"."""
+        try:
+            return cls.get().name
+        except Exception as exc:  # noqa: BLE001 — 展示字段不允许把 /health 打成异常
+            logger.warning("LLM 不可用: %s", exc)
+            return "unavailable"
+
+    @classmethod
+    def reset(cls) -> None:
+        """清空实例缓存(配置热更新/测试用)."""
+        with cls._lock:
+            cls._instance = None
+            cls._instance_key = None
+            cls._instance_model = None

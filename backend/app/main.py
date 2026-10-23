@@ -130,16 +130,50 @@ for r in (
     app.include_router(r, prefix=API_PREFIX)
 
 
+# /health 的 status 口径: ok 只给"真实可用"; 完全没配(也没有本地 ollama)时明确说
+# not_configured, 让运维一眼看出是没填 Key 而不是配错了; 其余(配了但连不上)为 degraded。
+HEALTH_STATUS_OK = "ok"
+HEALTH_STATUS_NOT_CONFIGURED = "not_configured"
+HEALTH_STATUS_DEGRADED = "degraded"
+
+
+def _health_status(llm_status: str, embedding_status: str) -> str:
+    if llm_status == HEALTH_STATUS_OK and embedding_status == HEALTH_STATUS_OK:
+        return HEALTH_STATUS_OK
+    if (llm_status == HEALTH_STATUS_NOT_CONFIGURED
+            and embedding_status == HEALTH_STATUS_NOT_CONFIGURED):
+        return HEALTH_STATUS_NOT_CONFIGURED
+    return HEALTH_STATUS_DEGRADED
+
+
 @app.get(f"{API_PREFIX}/health")
 def health():
-    from app.ai.llm.factory import LLMFactory
+    """探活: 保留 app/redis/llm_provider 兼容字段, status 由真实 AI 探测决定.
+
+    以前无论模型是否存在都返回 ok, 前端因此看不到"模型没起来"; 现在只有 llm 与
+    embedding 真实可用才是 ok, 完全没配置时返回 not_configured, 其余为 degraded。
+    HTTP 始终 200 —— 探活本身不因 AI 降级返回 5xx。
+    """
+    from app.ai.health import probe_all
     from app.db.redis import redis_available
 
+    ai = probe_all()
+    llm, embedding = ai["llm"], ai["embedding"]
     return {
-        "status": "ok", "app": settings.app_name,
+        "status": _health_status(llm["status"], embedding["status"]),
+        "app": settings.app_name,
         "redis": redis_available(),
-        "llm_provider": LLMFactory.provider_name(),
+        "llm_provider": llm["provider"] or "unavailable",
+        "ai": ai,
     }
+
+
+@app.get(f"{API_PREFIX}/health/ai")
+def health_ai():
+    """AI 链路明细: LLM / Embedding / Rerank / 向量库 / ollama 的完整探测结构."""
+    from app.ai.health import probe_all
+
+    return probe_all()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Prompt 模板管理与解析单测(roadmap 七十三章)."""
 import json
 import unittest
+from unittest import mock
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from app.ai.prompts import (
     invalidate_prompt_cache,
     resolve_system_prompt,
 )
+from app.core.config import settings
 from app.core.exceptions import BusinessException, ResourceNotFoundException
 from app.db.base import Base
 from app.models import all as _all_models  # noqa: F401
@@ -123,5 +125,12 @@ class PromptAdminTest(unittest.TestCase):
         LLMFactory._instance = None
         LLMFactory._instance_model = None
         self.assertEqual(LLMFactory._model_override(), "")
-        service = LLMFactory.get()
-        self.assertIsInstance(service, MockLLM)  # 测试环境无 API Key, 走离线 Mock
+        # provider 必须显式指定 mock: 无 key 且 ollama 不可用时 get() 抛 AIServiceUnavailable,
+        # 不再静默降级成 MockLLM(旧语义), 所以这里把"离线 Mock"写成明确前提。
+        with mock.patch.object(settings, "llm_provider", "mock"):
+            LLMFactory.reset()
+            try:
+                service = LLMFactory.get()
+            finally:
+                LLMFactory.reset()
+        self.assertIsInstance(service, MockLLM)
