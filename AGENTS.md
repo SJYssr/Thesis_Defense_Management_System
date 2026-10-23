@@ -49,8 +49,10 @@ cd backend && .venv/bin/python -m unittest discover -s tests          # 全量�
 # AI_TEST_MODE=mock 同时把会话替身成模板拼接、把向量替身成本地哈希; 只影响质量, 不影响接口契约;
 # APP_ENV=prod 时启动即报错(防误上生产)。要跑真实模型: 在管理端「系统设置 → AI 服务」添加供应商并绑定,
 # 不要用环境变量(后端已不读任何 AI 供应商环境变量)。
-cd backend && AI_TEST_MODE=mock .venv/bin/python seed.py --force \
-  && docker exec graduation-redis redis-cli -n 0 FLUSHDB \
+# 顺序不能交换: 演示论文的向量索引是 seed 同步写进 Redis 的, 先 FLUSHDB 再 seed 才有 chunk;
+# 反过来(先 seed 再 FLUSHDB)会把刚建好的索引清空, RAG 检索与 AI 模拟答辩步骤直接失败。
+cd backend && docker exec graduation-redis redis-cli -n 0 FLUSHDB \
+  && AI_TEST_MODE=mock .venv/bin/python seed.py --force \
   && AI_TEST_MODE=mock .venv/bin/python smoke_test.py   # 真库端到端(非幂等, 必须紧接 seed)
 cd frontend && npm run build && npm run check:contract && npm run verify:401
 ```
