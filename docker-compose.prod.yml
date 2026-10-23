@@ -42,7 +42,8 @@ services:
     restart: unless-stopped
     environment: &backend-env
       APP_ENV: production
-      SECRET_KEY: ${SECRET_KEY:-please-change-me}
+      # 必填且 >= 32 字符, 未设置时 compose 直接失败(避免用弱密钥上线)
+      SECRET_KEY: ${SECRET_KEY:?请在 .env.prod 设置 SECRET_KEY(>=32 字符)}
       MYSQL_HOST: mysql
       MYSQL_PORT: "3306"
       MYSQL_DATABASE: graduation_system
@@ -61,10 +62,12 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-3}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
       CELERY_ENABLED: "true"
-      AUTO_CREATE_TABLES: "true"
       TZ: Asia/Shanghai
+      # 建表只走 Alembic: 不再用 AUTO_CREATE_TABLES, 迁移在下面 command 里先跑
     volumes:
       - gs-uploads:/data/uploads
+    # 启动前先把迁移跑完, 再交给 uvicorn; 迁移失败则容器不启动(fail fast)
+    command: sh -c "python -m alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
     depends_on:
       mysql:
         condition: service_healthy
@@ -80,7 +83,9 @@ services:
     volumes:
       - gs-uploads:/data/uploads
     depends_on:
-      - backend
+      backend:
+        # 等 backend 健康(迁移已跑完)后再起 worker, 避免 worker 抢在建表前查询
+        condition: service_healthy
     # Celery Worker(内嵌 Beat): 文档解析/Embedding/索引等重任务 + 每日逾期风险扫描调度
     command: celery -A app.tasks.celery_app.celery_app worker -B --loglevel=info --concurrency=2
 
