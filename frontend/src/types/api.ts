@@ -96,6 +96,22 @@ export interface UploadResult {
   [key: string]: unknown
 }
 
+/** 扩展名分组: 与后端 storage.py 的分组保持一致, 前端不要另立清单 */
+export type UploadKind = 'DOCUMENT' | 'ARCHIVE' | 'IMAGE' | 'MEDIA'
+
+/**
+ * GET /files/upload-policy 响应。
+ * 扩展名白名单与大小上限由后端单源给出: 此前前端 accept 写 .mp4 而后端白名单没有 .mp4,
+ * 演示视频必然上传失败。前端一律据此生成 accept 并做上传前预校验。
+ */
+export interface UploadPolicy {
+  allowed_extensions: string[]
+  by_kind: Record<UploadKind, string[]>
+  max_upload_size_mb: number
+  /** <=0 表示不限制 */
+  max_upload_daily_mb: number
+}
+
 /**
  * GET /dashboard/stats 的 pass_counts 行。
  * P7-B(D63/D64) 起每行由裸数字改为三元组, 比率必须用 value/total 自行计算;

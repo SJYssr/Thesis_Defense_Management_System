@@ -1,5 +1,5 @@
 import request from './request'
-import { clampPageSize, type AiDocument, type AiDocumentType, type ApiEnvelope, type PageResult, type UploadResult } from '@/types/api'
+import { clampPageSize, type AiDocument, type AiDocumentType, type ApiEnvelope, type PageResult, type UploadPolicy, type UploadResult } from '@/types/api'
 
 export const aiApi = {
   /**
@@ -87,6 +87,11 @@ export const operationLogApi = {
 }
 
 export const uploadApi = {
+  /**
+   * 上传策略(扩展名白名单 + 单文件上限 + 日配额), 与 /files/upload 的后端校验同源。
+   * 前端据此生成 accept 与上传前预校验, 避免 accept 与后端白名单错配。
+   */
+  policy: () => request.get<unknown, ApiEnvelope<UploadPolicy>>('/files/upload-policy'),
   /**
    * P7-A: 新增可选业务挂载字段 business_type(≤32) / business_id(≥1),
    * 响应带 business_type/business_id/daily_used_bytes;

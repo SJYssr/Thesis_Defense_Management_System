@@ -661,6 +661,19 @@ const SHAPE_ASSERTIONS = [
     must: [/\.pwd-form :deep\(\.el-input\) \{\s*width: 100%;/, /max-width: 560px/, /@media \(max-width: 1024px\)/],
     mustNot: [/width: 560px;\s*flex-shrink: 0;/, /flex: 0 0 560px;/, /white-space: nowrap/],
   },
+  // 上传 accept 必须由后端策略生成: 曾经前端写死 'accept: \'.mp4,.zip\'' 而后端白名单没有 .mp4,
+  // "演示视频"整类材料永远传不上去; 'accept: \'*\'' 也不是合法 HTML accept 值。
+  {
+    name: '上传 accept 由 /files/upload-policy 生成(不硬编码扩展名清单)',
+    files: ['views/student/MaterialView.vue', 'api/common.ts'],
+    must: [/uploadApi\.policy\(\)/, /acceptOf\(t\)/, /by_kind\[k\]/],
+    mustNot: [/accept: '\*'/, /accept: '\.mp4/, /accept: '\.pdf/],
+  },
+  {
+    name: '上传前做扩展名与大小预校验(不把错误全推给后端)',
+    file: 'views/student/MaterialView.vue',
+    must: [/function precheck\(/, /allowed_extensions\.includes\(ext\)/, /max_upload_size_mb/],
+  },
 ]
 
 function assertionSources(assertion) {
