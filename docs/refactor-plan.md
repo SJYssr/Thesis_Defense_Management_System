@@ -596,4 +596,53 @@ D1 cycle 归档、D2 学年切换取快照、D3 未答辩不得 completed、D4 C
 1. 本机已按要求删除全部本地模型(ollama 两个模型 + ONNX 精排目录), 生产使用需自备: 起 `ollama` 拉 `qwen2.5:7b-instruct`/`bge-m3`, 或在系统设置里填第三方 OpenAI 兼容 Base URL + Key; 精排需把 ONNX 目录放回 `RERANK_MODEL_DIR`(缺省自动降级 Noop, 不报错)。
 2. Agent 用 JSON 决策协议而非原生 tool-calling, 换到强 tool-calling 模型时可再评估是否切换; 当前取舍是"任何 OpenAI 兼容端点都能跑"。
 3. `ai_embedding_dim` 改动只提示 `needs_reindex`, 不会自动重建; 重建入口仍是既有知识库管理页, 大批量重建缺进度反馈。
-4. smoke 的 AI 段依赖 `LLM_PROVIDER=mock EMBEDDING_PROVIDER=hash`(见 AGENTS.md 验收命令); 真实 provider 的端到端问答未纳入自动验收(需外部服务与配额)。
+5. smoke 的 AI 段依赖测试替身; 真实 provider 的端到端问答未纳入自动验收(需外部服务与配额)。配置的单一来源已改为数据库(P11, 见第 22 节)。
+
+---
+
+## 22. P11: AI 配置去环境变量 + 供应商实体(2026-10)
+
+### 22.1 病灶
+
+用户质疑原话: "怎么还会有环境变量呢, ai 为什么会跟随环境变量啊, 还有 ai 服务这边, 太繁琐了啊, 去看看别人怎么设计的"。
+
+| 编号 | 缺陷 | 证据 |
+| --- | --- | --- |
+| D89 | AI 配置的优先级是"数据库 > **环境变量**", 页面上清空字段会静默漂回 env 值 | `runtime_config.resolve_ai_config()` 旧实现: 键为空则取 `settings.llm_*` |
+| D90 | `settings` 里有 13 个 AI 供应商字段 + 3 个 property, 全部可从 `.env` 注入 | `core/config.py` 旧字段表 |
+| D91 | 15 个输入框、三套重复结构(llm/embedding/rerank 各 5 项), 加一个能力就要再加 5 个输入框 | `SystemSettings.vue` 旧 AI 卡片 |
+| D92 | 三个 API Key 以**明文**存 `system_config`, GET 靠 `has_keys` 打码, 清空靠魔法串 `__CLEAR__` | `shared/sysconfig.py` 旧 `SECRET_FIELDS` |
+| D93 | 同一家的 Base URL 要填三遍, 填错一处只在该能力上以 50301 暴露 | 页面结构本身 |
+
+### 22.2 修法: 一个供应商实体 + 三个绑定键
+
+业界共同点(OpenAI/DeepSeek/智谱/One-API/LiteLLM 类产品的设置页): 核心实体是"供应商"——**一份 Base URL + 一份 Key 同时提供 chat 与 embedding**; 模型名从 `/v1/models`(ollama `/api/tags`)拉下拉而非手填; 维度由探测写入; 预设(选 DeepSeek 自动填 base_url); 状态灯挂在卡片上。
+
+1. 新表 `ai_provider`(`models/ai.py`, 迁移 `0005_ai_provider`): id/name(唯一)/kind/base_url/api_key_enc/enabled/models_json/models_refreshed_at/last_status/last_detail/last_probe_at。
+2. `app/ai/crypto.py`: Key 用 `Fernet(sha256(secret_key))` 加密落库; `key_hint(len<12 → "***")` 只露后四位; 解密失败返回 `""` 且视图标 `cipher_broken`, 不抛到接口层。
+3. `app/ai/providers.py`(单源): CRUD + `refresh_models` + `bindings/save_bindings` + `presets` + `migrate_legacy_config`。校验全在这里: base_url 必须 http(s)、ollama 去尾 `/v1`、重名冲突、被绑定禁止删除(报错列出占用能力)。视图永不含明文。
+4. 绑定键收敛为 7 个: `ai_chat_provider_id/ai_chat_model/ai_embedding_provider_id/ai_embedding_model/ai_embedding_dim/ai_rerank_provider_id/ai_rerank_model`; `SECRET_FIELDS` 清空(表里再无密钥)。
+5. `runtime_config.py` 全量重写: **只读数据库**, 5 秒缓存; 唯一环境开关是 `AI_TEST_MODE`(mock/hash 测试替身), `APP_ENV=prod` 时启动即失败。
+6. `core/config.py` 删除 13 个 AI 供应商字段与 3 个 property —— 删字段本身就是"不再跟随环境变量"的最强保证: 没有字段, 就没有人能读它。
+7. 管理端接口 `app/modules/ai/admin.py` 10 条: `presets` / `providers` CRUD / `refresh` / `test` / `bindings` / `overview`; `main.py` 启动时执行一次 `migrate_legacy_config`(旧键折算成供应商 + 绑定, 然后删除旧键)。
+8. 前端"AI 服务"卡片改为供应商卡片列表 + 三个绑定下拉 + 状态带; 可选模型与 accept 都来自接口。
+
+### 22.3 验收
+
+- 迁移: 真库 `alembic upgrade head` = `0005_ai_provider`, `alembic check` 无漂移。
+- 单测: 新增 `test_ai_provider.py`(24 例) + 重写 `test_ai_runtime_config.py`(22 例); 其中 `NoEnvFollowTest` 断言 `settings` 已无 13 个字段, 且 `patch.dict(os.environ, {"LLM_PROVIDER": "ollama", ...})` 不改变解析结果。
+- smoke: 真库 `AI_TEST_MODE=mock` 全量 **185 通过 0 失败**(含 16b 段 16 条供应商/绑定/密钥打码/删除保护检查)。
+- 前端: `npm run build` + `check:contract` + `verify:401` 全绿, 契约断言禁止旧键回归。
+
+### 22.4 由本轮固化的纪律
+
+1. **配置只来自数据库**: 没有字段就没有人能读环境变量; 新增 AI 能力走"供应商 + 绑定键", 不开新输入框。
+2. **密钥只写不读**: 落库即加密, GET 只回 `has_key`/`key_hint`; "清空密钥"是显式 `clear_key=true`, 不靠魔法串。
+3. **迁移必须幂等**: 旧键与新键同名时只参与折算、不重复删除/重复建供应商(否则每次启动都折一遍)。
+
+### 22.5 遗留
+
+1. "获取模型"依赖供应商可达; 不可达时返回 `status=down` + 中文原因, 前端必须允许手填模型名(ollama 私有模型名无法枚举)。
+2. 重排仍只支持本地 ONNX 目录或 `none`; 绑定远端 rerank 需要额外协议适配, 未做。
+3. "测试连接"只验证 `/v1/models` 可达, 不验证 chat 补全与向量维度是否匹配 —— 真连一次会在用户侧产生费用, 故不做自动校验。
+4. 旧配置迁移覆盖 P10 引入的 16 个键; 更早的历史键(如有)需人工清理。
