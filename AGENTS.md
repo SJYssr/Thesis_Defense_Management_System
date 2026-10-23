@@ -28,9 +28,14 @@
    `read_upload(file, max_upload_size_mb(db))` + `ensure_daily_quota()`，且**先校验后迁移状态**。
 
 6. **状态机的副作用列(`archived_at` / `reviewed_at` / `publish_time` 等)改完必须落库**，`transition()` 已在 `_apply_effects` 后 `db.flush()`；新增副作用不要只改内存对象——任何 `expire_all()` / refresh 都会丢弃它，归档率与时间轴会谎报。
-7. **AI 能力只经 `app/ai/runtime_config.resolve_ai_config()` + `LLMFactory` / `EmbeddingFactory` / `get_reranker()` 获取**：
-   业务代码不得直接读 `settings.llm_*` 或 `os.environ`；改配置写库后必须调 `invalidate_ai_config()`，
-   否则"管理端改了不生效"会以最难查的方式复发。密钥**只写不读**：GET 只回掩码，真清空用 `__CLEAR__`。
+7. **AI 配置只有一个来源：数据库**。供应商行在 `ai_provider` 表，能力绑定在 `ai_chat_provider_id` /
+   `ai_embedding_provider_id` / `ai_rerank_provider_id` + 对应 `*_model` 键，唯一解析入口是
+   `app/ai/runtime_config.resolve_ai_config()`，能力实例只经 `LLMFactory` / `EmbeddingFactory` /
+   `get_reranker()` 获取。**不要再引入任何 `LLM_*` / `EMBEDDING_*` / `OLLAMA_*` 环境变量**：
+   唯一的环境开关是 `AI_TEST_MODE`（mock/hash 测试替身，`APP_ENV=prod` 启动即失败）。
+   改配置写库后必须调 `invalidate_ai_config()`。密钥**只写不读**：`view_of()` 只回 `has_key`/`key_hint`，
+   明文只经 `app/ai/crypto.encrypt_api_key()` 落库、只在构造客户端时 `decrypt_api_key()`。
+   新增 AI 能力（如语音）也走"供应商 + 绑定键"，不要开新的配置输入框。
 8. **探测回环地址必须直连**（`app/ai/net.py`，`trust_env=False`）——系统代理会把"本地服务没起来"
    伪装成网关 502；**辅助动作**（索引、通知、指纹标记）失败只降级 + 记录，不 rollback 主事务
    （`seed.py` 曾因演示论文索引失败把整个种子数据流程打死）。
@@ -41,10 +46,11 @@
 ```bash
 cd backend && .venv/bin/python -m unittest discover -s tests          # 全量单元测试
 # smoke 用**显式**测试替身跑: 本机默认没有模型也没有 Key, 不显式指定会走 50301"未配置"分支。
-# mock/hash 只影响生成质量与向量语义, 不影响接口契约; APP_ENV=prod 时启动即报错(防误上生产)。
-# 要跑真实模型: LLM_PROVIDER=auto LLM_API_KEY=... EMBEDDING_PROVIDER=auto EMBEDDING_API_KEY=...
-cd backend && LLM_PROVIDER=mock EMBEDDING_PROVIDER=hash .venv/bin/python seed.py --force \
+# AI_TEST_MODE=mock 同时把会话替身成模板拼接、把向量替身成本地哈希; 只影响质量, 不影响接口契约;
+# APP_ENV=prod 时启动即报错(防误上生产)。要跑真实模型: 在管理端「系统设置 → AI 服务」添加供应商并绑定,
+# 不要用环境变量(后端已不读任何 AI 供应商环境变量)。
+cd backend && AI_TEST_MODE=mock .venv/bin/python seed.py --force \
   && docker exec graduation-redis redis-cli -n 0 FLUSHDB \
-  && LLM_PROVIDER=mock EMBEDDING_PROVIDER=hash .venv/bin/python smoke_test.py   # 真库端到端(非幂等, 必须紧接 seed)
+  && AI_TEST_MODE=mock .venv/bin/python smoke_test.py   # 真库端到端(非幂等, 必须紧接 seed)
 cd frontend && npm run build && npm run check:contract && npm run verify:401
 ```

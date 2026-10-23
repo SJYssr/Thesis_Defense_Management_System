@@ -30,6 +30,19 @@ OWN, GLOBAL, OTHER = 21, None, 99
 FILLER = ("本报告围绕毕业设计答辩管理系统的边界可信性展开论述, 覆盖提示注入防护、检索隔离、"
           "向量降级可用与计费完整四个维度, 并给出可复现的验收证据。")
 
+class _NoCacheRedis:
+    """断掉配置缓存, 让 get_all 每次落到本次测试的 sqlite 配置行(默认值)."""
+
+    def get(self, *args, **kwargs):
+        return None
+
+    def setex(self, *args, **kwargs):
+        return True
+
+    def delete(self, *args, **kwargs):
+        return 0
+
+
 _AUTOINCREMENT_READY: set[type] = set()
 _ID_SEQ: dict[type, int] = {}
 
@@ -54,14 +67,18 @@ def _enable_sqlite_autoincrement(model) -> None:
 
 
 class RagIsolationTest(unittest.TestCase):
-    # 本类只验证检索/隔离口径, 不该依赖任何真实模型服务: provider 显式钉成离线实现。
-    # (旧行为是无 key/无 ollama 时工厂静默回退 Mock/hash, 现在不再静默降级, 必须显式声明)
-    OFFLINE_SETTINGS = {"llm_provider": "mock", "embedding_provider": "hash"}
+    # 本类只验证检索/隔离口径, 不该依赖任何真实模型服务: 用 AI_TEST_MODE 把
+    # 会话与向量一起钉成离线替身(P11 起 AI 配置只读数据库, 测试替身是唯一的环境开关)。
+    OFFLINE_SETTINGS = {"ai_test_mode": "mock"}
 
     def setUp(self):
         self._saved_settings = {k: getattr(settings, k) for k in self.OFFLINE_SETTINGS}
         for key, value in self.OFFLINE_SETTINGS.items():
             setattr(settings, key, value)
+        # 断掉 system_config 的 Redis 缓存: 否则会读到这台机器上别的进程留下的旧配置
+        patcher = mock.patch("app.shared.sysconfig.redis_client", _NoCacheRedis())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         LLMFactory.reset()
         EmbeddingFactory.reset()
         reset_ollama_probe_cache()

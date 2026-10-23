@@ -3,9 +3,9 @@
 status 口径:
 - ok              真实可用(来源可达且模型存在 / 云端真实推理成功)
 - degraded        已配置但探测失败(连不上 / 鉴权失败 / 模型未安装 / 维度与设置不符)
-- not_configured  系统设置与环境变量都没有 Base URL / API Key, 且 ollama 不可达 —— 纯"没配"
-- down            显式选定来源当前不可达(如 provider=ollama 而 ollama 没起)
-- disabled        显式离线实现(mock / hash)或该能力被管理员关闭(enabled=false)
+- not_configured  后台还没有绑定供应商(或绑了但没给模型名) —— 纯"没配"
+- down            已绑定的来源当前不可达(如绑定 ollama 而 ollama 没起)
+- disabled        测试替身(AI_TEST_MODE=mock/hash)或该能力被管理员关闭(ai_defense_enabled=false)
 
 硬约束:
 1. 每个子探测都有超时(HTTP 超时 / 线程 join 超时), /health 不被模型冷启动拖住;
@@ -85,12 +85,12 @@ def _run_bounded(fn, timeout, on_timeout):
 
 
 def _probe_ollama_block():
-    from app.ai.llm.factory import probe_ollama
+    from app.ai.llm.factory import default_ollama_base_url, probe_ollama
 
     info = probe_ollama()
     return {
         "reachable": bool(info.get("reachable")),
-        "base_url": settings.ollama_base_url,
+        "base_url": default_ollama_base_url(),
         "models": list(info.get("models") or []),
         "latency_ms": info.get("latency_ms"),
         "detail": str(info.get("detail") or ""),
@@ -121,7 +121,7 @@ def _cloud_embedding_probe(base_url, api_key, model):
 
 def _probe_llm(db=None):
     from app.ai.llm.factory import AIServiceUnavailable, LLMFactory, ollama_model_present
-    from app.ai.runtime_config import FIX_HINT, resolve_ai_config
+    from app.ai.runtime_config import resolve_ai_config
 
     cfg = resolve_ai_config(db)
     provider = cfg.llm_provider
@@ -130,10 +130,10 @@ def _probe_llm(db=None):
     if not cfg.llm_enabled:
         return _llm_block("disabled", provider=provider, configured=configured,
                           model=cfg.llm_model,
-                          detail="ai_llm_enabled=false: LLM 已在系统设置中关闭")
+                          detail="ai_defense_enabled=false: AI 功能已在系统设置中关闭")
     if provider == "mock":
         return _llm_block("disabled", provider="mock", configured=True, model="mock",
-                          detail="LLM_PROVIDER=mock: 离线模板拼接, 输出不是真实模型回答")
+                          detail="AI_TEST_MODE=mock: 离线模板拼接, 输出不是真实模型回答")
 
     started = time.monotonic()
     try:
@@ -144,13 +144,13 @@ def _probe_llm(db=None):
             return _llm_block("degraded", provider=provider, configured=True,
                               model=cfg.llm_model, detail=detail)
         return _llm_block("not_configured", provider=provider, configured=False,
-                          model=cfg.llm_model, detail="%s; 修复: %s" % (detail, FIX_HINT))
+                          model=cfg.llm_model, detail=detail)
     # 其它异常不在这里吞: 交给 _guard 标注为探测异常(带异常类型, 便于定位)
 
     name = getattr(service, "name", "")
     latency_ms = int((time.monotonic() - started) * 1000)
     if name.startswith("ollama:"):
-        model = getattr(service, "model", "") or cfg.ollama_llm_model
+        model = getattr(service, "model", "") or cfg.llm_model
         probe = _probe_ollama_block()
         if not probe["reachable"]:
             return _llm_block("down", provider="ollama", configured=True, model=model,
@@ -163,7 +163,7 @@ def _probe_llm(db=None):
         return _llm_block("ok", provider="ollama", configured=True, model=model,
                           latency_ms=probe.get("latency_ms") or latency_ms,
                           detail="%s 可达, 模型 %s 已安装(未做推理探测)"
-                                 % (cfg.ollama_llm_base_url, model))
+                                 % (cfg.llm_base_url, model))
 
     if name.startswith("openai:"):
         model = getattr(service, "model", "") or cfg.llm_model
@@ -183,7 +183,7 @@ def _probe_llm(db=None):
 def _probe_embedding(db=None):
     from app.ai.embedding.factory import EmbeddingFactory
     from app.ai.llm.factory import AIServiceUnavailable, ollama_model_present
-    from app.ai.runtime_config import FIX_HINT, resolve_ai_config
+    from app.ai.runtime_config import resolve_ai_config
 
     cfg = resolve_ai_config(db)
     provider = cfg.embedding_provider
@@ -192,7 +192,7 @@ def _probe_embedding(db=None):
     if not cfg.embedding_enabled:
         return _embedding_block("disabled", provider=provider, configured=configured,
                                 model=cfg.embedding_model, dim=cfg.embedding_dim,
-                                detail="ai_embedding_enabled=false: 向量模型已在系统设置中关闭")
+                                detail="ai_defense_enabled=false: 向量模型已在系统设置中关闭")
 
     started = time.monotonic()
     try:
@@ -200,8 +200,6 @@ def _probe_embedding(db=None):
     except AIServiceUnavailable as exc:
         detail = str(exc) or AIServiceUnavailable.message
         status = "degraded" if configured else "not_configured"
-        if not configured:
-            detail = "%s; 修复: %s" % (detail, FIX_HINT)
         return _embedding_block(status, provider=provider, configured=configured,
                                 model=cfg.embedding_model, dim=cfg.embedding_dim, detail=detail)
 
@@ -215,7 +213,7 @@ def _probe_embedding(db=None):
         return _embedding_block(
             "disabled", provider=name, configured=True, model="local-hash",
             latency_ms=latency_ms, dim=dim, fingerprint=fingerprint,
-            detail="EMBEDDING_PROVIDER=hash: 本地哈希向量(纯词面匹配), 不是真实向量模型",
+            detail="AI_TEST_MODE=hash: 本地哈希向量(纯词面匹配), 不是真实向量模型",
         )
 
     if name.startswith("ollama:"):
@@ -234,7 +232,7 @@ def _probe_embedding(db=None):
             "ok", provider="ollama", configured=True, model=model,
             latency_ms=probe.get("latency_ms") or latency_ms, dim=dim, fingerprint=fingerprint,
             detail="%s 可达, 模型 %s 已安装(维度取生效配置 %s)"
-                   % (cfg.ollama_embedding_base_url, model, dim),
+                   % (cfg.embedding_base_url, model, dim),
         )
 
     if name.startswith("openai:"):
@@ -269,13 +267,17 @@ def _probe_embedding(db=None):
                             detail="来源未识别, 仅确认实例可构造")
 
 
-def _probe_rerank():
-    provider = (settings.rerank_provider or "auto").strip().lower()
-    model_dir = Path(settings.rerank_model_dir)
+def _probe_rerank(db=None):
+    from app.ai.rerank.factory import rerank_setting
+
+    provider, model_dir_raw = rerank_setting()
+    model_dir = Path(model_dir_raw)
     base = {"status": "down", "provider": provider, "model_dir": str(model_dir),
             "available": False, "detail": ""}
     if provider == "none":
-        return dict(base, status="disabled", detail="RERANK_PROVIDER=none: 跳过后精排")
+        return dict(base, status="disabled", detail="未绑定精排供应商: 检索跳过后精排")
+    if provider == "http":
+        return dict(base, detail="精排绑定的是远端供应商, 本地目录探测不适用")
     try:
         if not model_dir.is_dir():
             return dict(base, detail="模型目录不存在: %s" % model_dir)
@@ -318,15 +320,15 @@ def probe_all(db=None):
         "llm": _guard(lambda: _probe_llm(db), _llm_empty("down", ""), "llm"),
         "embedding": _guard(lambda: _probe_embedding(db), _embedding_empty("down", ""),
                             "embedding"),
-        "rerank": _guard(_probe_rerank,
-                         {"status": "down", "provider": settings.rerank_provider,
+        "rerank": _guard(lambda: _probe_rerank(db),
+                         {"status": "down", "provider": "none",
                           "model_dir": settings.rerank_model_dir, "available": False,
                           "detail": ""}, "rerank"),
         "vector_store": _guard(_probe_vector_store, {"mode": "unknown", "detail": ""},
                                "vector_store"),
         "ollama": _guard(_probe_ollama_block,
-                         {"reachable": False, "base_url": settings.ollama_base_url,
-                          "models": [], "latency_ms": None, "detail": ""}, "ollama"),
+                         {"reachable": False, "base_url": "", "models": [],
+                          "latency_ms": None, "detail": ""}, "ollama"),
     }
 
 

@@ -1,10 +1,10 @@
 """系统配置模块: 管理端读写 + 登录前可用的公开配置(roadmap 八十五章).
 
-密钥字段(ai_llm_api_key / ai_embedding_api_key / ai_rerank_api_key)一律不出明文:
-- 读取经 mask_secrets 掩码, 任何响应里都不会出现真 Key;
-- 写入时若提交的是掩码(*** 开头)或空串, 视为"不修改" —— 管理员在页面上只改别的字段,
-  不会把已填好的 Key 擦掉; 需要真正清空时提交哨兵值 __CLEAR__;
-- 写入成功后失效生效配置缓存并重置两个工厂单例, 新 Base URL / Key / 模型免重启生效。
+P11 起本表只存非凭证配置(系统名称 / 上传上限 / AI 能力绑定与开关)。
+AI 的 Base URL 与 API Key 属于 ai_provider 表(crypto 加密落库, GET 只回掩码),
+不再经由本模块按能力各填一遍 —— 见 app/ai/providers.py 与 /admin/ai/providers。
+
+写入成功后立即失效生效配置缓存并重置工厂单例, 绑定变更免重启生效。
 """
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -16,7 +16,6 @@ from app.core.response import ResponseUtil
 from app.db.mysql import get_db
 from app.shared.sysconfig import (
     FIELDS,
-    SECRET_FIELDS,
     SystemConfigError,
     get_all,
     mask_secrets,
@@ -24,27 +23,6 @@ from app.shared.sysconfig import (
 )
 
 router = APIRouter(tags=["SystemConfig"])
-
-# 清空密钥的显式哨兵: 空串与掩码都表示"不修改", 想删掉 Key 必须用这个值
-CLEAR_SECRET_SENTINEL = "__CLEAR__"
-SECRET_KEYS = (
-    ("llm", "ai_llm_api_key"),
-    ("embedding", "ai_embedding_api_key"),
-    ("rerank", "ai_rerank_api_key"),
-)
-
-
-def _secret_changed(raw: str) -> bool:
-    """提交值是否代表"真的改密钥": 空串与掩码(*** 开头)都只是页面回填."""
-    value = (raw or "").strip()
-    if not value or value.startswith("***"):
-        return False
-    return True
-
-
-def _has_keys(unmasked: dict) -> dict:
-    """按未掩码值判断每个能力是否配过 Key(前端用来显示"已配置/未配置")."""
-    return {name: bool((unmasked.get(key) or "").strip()) for name, key in SECRET_KEYS}
 
 
 @router.get("/config/public")
@@ -75,18 +53,9 @@ def list_configs(_: CurrentUser = Depends(require_admin), db: Session = Depends(
 @router.put("/admin/system-configs")
 def update_configs_api(body: ConfigUpdateRequest, user: CurrentUser = Depends(require_admin),
                        db: Session = Depends(get_db)):
-    payload: dict[str, str] = {}
-    for key, raw in body.items.items():
-        if key in SECRET_FIELDS:
-            value = (raw or "").strip()
-            if value == CLEAR_SECRET_SENTINEL:
-                payload[key] = ""
-            elif _secret_changed(value):
-                payload[key] = value
-            continue
-        payload[key] = raw
+    payload: dict[str, str] = {key: raw for key, raw in body.items.items()}
     if not payload:
-        raise BusinessException("没有需要变更的配置项: 密钥留空或保持掩码即表示不修改", 40001)
+        raise BusinessException("没有需要变更的配置项", 40001)
     try:
         values = update_configs(db, payload, user.id)
     except SystemConfigError as exc:
@@ -102,33 +71,31 @@ def update_configs_api(body: ConfigUpdateRequest, user: CurrentUser = Depends(re
 def ai_model_info(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
     """AI 模型信息: 真实探测结果 + 配置齐备度 + 索引一致性(needs_reindex)."""
     from app.ai.health import embedding_needs_reindex, probe_all
-    from app.core.config import settings
+    from app.ai.providers import bindings
 
-    cfg = get_all(db)
-    override = (cfg.get("ai_llm_model") or "").strip()
     # 走统一探测器: 模型不可用时这里展示原因, 而不是抛 500 或谎报正常
     ai = probe_all(db)
     llm, embedding, rerank = ai["llm"], ai["embedding"], ai["rerank"]
+    bound = bindings(db)
     return ResponseUtil.success({
+        "enabled": bound["enabled"],
+        "bindings": bound["slots"],
         "llm_provider": llm["provider"],
         "llm_status": llm["status"],
         "llm_configured": llm.get("configured", False),
         "llm_detail": llm["detail"],
-        "llm_openai_mode": settings.llm_use_openai,
-        "llm_model_env": settings.llm_model,
-        "ai_llm_model": override,
-        "llm_model_effective": llm.get("model") or override or settings.llm_model,
+        "llm_model": llm.get("model") or "",
         "embedding_provider": embedding["provider"],
         "embedding_status": embedding["status"],
         "embedding_configured": embedding.get("configured", False),
         "embedding_detail": embedding["detail"],
         "embedding_dim": embedding["dim"],
         "embedding_fingerprint": embedding["fingerprint"],
-        "embedding_model": embedding["model"] or None,
-        "has_keys": _has_keys(cfg),
+        "embedding_model": embedding["model"] or "",
         "needs_reindex": embedding_needs_reindex(db),
         "rerank_status": rerank["status"],
         "rerank_available": rerank["available"],
+        "rerank_detail": rerank["detail"],
         "ollama_reachable": ai["ollama"]["reachable"],
         "vector_store_mode": ai["vector_store"]["mode"],
     })

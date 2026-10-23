@@ -49,33 +49,22 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
 
-    # LLM (OpenAI 兼容接口: 云端智谱/DeepSeek/通义/OpenAI, 或本地 ollama 的 /v1)
-    # auto = 有 API Key 走云端, 否则探测本地 ollama; 两者都不可用必须显式失败,
-    # 不允许再静默回退 Mock(那会让"AI 问答"在页面上看起来正常却全是模板文本)。
-    llm_provider: str = "auto"  # auto | openai | ollama | mock(仅测试)
-    llm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
-    llm_api_key: str = ""
-    llm_model: str = "glm-4-flash"
+    # ---- AI 调用行为参数 ----
+    # 配置来源(地址/密钥/模型名)一律在数据库的 ai_provider 表 + 绑定键里,
+    # 这里只放"与供应商无关"的调用参数, 因此不存在环境变量与后台设置打架的可能。
     llm_temperature: float = 0.3
     llm_max_tokens: int = 2048
     llm_timeout: float = 120.0
 
-    # 本地模型服务(ollama): 提供 chat 与 embedding, 均为 OpenAI 兼容端点
-    ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_llm_model: str = "qwen2.5:7b-instruct"
-    ollama_embedding_model: str = "bge-m3"
+    # 测试替身: 唯一允许影响 AI 行为的环境变量, 只给单测/离线演示用。
+    # mock = 离线模板拼装, hash = 本地哈希向量; APP_ENV=prod 时启动即失败。
+    ai_test_mode: str = ""
+
+    # ollama 连通性探测(用于展示"本地模型是否在线", 与"用哪个供应商"无关)
     ollama_probe_timeout: float = 2.0
     ollama_probe_ttl: float = 30.0
 
-    # Embedding
-    embedding_provider: str = "auto"  # auto | openai | ollama | hash(仅测试)
-    embedding_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
-    embedding_api_key: str = ""
-    embedding_model: str = "embedding-3"
-    embedding_dim: int = 1024
-
-    # Rerank(cross-encoder 精排): 无云端依赖, 用本地 ONNX 模型
-    rerank_provider: str = "auto"  # auto | onnx | none
+    # 精排(cross-encoder): 召回池大小与裁剪条数属于检索策略
     rerank_model_dir: str = str(BASE_DIR / "models" / "bge-reranker-v2-m3")
     rerank_recall: int = 20      # 送入精排的候选数(混合召回池)
     rerank_keep: int = 6         # 精排后最终保留条数
@@ -128,16 +117,14 @@ class Settings(BaseSettings):
         宁可启动失败也不要静默降级(与 LLMFactory 的 50301 同一口径)。
         """
         env = (self.app_env or "dev").strip().lower()
-        if env in ("prod", "production"):
-            for field, value in (
-                ("llm_provider", self.llm_provider),
-                ("embedding_provider", self.embedding_provider),
-            ):
-                if str(value).strip().lower() in ("mock", "hash"):
-                    raise ValueError(
-                        f"{field}={value} 是测试替身, 生产环境(APP_ENV={env})禁用; "
-                        "请在系统设置中配置真实 API Key 或保留 auto"
-                    )
+        mode = (self.ai_test_mode or "").strip().lower()
+        if mode and mode not in ("mock", "hash"):
+            raise ValueError(f"AI_TEST_MODE={self.ai_test_mode} 非法; 可选 mock / hash, 留空表示真实模型")
+        if mode and env in ("prod", "production"):
+            raise ValueError(
+                f"AI_TEST_MODE={mode} 是测试替身, 生产环境(APP_ENV={env})禁用; "
+                "请在 系统设置 → AI 服务 中配置真实供应商"
+            )
         return self
 
     @property
@@ -155,31 +142,6 @@ class Settings(BaseSettings):
     @property
     def upload_dir_path(self) -> Path:
         return Path(self.upload_dir)
-
-    @property
-    def llm_use_openai(self) -> bool:
-        """显式 openai, 或 auto 且有 API Key —— 真实云端调用路径."""
-        if self.llm_provider == "mock":
-            return False
-        if self.llm_provider == "openai":
-            return True
-        if self.llm_provider == "ollama":
-            return False
-        return bool(self.llm_api_key.strip())
-
-    @property
-    def embedding_use_openai(self) -> bool:
-        if self.embedding_provider in ("hash", "ollama"):
-            return False
-        if self.embedding_provider == "openai":
-            return True
-        return bool(self.embedding_api_key.strip())
-
-    @property
-    def ollama_v1_url(self) -> str:
-        """ollama 的 OpenAI 兼容前缀(chat/completions 与 embeddings 都在其下)."""
-        return self.ollama_base_url.rstrip("/") + "/v1"
-
 
 @lru_cache
 def get_settings() -> Settings:

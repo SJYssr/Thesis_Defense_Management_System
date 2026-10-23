@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
-from app.db.mysql import engine
+from app.db.mysql import SessionLocal, engine
 from app.models import all as _all_models  # noqa: F401 — 保证建表前模型已注册
 
 logging.basicConfig(
@@ -49,6 +49,18 @@ async def lifespan(app: FastAPI):
             "请先执行 alembic upgrade head (cd backend && .venv/bin/python -m alembic upgrade head); "
             "仅本地临时库可设置 AUTO_CREATE_TABLES=true 绕过。"
         )
+
+    # P11: 旧版把 AI 配置平铺在 system_config(ai_llm_* 等 16 个键)里, 现在收敛成
+    # ai_provider 行 + 绑定键。折算需要 settings.secret_key 加密 Key, 不能在 alembic
+    # 迁移里做, 所以放启动时一次性执行(幂等: 折算完旧键即删除, 下次直接跳过)。
+    from app.ai.providers import migrate_legacy_config
+
+    try:
+        with SessionLocal() as session:
+            if migrate_legacy_config(session):
+                logger.info("已把旧 AI 配置折算为供应商记录(ai_provider)并重写能力绑定")
+    except Exception as exc:  # noqa: BLE001 — 折算失败只降级, 不阻止服务启动
+        logger.warning("旧 AI 配置折算跳过: %s: %s", type(exc).__name__, exc)
     yield
 
 
@@ -95,6 +107,7 @@ from app.modules.announcement.router import admin_router as ann_admin  # noqa: E
 from app.modules.announcement.router import notification_router  # noqa: E402
 from app.modules.announcement.router import router as ann_router  # noqa: E402
 from app.modules.dashboard.router import router as dashboard_router  # noqa: E402
+from app.modules.ai.admin import router as ai_admin_router  # noqa: E402
 from app.modules.ai.router import defense as ai_defense_router  # noqa: E402
 from app.modules.ai.router import router as ai_router  # noqa: E402
 from app.modules.task.router import router as task_router  # noqa: E402
@@ -120,7 +133,7 @@ for r in (
     progress_router, progress_teacher, progress_admin,
     ann_router, ann_admin, notification_router,
     dashboard_router,
-    ai_router, ai_defense_router,
+    ai_router, ai_defense_router, ai_admin_router,
     task_router, defense_router, rubric_router, archive_router, audit_router, sysconfig_router,
     aiprompt_router,
     schedule_router,

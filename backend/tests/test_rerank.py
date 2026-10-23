@@ -16,6 +16,7 @@ from sqlalchemy.pool import StaticPool
 from app.ai.rag import retriever as retriever_module
 from app.ai.rag.bm25 import clear_cache
 from app.ai.rag.retriever import HybridRetriever
+from app.ai.rerank import factory as rerank_factory
 from app.ai.rerank.factory import (
     NoopReranker,
     OnnxCrossEncoderReranker,
@@ -81,18 +82,19 @@ class RerankerContractTest(unittest.TestCase):
         self.assertEqual(reranker.rerank("q", []), [])
 
     def test_provider_none_returns_noop(self):
-        with mock.patch.object(settings, "rerank_provider", "none"):
+        # P11: 精排绑定读数据库(ai_rerank_provider_id + ai_rerank_model), 单测直接钉住解析结果
+        with mock.patch.object(rerank_factory, "rerank_setting",
+                               return_value=("none", MISSING_DIR)):
             reranker = get_reranker()
         self.assertIsInstance(reranker, NoopReranker)
         self.assertFalse(reranker.available)
         self.assertEqual(reranker.reason, "disabled")
 
     def test_auto_without_model_dir_degrades_to_noop(self):
-        with mock.patch.object(settings, "rerank_provider", "auto"), \
-                mock.patch.object(settings, "rerank_model_dir", MISSING_DIR):
+        with mock.patch.object(rerank_factory, "rerank_setting",
+                               return_value=("local", MISSING_DIR)):
             reranker = get_reranker()
         self.assertFalse(reranker.available, "缺模型时 get_reranker().available 必须为 False")
-        self.assertIsInstance(reranker, NoopReranker)
         self.assertIn("model.onnx", reranker.reason)
         self.assertEqual([i for i, _ in reranker.rerank("答辩流程", ["x", "y"])], [0, 1])
 
@@ -123,12 +125,13 @@ class RerankerContractTest(unittest.TestCase):
             self.assertTrue(reranker.reason.startswith("load-failed") or reranker.reason == "", reranker.reason)
 
     def test_get_reranker_is_cached_per_settings(self):
-        with mock.patch.object(settings, "rerank_provider", "none"):
+        with mock.patch.object(rerank_factory, "rerank_setting",
+                               return_value=("none", MISSING_DIR)):
             first = get_reranker()
-            self.assertIs(first, get_reranker(), "同 settings 必须复用实例")
-        with mock.patch.object(settings, "rerank_provider", "auto"), \
-                mock.patch.object(settings, "rerank_model_dir", MISSING_DIR):
-            self.assertIsNot(first, get_reranker(), "settings 变化后必须重建")
+            self.assertIs(first, get_reranker(), "同配置必须复用实例")
+        with mock.patch.object(rerank_factory, "rerank_setting",
+                               return_value=("local", MISSING_DIR)):
+            self.assertIsNot(first, get_reranker(), "配置变化后必须重建")
 
 
 class RetrieveRerankPipelineTest(unittest.TestCase):
@@ -173,8 +176,8 @@ class RetrieveRerankPipelineTest(unittest.TestCase):
     def test_retrieve_degrades_without_model_and_logs_once(self):
         with mock.patch.object(vector_store, "search", return_value=self.vector_hits), \
                 mock.patch.object(HybridRetriever, "keyword_search", return_value=[]), \
-                mock.patch.object(settings, "rerank_provider", "auto"), \
-                mock.patch.object(settings, "rerank_model_dir", MISSING_DIR), \
+                mock.patch.object(rerank_factory, "rerank_setting",
+                                  return_value=("local", MISSING_DIR)), \
                 mock.patch.object(retriever_module.logger, "info") as info:
             results = self.retriever.retrieve("答辩流程", OWN, None, top_k=5)
             self.assertEqual([r.chunk_id for r in results], [101, 102, 103], "降级必须保持 RRF 顺序")

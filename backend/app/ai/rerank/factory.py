@@ -245,32 +245,46 @@ _RERANKER: BaseReranker | None = None
 _RERANKER_KEY: tuple | None = None
 
 
-def _build_reranker() -> BaseReranker:
+def rerank_setting() -> tuple[str, str]:
+    """(provider, model_dir): 用不用精排、用哪个供应商由数据库绑定决定.
+
+    P11: 配置来源只有数据库 —— 「精排模型」绑定到哪个供应商, provider 就是它的类型
+    (local/none/http)。model_dir 是部署期的本地模型路径, 不是凭证, 仍留在进程配置里。
+    """
+    from app.ai.runtime_config import resolve_ai_config
     from app.core.config import settings
 
-    provider = str(getattr(settings, "rerank_provider", "auto") or "auto").strip().lower()
     model_dir = str(getattr(settings, "rerank_model_dir", "") or "")
+    try:
+        provider = str(resolve_ai_config().rerank_provider or "none").strip().lower()
+    except Exception as exc:  # noqa: BLE001 — 配置读不到时按"关闭精排"处理, 问答不能被打断
+        logger.warning("读取精排绑定失败, 按关闭处理: %s", exc)
+        provider = "none"
+    return provider, model_dir
+
+
+def _build_reranker(provider: str, model_dir: str) -> BaseReranker:
     if provider == "none":
         return NoopReranker("disabled")
-    if provider == "onnx":
-        return OnnxCrossEncoderReranker(model_dir)
-    candidate = OnnxCrossEncoderReranker(model_dir)  # auto: 有模型用 onnx, 否则 Noop
-    if candidate.available:
+    if provider in ("onnx", "local", "auto"):
+        candidate = OnnxCrossEncoderReranker(model_dir)
+        if provider == "auto" and not candidate.available:
+            return NoopReranker(candidate.reason or "model-missing")
         return candidate
-    return NoopReranker(candidate.reason or "model-missing")
+    return NoopReranker(f"unsupported-provider:{provider}")
 
 
 def get_reranker() -> BaseReranker:
-    """按 settings.rerank_provider 取精排实现, 结果按 (provider, model_dir) 缓存."""
+    """按生效的精排绑定取实现, 结果按 (provider, model_dir) 缓存."""
     global _RERANKER, _RERANKER_KEY
-    from app.core.config import settings
 
-    key = (str(getattr(settings, "rerank_provider", "auto")), str(getattr(settings, "rerank_model_dir", "")))
+    provider, model_dir = rerank_setting()
+    key = (provider, model_dir)
     with _RERANKER_LOCK:
         if _RERANKER is not None and _RERANKER_KEY == key:
             return _RERANKER
         try:
-            reranker = _build_reranker()
+            reranker = _build_reranker(provider, model_dir)
         except Exception as exc:  # noqa: BLE001 — 初始化异常同样降级
             logger.warning("rerank 初始化异常, 降级为 Noop: %s", exc)
             reranker = NoopReranker(f"init-failed:{exc}")
@@ -280,7 +294,7 @@ def get_reranker() -> BaseReranker:
 
 
 def reset_reranker_cache() -> None:
-    """清空工厂缓存(单测改 settings 后需要)."""
+    """清空工厂缓存(配置变更热更新 / 单测用)."""
     global _RERANKER, _RERANKER_KEY
     with _RERANKER_LOCK:
         _RERANKER = None

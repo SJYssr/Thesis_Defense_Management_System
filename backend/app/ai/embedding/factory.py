@@ -1,11 +1,11 @@
-"""Embedding 服务抽象: 云端 OpenAI 兼容 API / 本地 ollama / 显式离线哈希向量.
+"""Embedding 实现选择: OpenAI 兼容云端 / 本地 ollama / 显式哈希替身(P11).
 
-不静默降级: 没有真实向量模型时抛 AIServiceUnavailable(code=50301), 而不是悄悄换成
-LocalHashEmbedding(纯词面匹配)却对外宣称检索正常 —— 哈希向量只在 EMBEDDING_PROVIDER=hash
-显式启用时使用(测试与离线演示)。
+不静默降级: 没有绑定真实向量模型时抛 AIServiceUnavailable(code=50301), 而不是悄悄换成
+LocalHashEmbedding(纯词面匹配)却对外宣称检索正常 —— 哈希向量只在 AI_TEST_MODE=hash
+显式启用时使用(单测与离线演示)。
 
-来源(provider)与凭据来自"生效配置": 数据库系统设置(ai_embedding_*) > 环境变量(settings),
-见 app/ai/runtime_config.py —— 管理员填 Base URL / API Key / 模型名 / 维度后保存即生效。
+配置来源只有数据库: 供应商行(ai_provider)提供 Base URL 与 Key, 绑定键(ai_embedding_*)
+提供模型名与维度, 环境变量不参与(见 app/ai/runtime_config.py)。
 
 fingerprint(name:dim) 是索引一致性口径: 换模型或换维度后旧向量不可复用, 必须重建索引。
 """
@@ -19,11 +19,15 @@ from collections import Counter
 
 import numpy as np
 
-from app.ai.llm.factory import AIServiceUnavailable, probe_ollama
+from app.ai.llm.factory import AIServiceUnavailable
 from app.ai.net import openai_http_client
+from app.ai.providers import openai_base_url
 from app.ai.runtime_config import resolve_ai_config
 
 logger = logging.getLogger("app.ai.embedding")
+
+# 未指定维度时哈希替身使用的桶数(与历史索引保持一致, 避免测试指纹漂移)
+HASH_DIM = 1024
 
 
 class BaseEmbeddingService(ABC):
@@ -86,22 +90,25 @@ class OpenAICompatibleEmbedding(BaseEmbeddingService):
 
 
 class OllamaEmbedding(OpenAICompatibleEmbedding):
-    """本地 ollama 的 OpenAI 兼容 embeddings 端点({OLLAMA_BASE_URL}/v1).
+    """本地 ollama 的 OpenAI 兼容 embeddings 端点({base}/v1).
 
-    维度默认取 EMBEDDING_DIM, 首次真实调用后按模型输出校正(bge-m3 = 1024)。
+    base_url / 模型名来自绑定的供应商(数据库), 维度来自 ai_embedding_dim 或
+    首次真实调用后由模型输出校正(bge-m3 = 1024)。
     """
 
-    def __init__(self, model: str | None = None, dim: int | None = None,
-                 base_url: str | None = None, timeout: float = 60.0,
-                 strict_dim: bool = False):
-        from app.core.config import settings
-
-        resolved = (model or settings.ollama_embedding_model or "").strip()
+    def __init__(self, model: str, base_url: str, dim: int = 0,
+                 timeout: float = 60.0, strict_dim: bool = False):
+        resolved = (model or "").strip()
+        base = (base_url or "").strip()
+        if not base:
+            raise AIServiceUnavailable(
+                "ollama 供应商缺少 Base URL: 请在 系统设置 → AI 服务 里补全后重试"
+            )
         super().__init__(
-            base_url or settings.ollama_v1_url,
+            openai_base_url(base),
             "ollama",  # ollama 不校验 key, 但 OpenAI SDK 要求非空
             resolved,
-            int(dim or settings.embedding_dim),
+            int(dim or 0),
             timeout=timeout,
             strict_dim=strict_dim,
         )
@@ -146,12 +153,6 @@ class EmbeddingFactory:
     _instance_key: tuple | None = None
     _lock = threading.Lock()
 
-    @staticmethod
-    def _provider() -> str:
-        from app.core.config import settings
-
-        return (settings.embedding_provider or "auto").strip().lower()
-
     @classmethod
     def _cached(cls, key: tuple, build) -> BaseEmbeddingService:
         with cls._lock:
@@ -165,8 +166,7 @@ class EmbeddingFactory:
         key = (cfg.embedding_api_key or "").strip()
         if not key:
             raise AIServiceUnavailable(
-                "未检测到可用的向量模型服务: 请在系统设置中填写 API Key, 或设置环境变量 "
-                "EMBEDDING_API_KEY(EMBEDDING_PROVIDER=openai 但未配置 API Key)"
+                "向量模型供应商还没有保存 API Key: 请在 系统设置 → AI 服务 里补全后点“测试连接”"
             )
         return OpenAICompatibleEmbedding(
             cfg.embedding_base_url, key, cfg.embedding_model, cfg.embedding_dim,
@@ -176,65 +176,46 @@ class EmbeddingFactory:
     @classmethod
     def _build_ollama(cls, cfg) -> BaseEmbeddingService:
         return OllamaEmbedding(
-            cfg.ollama_embedding_model, dim=cfg.embedding_dim,
-            base_url=cfg.ollama_embedding_base_url,
+            cfg.embedding_model, base_url=cfg.embedding_base_url, dim=cfg.embedding_dim,
             strict_dim=cfg.embedding_dim_explicit,
         )
 
     @classmethod
     def _build_hash(cls, cfg) -> BaseEmbeddingService:
         logger.warning(
-            "EMBEDDING_PROVIDER=hash: 使用本地哈希向量(纯词面匹配, 无语义), 仅供测试与离线演示"
+            "AI_TEST_MODE 测试替身: 使用本地哈希向量(纯词面匹配, 无语义), 仅供测试与离线演示"
         )
-        return LocalHashEmbedding(cfg.embedding_dim)
+        return LocalHashEmbedding(cfg.embedding_dim or HASH_DIM)
 
     @classmethod
     def get(cls, db=None) -> BaseEmbeddingService:
-        """取当前 embedding 实现(配置: 系统设置 > 环境变量); 无可用来源抛 AIServiceUnavailable."""
+        """取当前 embedding 实现: 只看数据库绑定的供应商; 未绑定抛 AIServiceUnavailable.
+
+        与 LLMFactory 同一条纪律: 没有 "auto 猜一个" 的分支, 用户绑谁就用谁。
+        """
         cfg = resolve_ai_config(db)
         if not cfg.embedding_enabled:
             raise AIServiceUnavailable(
-                "AI 功能已在系统设置中关闭(ai_embedding_enabled=false): "
+                "AI 功能已在系统设置中关闭(ai_defense_enabled=false): "
                 "如需启用请在 系统设置 → AI 服务 中打开"
             )
 
         provider = cfg.embedding_provider
         if provider == "hash":
             return cls._cached(("hash", cfg.embedding_dim), lambda: cls._build_hash(cfg))
-        if provider == "openai":
-            return cls._cached(
-                ("openai", cfg.embedding_base_url, cfg.embedding_model,
-                 cfg.embedding_dim, cfg.embedding_api_key),
-                lambda: cls._build_openai(cfg),
+        if not cfg.embedding_configured:
+            raise AIServiceUnavailable(
+                "未绑定可用的向量模型供应商: 请在 系统设置 → AI 服务 里添加供应商, 再把「向量模型」绑定到它"
             )
         if provider == "ollama":
             return cls._cached(
-                ("ollama", cfg.ollama_embedding_base_url, cfg.ollama_embedding_model,
-                 cfg.embedding_dim),
+                ("ollama", cfg.embedding_base_url, cfg.embedding_model, cfg.embedding_dim),
                 lambda: cls._build_ollama(cfg),
             )
-        if provider != "auto":
-            raise AIServiceUnavailable(
-                f"未检测到可用的向量模型服务(未知 EMBEDDING_PROVIDER={provider}): "
-                "可选 auto | ollama | openai | hash"
-            )
-
-        if (cfg.embedding_api_key or "").strip():
-            return cls._cached(
-                ("openai", cfg.embedding_base_url, cfg.embedding_model,
-                 cfg.embedding_dim, cfg.embedding_api_key),
-                lambda: cls._build_openai(cfg),
-            )
-        probe = probe_ollama()
-        if probe.get("reachable"):
-            return cls._cached(
-                ("ollama", cfg.ollama_embedding_base_url, cfg.ollama_embedding_model,
-                 cfg.embedding_dim),
-                lambda: cls._build_ollama(cfg),
-            )
-        raise AIServiceUnavailable(
-            "未检测到可用的向量模型服务: 请启动 ollama(ollama serve) 或配置 EMBEDDING_API_KEY"
-            f"/在系统设置中填写 API Key({probe.get('detail') or 'ollama 不可达'})"
+        return cls._cached(
+            ("openai", cfg.embedding_base_url, cfg.embedding_model,
+             cfg.embedding_dim, cfg.embedding_api_key),
+            lambda: cls._build_openai(cfg),
         )
 
     @classmethod

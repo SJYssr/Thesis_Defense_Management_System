@@ -448,7 +448,7 @@ def seed(force: bool = False):
             print("演示论文索引完成:", result)
         except AIServiceUnavailable as exc:
             print(f"演示论文索引跳过(未配置可用向量模型): {exc}")
-            print("  说明: 配置 EMBEDDING_API_KEY 或启动 ollama 后, 在管理端重建知识库即可")
+            print("  说明: 在 系统设置 → AI 服务 里添加供应商并把「向量模型」绑定到它, 再点「重建知识库」")
         except Exception as exc:  # noqa: BLE001 — 索引失败不阻断种子数据
             print(f"演示论文索引失败(文档已标记 FAILED, 不阻断种子数据): {type(exc).__name__}: {exc}")
 

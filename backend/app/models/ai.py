@@ -157,3 +157,34 @@ class AIPromptTemplateVersion(Base):
     action: Mapped[str] = mapped_column(String(16), comment="UPDATE/RESET/STATUS")
     operator_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=datetime.now, index=True)
+
+
+class AIProvider(Base, TimestampMixin):
+    """AI 供应商(P11).
+
+    设计原点: 一份 Base URL + 一份 API Key 就是一个供应商, 它同时可以充当会话模型来源
+    和向量模型来源 —— Dify / Open WebUI / LiteLLM 都是这个口径。
+    能力选择因此退化为"供应商 + 模型名"两个字段, 不必为 chat / embedding 各填一遍
+    Base URL 与 API Key(旧设计 15 个输入框的根源)。
+    """
+
+    __tablename__ = "ai_provider"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, comment="供应商显示名, 如 智谱 / 本地 ollama")
+    kind: Mapped[str] = mapped_column(
+        String(32), default="openai",
+        comment="预设类型: openai/ollama/deepseek/zhipu/dashscope/moonshot/custom",
+    )
+    base_url: Mapped[str] = mapped_column(
+        String(255), comment="OpenAI 兼容基址(含 /v1); ollama 填 http://host:11434"
+    )
+    api_key_enc: Mapped[str | None] = mapped_column(
+        String(512), comment="Fernet 密文; 空表示该供应商无需 Key"
+    )
+    enabled: Mapped[int] = mapped_column(SmallInteger, default=1, comment="1 启用 / 0 停用")
+    models_json: Mapped[str | None] = mapped_column(Text, comment="缓存的模型清单 JSON 数组")
+    models_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, comment="模型清单最近刷新时间")
+    last_status: Mapped[str | None] = mapped_column(String(16), comment="最近探测: ok/degraded/down")
+    last_detail: Mapped[str | None] = mapped_column(String(512), comment="最近探测说明")
+    last_probe_at: Mapped[datetime | None] = mapped_column(DateTime, comment="最近探测时间")

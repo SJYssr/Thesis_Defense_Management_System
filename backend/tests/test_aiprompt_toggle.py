@@ -112,58 +112,6 @@ class PromptTogglePersistenceTest(unittest.TestCase):
         self.assertEqual(item["system_prompt"], DEFAULT)
 
 
-class LLMModelOverrideTest(unittest.TestCase):
-    """D68: Redis 缓存未命中时, 模型覆盖必须直读 system_config(不再静默回退环境默认)."""
-
-    def setUp(self):
-        self.engine = create_engine("sqlite:///:memory:")
-        Base.metadata.create_all(self.engine)
-        self.db = Session(self.engine)
-        self.addCleanup(self.engine.dispose)  # LIFO: 先关 session 再释放引擎
-        self.addCleanup(self.db.close)
-        self.db.add(SystemConfig(key="ai_llm_model", value="glm-4-plus"))
-        self.db.commit()
-
-    def _patch(self, target, value):
-        patcher = patch(target, value)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_cache_miss_reads_database_value(self):
-        from app.ai.llm.factory import LLMFactory
-
-        self._patch("app.db.redis.redis_client", _NoCacheRedis())
-        self.assertEqual(LLMFactory._model_override(self.db), "glm-4-plus",
-                         "缓存未命中不得返回空串(后台任务路径会静默用错模型)")
-
-    def test_cache_miss_without_injected_session_opens_its_own(self):
-        from app.ai.llm.factory import LLMFactory
-
-        self._patch("app.db.redis.redis_client", _NoCacheRedis())
-        self._patch("app.db.mysql.SessionLocal", lambda: Session(self.engine))
-        self.assertEqual(LLMFactory._model_override(), "glm-4-plus")
-        # 工厂自开的 session 已关闭, 本测试的 session 仍可用
-        self.assertEqual(self.db.execute(select(SystemConfig.value)).scalar_one(), "glm-4-plus")
-
-    def test_cache_hit_short_circuits_database(self):
-        from app.ai.llm.factory import LLMFactory
-
-        class _HitRedis:
-            def get(self, *args, **kwargs):
-                return b'{"ai_llm_model": "cached-model"}'
-
-        self._patch("app.db.redis.redis_client", _HitRedis())
-        self.assertEqual(LLMFactory._model_override(self.db), "cached-model")
-
-    def test_no_config_configured_falls_back_to_empty(self):
-        from app.ai.llm.factory import LLMFactory
-
-        self._patch("app.db.redis.redis_client", _NoCacheRedis())
-        self.db.query(SystemConfig).filter(SystemConfig.key == "ai_llm_model").delete()
-        self.db.commit()
-        self.assertEqual(LLMFactory._model_override(self.db), "")
-
-
 class SysConfigCacheWritebackTest(unittest.TestCase):
     """D68 另一半: update_configs 删缓存后必须立刻写回新值, 不能留下空缓存."""
 
@@ -199,16 +147,16 @@ class SysConfigCacheWritebackTest(unittest.TestCase):
     def test_update_writes_new_values_back_to_cache(self):
         from app.shared.sysconfig import CACHE_KEY, get_all, update_configs
 
-        update_configs(self.db, {"ai_llm_model": "glm-4-plus", "max_upload_daily_mb": "50"}, 1)
+        update_configs(self.db, {"ai_chat_model": "glm-4-plus", "max_upload_daily_mb": "50"}, 1)
 
         self.assertTrue(self.redis.setex_calls, "更新后必须立刻写回缓存")
         key, ttl, payload = self.redis.setex_calls[-1]
         self.assertEqual(key, CACHE_KEY)
         self.assertGreater(ttl, 0)
-        self.assertEqual(json.loads(payload)["ai_llm_model"], "glm-4-plus", "缓存里必须是新值而非旧值")
+        self.assertEqual(json.loads(payload)["ai_chat_model"], "glm-4-plus", "缓存里必须是新值而非旧值")
         self.assertEqual(json.loads(payload)["max_upload_daily_mb"], "50")
         # 命中缓存时读到的就是新值, 不会退货空缓存导致的一次性回退默认
-        self.assertEqual(get_all(self.db)["ai_llm_model"], "glm-4-plus")
+        self.assertEqual(get_all(self.db)["ai_chat_model"], "glm-4-plus")
 
     def test_upload_quota_field_registered_in_schema(self):
         from app.shared.sysconfig import FIELDS, get_int

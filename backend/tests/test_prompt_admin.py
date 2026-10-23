@@ -27,6 +27,19 @@ from app.modules.aiprompt.router import (
 )
 
 
+class _NoCacheRedis:
+    """断掉 system_config 的 Redis 缓存, 让测试只看到本次 sqlite 的配置行."""
+
+    def get(self, *args, **kwargs):
+        return None
+
+    def setex(self, *args, **kwargs):
+        return True
+
+    def delete(self, *args, **kwargs):
+        return 0
+
+
 class _FakeUser:
     id = 1
     username = "admin"
@@ -120,14 +133,10 @@ class PromptAdminTest(unittest.TestCase):
         versions = json.loads(prompt_versions("QUERY_REWRITE", _FakeUser(), self.db).body)["data"]
         self.assertEqual(len(versions), 1)
 
-    def test_llm_factory_falls_back_without_redis_config(self):
-        """无 Redis/无覆盖配置时, 模型名回退环境变量默认; Mock 模式不受覆盖影响."""
-        LLMFactory._instance = None
-        LLMFactory._instance_model = None
-        self.assertEqual(LLMFactory._model_override(), "")
-        # provider 必须显式指定 mock: 无 key 且 ollama 不可用时 get() 抛 AIServiceUnavailable,
-        # 不再静默降级成 MockLLM(旧语义), 所以这里把"离线 Mock"写成明确前提。
-        with mock.patch.object(settings, "llm_provider", "mock"):
+    def test_llm_factory_is_mock_only_under_test_mode(self):
+        """P11: 真实配置只读数据库; 离线替身只能由 AI_TEST_MODE 显式打开."""
+        LLMFactory.reset()
+        with mock.patch.object(settings, "ai_test_mode", "mock"),                 mock.patch("app.shared.sysconfig.redis_client", _NoCacheRedis()):
             LLMFactory.reset()
             try:
                 service = LLMFactory.get()

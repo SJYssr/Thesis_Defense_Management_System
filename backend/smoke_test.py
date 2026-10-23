@@ -549,25 +549,64 @@ check("教师无权修改 Prompt", r.json()["code"] == 40300)
 r = client.post(f"{BASE}/ai/rag/query", headers=auth(s1), json={"query": "系统使用了哪些状态码"})
 check("自定义/重置后 AI 链路仍可用", r.json()["code"] == 0, r.text[:200])
 
+print("== 16b. AI 服务配置(P11: 供应商 + 绑定, 不再接受环境变量) ==")
+r = client.get(f"{BASE}/admin/ai/presets", headers=auth(admin))
+presets = r.json()["data"]
+check("供应商预设可查", r.json()["code"] == 0 and len(presets) >= 5
+      and all({"kind", "label", "base_url", "needs_key", "models"} <= set(p) for p in presets),
+      r.text[:200])
+check("预设覆盖 ollama 与主流云厂商",
+      {"ollama", "openai", "deepseek"} <= {p["kind"] for p in presets})
+r = client.get(f"{BASE}/admin/ai/providers", headers=auth(admin))
+check("初始无供应商(不读环境变量)", r.json()["code"] == 0 and r.json()["data"] == [], r.text[:200])
+r = client.post(f"{BASE}/admin/ai/providers", headers=auth(admin),
+                 json={"name": "验收本地", "kind": "ollama", "base_url": "http://127.0.0.1:11434/"})
+created = r.json()["data"]
+check("新建 ollama 供应商且 base_url 归一", r.json()["code"] == 0
+      and created["base_url"] == "http://127.0.0.1:11434" and created["has_key"] is False, r.text[:200])
+pid = created["id"]
+r = client.post(f"{BASE}/admin/ai/providers", headers=auth(admin),
+                 json={"name": "验收云端", "kind": "openai", "base_url": "https://api.example.com/v1",
+                       "api_key": "sk-smoke-0123456789abcdef"})
+cloud = r.json()["data"]
+check("云厂商供应商保存密钥后只回掩码", r.json()["code"] == 0 and cloud["has_key"] is True
+      and cloud["openai_base_url"] == "https://api.example.com/v1"
+      and "sk-smoke" not in r.text and cloud["key_hint"].endswith("cdef"), r.text[:200])
+cloud_id = cloud["id"]
+r = client.put(f"{BASE}/admin/ai/bindings", headers=auth(admin),
+                json={"chat": {"provider_id": pid, "model": ""}})
+check("绑定会话模型必须给模型名", r.json()["code"] != 0 and "模型名" in r.json()["message"], r.text[:200])
+r = client.put(f"{BASE}/admin/ai/bindings", headers=auth(admin),
+                json={"chat": {"provider_id": pid, "model": "qwen2.5:7b-instruct"}})
+bindings = r.json()["data"]
+check("绑定会话模型成功", r.json()["code"] == 0
+      and bindings["slots"]["chat"]["model"] == "qwen2.5:7b-instruct"
+      and bindings["slots"]["chat"]["configured"] is True, r.text[:200])
 r = client.get(f"{BASE}/admin/ai-model-info", headers=auth(admin))
 info = r.json()["data"]
-check("AI 模型信息可查", r.json()["code"] == 0 and info["llm_model_effective"]
-      and info["embedding_dim"] >= 0, r.text[:200])
-r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin), json={"items": {"ai_llm_model": "glm-4.7-air"}})
-check("保存 LLM 模型覆盖", r.json()["code"] == 0, r.text[:150])
-r = client.get(f"{BASE}/admin/ai-model-info", headers=auth(admin))
-info = r.json()["data"]
-# mock/离线 provider 的"生效模型"就是 mock 本身, 不能拿覆盖值去要求它;
-# 真实 provider(openai/ollama)下覆盖值必须真的进到生效模型里
-expected_effective = "mock" if info["llm_provider"] == "mock" else "glm-4.7-air"
-check("模型信息反映覆盖值",
-      info["ai_llm_model"] == "glm-4.7-air" and info["llm_model_effective"] == expected_effective,
-      f"override={info['ai_llm_model']!r} effective={info['llm_model_effective']!r} provider={info['llm_provider']!r}")
-r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin), json={"items": {"ai_llm_model": ""}})
-check("清空覆盖回退环境变量", r.json()["code"] == 0
-      and client.get(f"{BASE}/admin/ai-model-info", headers=auth(admin)).json()["data"]["ai_llm_model"] == "")
+check("AI 模型信息可查且含绑定", r.json()["code"] == 0
+      and info["bindings"]["chat"]["model"] == "qwen2.5:7b-instruct"
+      and info["llm_provider"] in ("ollama", "mock"), r.text[:200])
+check("模型信息不再暴露旧口径键",
+      not ({"ai_llm_model", "llm_model_effective", "llm_openai_mode"} & set(info)))
+r = client.delete(f"{BASE}/admin/ai/providers/{pid}", headers=auth(admin))
+check("被绑定的供应商不可删除", r.json()["code"] != 0 and "绑定" in r.json()["message"], r.text[:200])
+r = client.post(f"{BASE}/admin/ai/providers/{cloud_id}/refresh", headers=auth(admin))
+check("刷新模型列表失败也返回可读原因", r.json()["code"] == 0
+      and r.json()["data"]["status"] in ("ok", "down", "unauthorized"), r.text[:200])
+r = client.put(f"{BASE}/admin/ai/bindings", headers=auth(admin),
+                json={"chat": {"provider_id": None, "model": ""}})
+check("解绑会话模型", r.json()["code"] == 0
+      and r.json()["data"]["slots"]["chat"]["provider_id"] is None, r.text[:200])
+r = client.delete(f"{BASE}/admin/ai/providers/{pid}", headers=auth(admin))
+check("解绑后可删除供应商", r.json()["code"] == 0, r.text[:200])
+client.delete(f"{BASE}/admin/ai/providers/{cloud_id}", headers=auth(admin))
+r = client.get(f"{BASE}/admin/ai/providers", headers=auth(admin))
+check("清理后供应商为空", r.json()["data"] == [], r.text[:200])
 r = client.get(f"{BASE}/admin/ai-model-info", headers=auth(s1))
 check("学生无权查看模型信息", r.json()["code"] == 40300)
+r = client.get(f"{BASE}/admin/ai/overview", headers=auth(admin))
+check("AI 总览可用", r.json()["code"] == 0 and set(r.json()["data"]) >= {"providers", "slots"}, r.text[:200])
 
 print("== 17. 安全硬化验收(P1-B: D11/D13/D21/D22/D23) ==")
 # D11: 错误响应必须返回真实 HTTP 状态码, 响应体仍为 {code, message, data}

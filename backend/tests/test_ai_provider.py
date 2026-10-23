@@ -1,354 +1,248 @@
-"""AI provider 层单测(P10-A): 真实来源选择 / 不静默降级 / 探测缓存 / 健康探测 / 指纹.
+"""AI 供应商实体层单测(P11).
 
-全程离线: 用 monkeypatch 替换 ollama 探测的 HTTP 层(OllamaProbe._fetch)与 SDK 客户端,
-绝不真的连 127.0.0.1:11434, 也不依赖本机是否 pull 过模型。
+改造前的问题: AI 配置散在 16 个 ai_llm_*/ai_embedding_*/ai_rerank_* 配置键里,
+Base URL 与 Key 每个能力各填一遍, 密钥明文进 system_config, 模型名手填, 运行期还会
+跟随环境变量 —— 页面复杂、口径混乱。P11 收敛成一张 ai_provider 表 + 三个绑定键。
+
+本文件覆盖实体层: 加密、CRUD、预设、绑定、旧配置折算(幂等)。
 """
-import time
 import unittest
-from unittest import mock
+from unittest.mock import patch
 
-from app.ai.embedding.factory import EmbeddingFactory, LocalHashEmbedding, OllamaEmbedding
-from app.ai.health import embedding_needs_reindex, probe_all
-from app.ai.llm.factory import (
-    AIServiceUnavailable,
-    LLMFactory,
-    MockLLM,
-    OllamaLLM,
-    OllamaProbe,
-    probe_ollama,
-    reset_ollama_probe_cache,
-)
-from app.ai import runtime_config
-from app.core.config import settings
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session
 
-DOWN = {"reachable": False, "models": None, "latency_ms": None,
-        "detail": "无法连接 http://127.0.0.1:11434/api/tags: URLError: Connection refused"}
+from app.ai import providers as svc
+from app.ai.crypto import decrypt_api_key, encrypt_api_key, key_hint
+from app.ai.providers import KINDS, LEGACY_KEYS, PRESETS
+from app.core.exceptions import BusinessException, ResourceNotFoundException
+from app.db.base import Base
+from app.models import all as _all_models  # noqa: F401
+from app.models.ai import AIProvider
+from app.models.system import SystemConfig
 
 
-def up(models: list[str]) -> dict:
-    return {"reachable": True, "models": models, "latency_ms": 3, "detail": "stub 可达"}
+class _NoCacheRedis:
+    """断掉 system_config 的 Redis 缓存, 让读取只看到本次 sqlite 的配置行."""
+
+    def get(self, *args, **kwargs):
+        return None
+
+    def setex(self, *args, **kwargs):
+        return True
+
+    def delete(self, *args, **kwargs):
+        return 0
 
 
 class ProviderTestBase(unittest.TestCase):
-    """保存/恢复被改写的 settings, 并清空工厂与探测缓存, 保证用例互不影响."""
-
-    FIELDS = ("llm_provider", "llm_api_key", "llm_model", "ollama_llm_model",
-              "embedding_provider", "embedding_api_key", "embedding_model",
-              "ollama_embedding_model", "embedding_dim", "ollama_probe_ttl",
-              "ollama_probe_timeout")
-
     def setUp(self):
-        self._saved = {name: getattr(settings, name) for name in self.FIELDS}
-        # 生效配置这一层单独有单测(tests/test_ai_runtime_config.py): 这里桩成"系统设置全空",
-        # 既保证纯环境变量语义, 也保证单测不去连真实数据库。
-        self._db_patch = mock.patch.object(runtime_config, "_db_values",
-                                          side_effect=lambda db=None: {})
-        self._db_patch.start()
-        # 基线钉成 auto/无 key: 外部 shell 若 export 了 LLM_PROVIDER=mock(见 AGENTS.md 的 smoke
-        # 命令), 用例会从 "not_configured" 变成 "disabled" —— 断言随环境漂移, 单测必须对环境免疫.
-        settings.llm_provider = "auto"
-        settings.llm_api_key = ""
-        settings.embedding_provider = "auto"
-        settings.embedding_api_key = ""
-        self._reset()
+        patcher = patch("app.shared.sysconfig.redis_client", _NoCacheRedis())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(self.engine)
+        self.db = Session(self.engine)
+        self.addCleanup(self.engine.dispose)
+        self.addCleanup(self.db.close)
+        # sqlite 下 BigInteger 主键不自增(MySQL 才有 AUTO_INCREMENT), 统一显式分配
+        @event.listens_for(self.db, "before_flush")
+        def assign_ids(sess, *_):
+            next_id = getattr(assign_ids, "next_id", 700)
+            for item in sess.new:
+                if isinstance(item, AIProvider) and item.id is None:
+                    next_id += 1
+                    item.id = next_id
+            assign_ids.next_id = next_id
 
-    def tearDown(self):
-        self._db_patch.stop()
-        for name, value in self._saved.items():
-            setattr(settings, name, value)
-        self._reset()
-
-    @staticmethod
-    def _reset():
-        runtime_config.invalidate_ai_config()
-        LLMFactory.reset()
-        EmbeddingFactory.reset()
-        reset_ollama_probe_cache()
+    def make(self, name="我的供应商", kind="openai", base_url="https://api.example.com/v1",
+             api_key="sk-secret-1234", enabled=True):
+        return svc.create_provider(self.db, name=name, kind=kind, base_url=base_url,
+                                   api_key=api_key, enabled=enabled)
 
 
-class LLMFactoryTest(ProviderTestBase):
-    def test_auto_without_key_and_ollama_down_raises_instead_of_mock(self):
-        """auto + 无 key + ollama 不可达: 必须抛 AIServiceUnavailable, 不能返回 MockLLM."""
-        settings.llm_provider = "auto"
-        settings.llm_api_key = ""
-        with mock.patch.object(OllamaProbe, "_fetch", return_value=DOWN):
-            with self.assertRaises(AIServiceUnavailable) as ctx:
-                LLMFactory.get()
-            # 二次调用仍失败: 不存在"第一次失败就悄悄降级"的路径
-            with self.assertRaises(AIServiceUnavailable):
-                LLMFactory.get()
-            self.assertEqual(LLMFactory.provider_name(), "unavailable")
+class CryptoTest(unittest.TestCase):
+    """Key 落库必须加密; 解不开时返回空串而不是抛异常把接口打成 500."""
 
-        self.assertEqual(ctx.exception.code, 50301)
-        message = str(ctx.exception)
-        self.assertIn("未检测到可用的模型服务", message)
-        self.assertIn("ollama serve", message)
-        self.assertIn("LLM_API_KEY", message)
-        self.assertIn("Connection refused", message, "detail 应带出探测失败原因")
-        self.assertNotIsInstance(LLMFactory._instance, MockLLM)
+    def test_roundtrip(self):
+        cipher = encrypt_api_key("sk-abcdefgh1234")
+        self.assertNotIn("sk-abcdefgh1234", cipher, "密文里不得出现明文")
+        self.assertEqual(decrypt_api_key(cipher), "sk-abcdefgh1234")
 
-    def test_explicit_mock_returns_mock(self):
-        settings.llm_provider = "mock"
-        service = LLMFactory.get()
-        self.assertIsInstance(service, MockLLM)
-        self.assertEqual(service.name, "mock")
-        self.assertEqual(LLMFactory.provider_name(), "mock")
+    def test_empty_key_is_stored_as_null(self):
+        self.assertIsNone(encrypt_api_key(""))
+        self.assertIsNone(encrypt_api_key(None))
 
-    def test_explicit_ollama_does_not_need_probe(self):
-        """显式 ollama: 不探测直接给实例, name 前缀与 base_url 指向本地 /v1."""
-        settings.llm_provider = "ollama"
-        settings.ollama_llm_model = "qwen2.5:7b-instruct"
-        with mock.patch.object(OllamaProbe, "_fetch", side_effect=AssertionError("不该探测")):
-            service = LLMFactory.get()
-        self.assertIsInstance(service, OllamaLLM)
-        self.assertTrue(service.name.startswith("ollama:"), service.name)
-        self.assertEqual(service.model, "qwen2.5:7b-instruct")
-        self.assertIn(settings.ollama_v1_url, str(service.client.base_url))
+    def test_broken_ciphertext_degrades_to_empty(self):
+        self.assertEqual(decrypt_api_key("not-a-fernet-token"), "")
 
-    def test_openai_provider_without_key_raises(self):
-        settings.llm_provider = "openai"
-        settings.llm_api_key = ""
-        with self.assertRaises(AIServiceUnavailable) as ctx:
-            LLMFactory.get()
-        self.assertEqual(ctx.exception.code, 50301)
-        self.assertIn("LLM_API_KEY", str(ctx.exception))
-
-    def test_auto_prefers_cloud_key_over_ollama(self):
-        settings.llm_provider = "auto"
-        settings.llm_api_key = "sk-test"
-        with mock.patch.object(LLMFactory, "_model_override", return_value=""), \
-                mock.patch.object(OllamaProbe, "_fetch", return_value=up(["bge-m3"])):
-            service = LLMFactory.get()
-        self.assertTrue(service.name.startswith("openai:"), service.name)
-
-    def test_probe_cached_within_ttl_and_refreshed_after(self):
-        """探测带 TTL 缓存: 连续 2 次 get() 只探测 1 次, 超过 TTL 再探测."""
-        settings.llm_provider = "auto"
-        settings.llm_api_key = ""
-        settings.ollama_probe_ttl = 30.0
-        calls = {"n": 0}
-
-        def _fetch(base_url, timeout):
-            calls["n"] += 1
-            return up(["qwen2.5:7b-instruct"])
-
-        with mock.patch.object(OllamaProbe, "_fetch", side_effect=_fetch):
-            LLMFactory.get()
-            LLMFactory.get()
-            self.assertEqual(calls["n"], 1, "TTL 内第二次 get() 不得重复探测")
-
-            settings.ollama_probe_ttl = 0.05
-            time.sleep(0.06)
-            LLMFactory.get()
-        self.assertEqual(calls["n"], 2, "超过 TTL 必须重新探测")
-
-    def test_probe_failure_never_escapes_as_raw_exception(self):
-        """探测层自身异常只体现为不可用(转 AIServiceUnavailable), 不把原始异常抛给调用方."""
-        settings.llm_provider = "auto"
-        settings.llm_api_key = ""
-        with mock.patch.object(OllamaProbe, "_fetch", side_effect=RuntimeError("boom")):
-            self.assertFalse(probe_ollama()["reachable"])
-            with self.assertRaises(AIServiceUnavailable):
-                LLMFactory.get()
+    def test_key_hint_only_exposes_tail(self):
+        self.assertEqual(key_hint("sk-abcdefgh1234"), "***1234")
+        self.assertEqual(key_hint("short"), "***", "不足 12 位连尾号都不露")
+        self.assertEqual(key_hint(""), "")
 
 
-class EmbeddingFactoryTest(ProviderTestBase):
-    def test_auto_without_key_and_ollama_down_raises_instead_of_hash(self):
-        settings.embedding_provider = "auto"
-        settings.embedding_api_key = ""
-        with mock.patch.object(OllamaProbe, "_fetch", return_value=DOWN):
-            with self.assertRaises(AIServiceUnavailable) as ctx:
-                EmbeddingFactory.get()
-        self.assertEqual(ctx.exception.code, 50301)
-        self.assertIn("EMBEDDING_API_KEY", str(ctx.exception))
-        self.assertNotIsInstance(EmbeddingFactory._instance, LocalHashEmbedding)
+class ProviderCrudTest(ProviderTestBase):
+    def test_create_returns_masked_view_only(self):
+        view = self.make()
+        self.assertTrue(view["has_key"])
+        self.assertEqual(view["key_hint"], "***1234")
+        self.assertNotIn("api_key", view, "视图里不得有明文字段")
+        self.assertNotIn("api_key_enc", view)
 
-    def test_explicit_hash_is_allowed(self):
-        settings.embedding_provider = "hash"
-        settings.embedding_dim = 512
-        service = EmbeddingFactory.get()
-        self.assertIsInstance(service, LocalHashEmbedding)
-        self.assertEqual(service.dim, 512)
+    def test_base_url_normalized(self):
+        view = self.make(base_url="https://api.deepseek.com/")
+        self.assertEqual(view["base_url"], "https://api.deepseek.com")
+        self.assertEqual(view["openai_base_url"], "https://api.deepseek.com/v1")
+        ollama = self.make(name="本地", kind="ollama", base_url="http://127.0.0.1:11434/v1/")
+        self.assertEqual(ollama["base_url"], "http://127.0.0.1:11434", "ollama 地址不带 /v1")
 
-    def test_explicit_ollama_embedding(self):
-        settings.embedding_provider = "ollama"
-        settings.ollama_embedding_model = "bge-m3"
-        with mock.patch.object(OllamaProbe, "_fetch", side_effect=AssertionError("不该探测")):
-            service = EmbeddingFactory.get()
-        self.assertIsInstance(service, OllamaEmbedding)
-        self.assertEqual(service.name, "ollama:bge-m3")
-        self.assertIn(settings.ollama_v1_url, str(service.client.base_url))
+    def test_invalid_inputs_rejected(self):
+        with self.assertRaises(BusinessException):
+            self.make(name="  ")
+        with self.assertRaises(BusinessException):
+            self.make(kind="not-a-kind")
+        with self.assertRaises(BusinessException):
+            self.make(base_url="ftp://x")
+        with self.assertRaises(BusinessException):
+            self.make(base_url="")
 
-    def test_openai_embedding_without_key_raises(self):
-        settings.embedding_provider = "openai"
-        settings.embedding_api_key = ""
-        with self.assertRaises(AIServiceUnavailable) as ctx:
-            EmbeddingFactory.get()
-        self.assertIn("EMBEDDING_API_KEY", str(ctx.exception))
+    def test_duplicate_name_conflicts(self):
+        self.make()
+        with self.assertRaises(BusinessException):
+            self.make()
 
-    def test_fingerprint_contains_name_and_dim(self):
-        self.assertEqual(LocalHashEmbedding(1024).fingerprint, "local-hash:1024")
-        ollama = OllamaEmbedding(model="bge-m3", dim=1024)
-        self.assertEqual(ollama.fingerprint, "ollama:bge-m3:1024")
-        self.assertIn("bge-m3", ollama.fingerprint)
-        self.assertIn("1024", ollama.fingerprint)
+    def test_update_key_is_three_state(self):
+        view = self.make()
+        pid = view["id"]
+        # 省略 => 不动
+        svc.update_provider(self.db, pid, name="改名")
+        self.assertEqual(svc.view_of(svc.get_provider(self.db, pid))["key_hint"], "***1234")
+        # 覆盖
+        svc.update_provider(self.db, pid, api_key="sk-new-key-9999")
+        self.assertEqual(svc.view_of(svc.get_provider(self.db, pid))["key_hint"], "***9999")
+        # clear_key => 清空
+        svc.update_provider(self.db, pid, clear_key=True)
+        self.assertFalse(svc.view_of(svc.get_provider(self.db, pid))["has_key"])
 
-    def test_actual_dim_overrides_configured_dim(self):
-        """维度以模型实际输出为准(EMBEDDING_DIM 不是唯一真相), 并随之更新指纹."""
-        settings.embedding_dim = 1024
-        service = OllamaEmbedding(model="bge-m3", dim=1024)
-        response = mock.Mock()
-        response.data = [mock.Mock(embedding=[0.1] * 8)]
-        service.client = mock.Mock()
-        service.client.embeddings.create.return_value = response
-        with self.assertLogs("app.ai.embedding", level="WARNING") as logs:
-            vectors = service.embed(["你好"])
-        self.assertEqual(len(vectors[0]), 8)
-        self.assertEqual(service.dim, 8)
-        self.assertEqual(service.fingerprint, "ollama:bge-m3:8")
-        self.assertTrue(any("维度" in line for line in logs.output), logs.output)
+    def test_update_unknown_provider(self):
+        with self.assertRaises(ResourceNotFoundException):
+            svc.update_provider(self.db, 999, name="x")
 
+    def test_delete_unbound_and_missing(self):
+        pid = self.make()["id"]
+        svc.delete_provider(self.db, pid)
+        self.assertEqual(svc.list_providers(self.db), [])
+        with self.assertRaises(ResourceNotFoundException):
+            svc.delete_provider(self.db, pid)
 
-class HealthProbeTest(ProviderTestBase):
-    def test_all_down_does_not_raise(self):
-        settings.llm_provider = "auto"
-        settings.llm_api_key = ""
-        settings.embedding_provider = "auto"
-        settings.embedding_api_key = ""
-        with mock.patch.object(OllamaProbe, "_fetch", return_value=DOWN):
-            data = probe_all()
-        # 什么都没配(也没有本地 ollama)是 not_configured, 不是"配了但连不上"(degraded/down)
-        self.assertEqual(data["llm"]["status"], "not_configured")
-        self.assertEqual(data["embedding"]["status"], "not_configured")
-        self.assertFalse(data["llm"]["configured"])
-        self.assertIn("系统设置", data["llm"]["detail"])
-        self.assertEqual(data["llm"]["provider"], "auto")
-        self.assertFalse(data["ollama"]["reachable"])
-        self.assertIn("detail", data["llm"])
-        for key in ("llm", "embedding", "rerank", "vector_store", "ollama"):
-            self.assertIn(key, data)
-
-    def test_all_ok(self):
-        settings.llm_provider = "auto"
-        settings.llm_api_key = ""
-        settings.ollama_llm_model = "qwen2.5:7b-instruct"
-        settings.embedding_provider = "auto"
-        settings.embedding_api_key = ""
-        settings.ollama_embedding_model = "bge-m3"
-        settings.embedding_dim = 1024
-        with mock.patch.object(OllamaProbe, "_fetch",
-                               return_value=up(["qwen2.5:7b-instruct", "bge-m3:latest"])):
-            data = probe_all()
-        self.assertEqual(data["llm"]["status"], "ok", data["llm"])
-        self.assertEqual(data["llm"]["model"], "qwen2.5:7b-instruct")
-        self.assertEqual(data["embedding"]["status"], "ok", data["embedding"])
-        self.assertEqual(data["embedding"]["dim"], 1024)
-        self.assertEqual(data["embedding"]["fingerprint"], "ollama:bge-m3:1024")
-        self.assertTrue(data["ollama"]["reachable"])
-        self.assertEqual(sorted(data["ollama"]["models"]), ["bge-m3:latest", "qwen2.5:7b-instruct"])
-
-    def test_model_missing_is_degraded_not_ok(self):
-        """来源可达但模型没 pull: 不能报 ok(那正是"看起来正常其实不可用")."""
-        settings.llm_provider = "ollama"
-        settings.ollama_llm_model = "qwen2.5:7b-instruct"
-        settings.embedding_provider = "ollama"
-        settings.ollama_embedding_model = "bge-m3"
-        with mock.patch.object(OllamaProbe, "_fetch", return_value=up([])):
-            data = probe_all()
-        self.assertEqual(data["llm"]["status"], "degraded")
-        self.assertIn("ollama pull", data["llm"]["detail"])
-        self.assertEqual(data["embedding"]["status"], "degraded")
-
-    def test_probe_all_swallows_unexpected_exception(self):
-        with mock.patch("app.ai.llm.factory.probe_ollama", side_effect=RuntimeError("boom")):
-            data = probe_all()
-        self.assertEqual(data["llm"]["status"], "down")
-        self.assertIn("RuntimeError", data["llm"]["detail"])
-        self.assertEqual(data["ollama"]["reachable"], False)
-
-    def test_mock_and_hash_are_disabled_not_fake_ok(self):
-        settings.llm_provider = "mock"
-        settings.embedding_provider = "hash"
-        data = probe_all()
-        self.assertEqual(data["llm"]["status"], "disabled")
-        self.assertEqual(data["embedding"]["status"], "disabled")
-        self.assertEqual(data["embedding"]["fingerprint"], f"local-hash:{settings.embedding_dim}")
-
-    def test_rerank_reports_file_presence_only(self):
-        settings.rerank_provider = "none"
-        data = probe_all()
-        self.assertEqual(data["rerank"]["status"], "disabled")
-        self.assertFalse(data["rerank"]["available"])
-        settings.rerank_provider = "auto"
-        data = probe_all()
-        self.assertIn("available", data["rerank"])
-        self.assertEqual(data["rerank"]["model_dir"], settings.rerank_model_dir)
+    def test_delete_bound_provider_is_refused(self):
+        pid = self.make()["id"]
+        svc.save_bindings(self.db, {"chat": {"provider_id": pid, "model": "gpt-4o-mini"}})
+        with self.assertRaises(BusinessException) as ctx:
+            svc.delete_provider(self.db, pid)
+        self.assertIn("会话模型", ctx.exception.message, "报错要说清被哪个能力占着")
 
 
-class EmbeddingReindexTest(ProviderTestBase):
-    def setUp(self):
-        super().setUp()
-        settings.embedding_provider = "hash"
-        settings.embedding_dim = 1024
-        EmbeddingFactory.reset()
+class PresetTest(unittest.TestCase):
+    def test_presets_cover_common_vendors(self):
+        kinds = {item["kind"] for item in PRESETS}
+        self.assertTrue({"deepseek", "zhipu", "dashscope", "moonshot", "openai", "ollama", "custom"} <= kinds)
 
-    def test_missing_key_means_reindex(self):
+    def test_every_preset_is_renderable(self):
+        for item in svc.presets():
+            self.assertTrue(item["label"])
+            self.assertIn("needs_key", item)
+            self.assertIsInstance(item["models"], list)
 
-        with mock.patch("app.db.redis.redis_client.get", return_value=None):
-            self.assertTrue(embedding_needs_reindex())
-
-    def test_same_fingerprint_needs_no_reindex(self):
-
-        with mock.patch("app.db.redis.redis_client.get", return_value=b"local-hash:1024"):
-            self.assertFalse(embedding_needs_reindex())
-
-    def test_changed_fingerprint_needs_reindex(self):
-
-        with mock.patch("app.db.redis.redis_client.get", return_value=b"ollama:bge-m3:1024"):
-            self.assertTrue(embedding_needs_reindex())
-
-    def test_redis_failure_is_not_an_error(self):
-        """缓存故障不能把管理端页面打成错误, 也不能谎报需要重建."""
-
-        with mock.patch("app.db.redis.redis_client.get", side_effect=RuntimeError("redis down")):
-            with self.assertLogs("app.ai.health", level="WARNING"):
-                self.assertFalse(embedding_needs_reindex())
+    def test_ollama_preset_needs_no_key(self):
+        ollama = next(item for item in PRESETS if item["kind"] == "ollama")
+        self.assertFalse(ollama["needs_key"])
+        self.assertTrue(ollama["base_url"].startswith("http://127.0.0.1"))
 
 
-class HealthEndpointTest(ProviderTestBase):
-    def test_health_status_mapping(self):
-        from app.main import health
+class BindingTest(ProviderTestBase):
+    def test_empty_bindings_are_not_configured(self):
+        bound = svc.bindings(self.db)
+        self.assertTrue(bound["enabled"], "默认开启")
+        for slot in ("chat", "embedding", "rerank"):
+            self.assertFalse(bound["slots"][slot]["configured"])
+            self.assertIsNone(bound["slots"][slot]["provider_id"])
 
-        ok = {"llm": {"status": "ok", "provider": "ollama", "model": "m", "latency_ms": 1, "detail": ""},
-              "embedding": {"status": "ok", "provider": "ollama", "model": "e", "latency_ms": 1,
-                            "detail": "", "dim": 1024, "fingerprint": "ollama:e:1024"},
-              "rerank": {"status": "ok", "provider": "auto", "model_dir": "/x", "available": True},
-              "vector_store": {"mode": "mysql"}, "ollama": {"reachable": True, "base_url": "u", "models": []}}
-        with mock.patch("app.ai.health.probe_all", return_value=ok):
-            body = health()
-        self.assertEqual(body["status"], "ok")
-        self.assertEqual(body["llm_provider"], "ollama")
-        self.assertIn("redis", body)
-        self.assertEqual(body["app"], settings.app_name)
+    def test_bind_and_read_back(self):
+        pid = self.make()["id"]
+        bound = svc.save_bindings(self.db, {
+            "chat": {"provider_id": pid, "model": "gpt-4o-mini"},
+            "embedding": {"provider_id": pid, "model": "text-embedding-3-small"},
+        })
+        self.assertTrue(bound["slots"]["chat"]["configured"])
+        self.assertEqual(bound["slots"]["chat"]["provider_name"], "我的供应商")
+        self.assertEqual(bound["slots"]["chat"]["model"], "gpt-4o-mini")
+        self.assertEqual(bound["slots"]["embedding"]["model"], "text-embedding-3-small")
 
-        degraded = {**ok, "embedding": {**ok["embedding"], "status": "down"}}
-        with mock.patch("app.ai.health.probe_all", return_value=degraded):
-            body = health()
-        self.assertEqual(body["status"], "degraded", "任一 AI 链路不可用都不能报 ok")
+    def test_binding_requires_provider_and_model(self):
+        pid = self.make()["id"]
+        with self.assertRaises(ResourceNotFoundException):
+            svc.save_bindings(self.db, {"chat": {"provider_id": 999, "model": "m"}})
+        with self.assertRaises(BusinessException) as ctx:
+            svc.save_bindings(self.db, {"chat": {"provider_id": pid, "model": "  "}})
+        self.assertIn("模型名", ctx.exception.message)
 
-    def test_health_ai_returns_full_structure(self):
-        from app.main import health_ai
+    def test_disabled_provider_cannot_be_bound(self):
+        pid = self.make(enabled=False)["id"]
+        with self.assertRaises(BusinessException) as ctx:
+            svc.save_bindings(self.db, {"chat": {"provider_id": pid, "model": "m"}})
+        self.assertIn("停用", ctx.exception.message)
 
-        payload = {"llm": {"status": "down", "provider": "unavailable", "model": "",
-                           "latency_ms": None, "detail": "x"},
-                   "embedding": {"status": "down", "provider": "unavailable", "model": "",
-                                 "latency_ms": None, "detail": "x", "dim": 0, "fingerprint": ""},
-                   "rerank": {"status": "down", "provider": "auto", "model_dir": "/x", "available": False},
-                   "vector_store": {"mode": "unknown"},
-                   "ollama": {"reachable": False, "base_url": "u", "models": []}}
-        with mock.patch("app.ai.health.probe_all", return_value=payload):
-            self.assertEqual(health_ai(), payload)
+    def test_global_switch_roundtrip(self):
+        bound = svc.save_bindings(self.db, {"enabled": False})
+        self.assertFalse(bound["enabled"])
+        self.assertFalse(svc.bindings(self.db)["enabled"])
+
+    def test_unbind_via_null_id(self):
+        pid = self.make()["id"]
+        svc.save_bindings(self.db, {"chat": {"provider_id": pid, "model": "m"}})
+        svc.save_bindings(self.db, {"chat": {"provider_id": None}})
+        self.assertIsNone(svc.bindings(self.db)["slots"]["chat"]["provider_id"])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class MigrateLegacyTest(ProviderTestBase):
+    """P10 的 16 个旧键必须在启动时折算成供应商行, 折算完即删除并保持幂等."""
+
+    def _legacy(self):
+        self.db.add_all([
+            SystemConfig(key="ai_llm_provider", value="openai"),
+            SystemConfig(key="ai_llm_base_url", value="https://api.example.com/v1"),
+            SystemConfig(key="ai_llm_api_key", value="sk-legacy-key-8888"),
+            SystemConfig(key="ai_llm_model", value="glm-4-plus"),
+            SystemConfig(key="ai_embedding_provider", value="openai"),
+            SystemConfig(key="ai_embedding_base_url", value="https://api.example.com/v1"),
+            SystemConfig(key="ai_embedding_api_key", value="sk-legacy-key-8888"),
+            SystemConfig(key="ai_embedding_model", value="embedding-3"),
+            SystemConfig(key="ai_embedding_dim", value="1024"),
+        ])
+        self.db.commit()
+
+    def test_migrates_and_removes_legacy_keys(self):
+        self._legacy()
+        self.assertTrue(svc.migrate_legacy_config(self.db))
+
+        rows = svc.list_providers(self.db)
+        self.assertEqual(len(rows), 1, "同一 Base URL + 同一 Key 的向量能力应复用会话供应商")
+        self.assertTrue(rows[0]["has_key"])
+        bound = svc.bindings(self.db)
+        self.assertEqual(bound["slots"]["chat"]["model"], "glm-4-plus")
+        self.assertEqual(bound["slots"]["embedding"]["model"], "embedding-3")
+        self.assertEqual(bound["embedding_dim"], 1024)
+        left = self.db.query(SystemConfig).filter(SystemConfig.key.in_(LEGACY_KEYS)).count()
+        self.assertEqual(left, 0, "旧键折算后必须删除, 否则下次启动会再折一遍")
+
+    def test_second_run_is_noop(self):
+        self._legacy()
+        self.assertTrue(svc.migrate_legacy_config(self.db))
+        self.assertFalse(svc.migrate_legacy_config(self.db), "幂等: 没有旧值就什么都不做")
+        self.assertEqual(len(svc.list_providers(self.db)), 1)
+
+    def test_kinds_are_closed_set(self):
+        self.assertEqual(set(KINDS), {"openai", "deepseek", "zhipu", "dashscope",
+                                      "moonshot", "ollama", "custom"})
