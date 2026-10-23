@@ -422,3 +422,41 @@ D1 cycle 归档、D2 学年切换取快照、D3 未答辩不得 completed、D4 C
 6. `AIUsageLog` 无 `status` 列, usage 日志仅写应用日志(P3 遗留①)。
 7. `selection` 的"名额满即 CLOSED"使提交路径只能靠 PUBLISHED 复核兜底(P2-B 遗留②)。
 
+
+## 19. 上传链路修复(白名单单源 / 配额单源 / 业务归属落库)
+
+### 19.1 实际故障(真库实测)
+
+| 现象 | 证据 |
+| --- | --- |
+| 演示视频整类材料永远传不上去 | 前端 `MaterialView.vue` 的 accept 写 `.mp4,.zip`, 后端 `POST /files/upload` 传 `b.mp4` 返回 `{"code":40010,"message":"不支持的文件类型: .mp4"}` |
+| 材料上传无视后台设置的单文件上限 | `material/router.py` 调 `read_upload(file)` 不传上限 → 走环境变量默认 50MB, 而系统设置里的 `max_upload_size_mb` 形同虚设 |
+| 材料上传可绕过日配额 | `/files/upload` 有 `max_upload_daily_mb` 校验, `/student/material/files` 完全没有 → 最常用的上传入口反而无配额 |
+| 配额统计跨时区漏计 | 材料写 `SysFile` 时不给 `created_at`, 落到 server_default(UTC), 与本机 `now()` 差 8 小时, 00:00–08:00 区间不计入当日已用 |
+| 业务归属"白传" | 前端 `api/business.ts` 往 FormData 塞 `business_type/business_id`, 后端签名不接收; `sys_file` 也没有这两列, 孤儿文件无从定位 |
+| 前端 accept 非法值 | `DESIGN`/`OTHER` 的 `accept="*"` 不是合法 HTML accept 值, 等于不限制 |
+
+### 19.2 修法
+
+1. **白名单分组 + 单源下发**: `shared/storage.py` 拆 `DOCUMENT/ARCHIVE/IMAGE/MEDIA_EXTENSIONS` 四组(并集即 `ALLOWED_EXTENSIONS`), 新增 `reject_unsupported()`(提示带允许类型) 与 `allowed_extensions_text()`; 故意不含 svg/html/js/exe/sh/bat 这类可渲染或可执行类型。
+2. **`GET /files/upload-policy`**: 返回 `{allowed_extensions, by_kind, max_upload_size_mb, max_upload_daily_mb}`, 前端 `accept` 与上传前校验全部据此生成, 前端不再维护扩展名清单。
+3. **`shared/upload_policy.py` 单源**: `max_upload_size_mb(db)`/`daily_limit_mb(db)` 读系统配置, `used_today(db,user_id)` 按本地日历日汇总, `ensure_daily_quota()` 超限抛 `UPLOAD_QUOTA_EXCEEDED=40013`, `normalize_business()` 规整归属。两个上传端点共用。
+4. **material 上传顺序修正**: 先"只读校验"(读流 → 单文件上限 → 日配额), 再 `sm.transition`(状态迁移), 最后落盘。配额不足时不会留下已迁移的草稿态。
+5. **`sys_file` 补业务归属列**(`business_type`/`business_id` + 两个索引), 迁移 `0003_sys_file_business_owner`; 材料上传未显式给 `business_id` 时回填材料 id。
+6. **前端** `MaterialView.vue`: `MATERIAL_TYPES` 改为"扩展名分组"(kinds), `accept` 由 `policy.by_kind` 拼出; 上传前 `precheck()` 校验扩展名与大小并给出具体原因; 页面显示"支持 N 种格式 / 单文件 ≤ X MB / 每日合计 ≤ Y MB"。
+
+### 19.3 验收
+
+| 套件 | 结果 |
+| --- | --- |
+| 真库 Alembic | `upgrade head` → 0003; `alembic check` = No new upgrade operations detected |
+| 全量 unittest | `Ran 398 tests / OK (skipped=2)`(新增 `tests/test_upload_policy.py` 15 例) |
+| 真库 smoke | 隔离库 `graduation_upload_smoke`+`REDIS_DB=7`+端口 8133: **168 通过 0 失败**(第 18 节新增 4 条: 策略形状 / mp4 在白名单 / 媒体上传回写归属 / svg 被拒 40010) |
+| 前端 | `build` 绿; `check:contract` **22 条**形状断言 PASS(新增 2 条: accept 由策略生成、上传前预校验); `verify:401` 34/34 |
+
+### 19.4 已知遗留
+
+1. 上传目录(`UPLOAD_DIR`)中途变更会使**历史文件全部 404**(`storage_path` 是相对路径, 但 base_dir 变了)。运维约束: 迁移目录必须整体搬移 `uploads/`。彻底解需要把绝对路径或对象存储 key 与 base_dir 解耦。
+2. `sys_file` 有了归属列, 但**孤儿清理任务**还没写(需按 `business_type is null and created_at < now()-7d` 定期清理)。
+3. 归档上传仍无学生入口: `create_archive` 是 `require_admin` 且要 `body.files` 的 `file_id`, 学生只能先 `/files/upload` 再交给管理员, 交互上不通。
+

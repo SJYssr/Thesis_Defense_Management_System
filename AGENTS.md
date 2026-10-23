@@ -22,6 +22,10 @@
    当前学年只读 `app/shared/cycle.get_active_cycle()`。不得另立口径。
 3. 列表接口一律"先过滤后分页"：用 `app/shared/query.paginate()`，keyword/日期条件下推 SQL。
 4. `ReviewRecord.student_id` 为 NOT NULL，无学生维度的实体走 `operation_log`。
+5. **上传口径只经 `app/shared/upload_policy.py` + `app/shared/storage.py`**：扩展名白名单、
+   单文件上限、日配额、业务归属全部单源；前端 `accept` 由 `GET /files/upload-policy` 生成，
+   不得在前端或某个 router 里另写扩展名清单 / 默认上限。新增上传入口必须复用
+   `read_upload(file, max_upload_size_mb(db))` + `ensure_daily_quota()`，且**先校验后迁移状态**。
 
 ## 四套验收（提交前全绿）
 
