@@ -674,6 +674,47 @@ const SHAPE_ASSERTIONS = [
     file: 'views/student/MaterialView.vue',
     must: [/function precheck\(/, /allowed_extensions\.includes\(ext\)/, /max_upload_size_mb/],
   },
+  // P9: 学生自助归档必须走学生端入口。管理员用的 POST /archive-packages 是 require_admin
+  // 且内部直接 approve → ARCHIVED, 学生拿它当提交入口会 40300 且绕过"待学院确认"这一环。
+  {
+    name: '学生归档提交走 /student/archive/packages(不拿管理员 /archive-packages create 当学生入口)',
+    files: ['api/defense.ts', 'views/student/MyArchive.vue'],
+    must: [
+      /\/student\/archive\/eligibility/,
+      /\/student\/archive\/packages/,
+      /archiveApi\.submitStudent\(/,
+      /archiveApi\.eligibility\(/,
+    ],
+    mustNot: [/archiveApi\.create\(/],
+  },
+  // P9: 归档上传与材料上传同一口径 —— accept 由 /files/upload-policy 下发, 上传前先 precheck。
+  // accept 一旦在前端写死清单, 后端白名单调整后该类文件就会永久传不上去(见 MaterialView 的历史 bug)。
+  {
+    name: '归档上传 accept 由 uploadApi.policy() 生成且上传前 precheck(与 MaterialView 同口径)',
+    file: 'views/student/MyArchive.vue',
+    must: [
+      /uploadApi\.policy\(\)/,
+      /acceptOf\(/,
+      /by_kind/,
+      /function precheck\(/,
+      /allowed_extensions\.includes\(ext\)/,
+      /max_upload_size_mb/,
+    ],
+    mustNot: [/accept: '\*'/, /accept: '\.pdf/, /accept: '\.mp4/],
+  },
+  // P9: 归档提交表单放弹窗, 不要常驻 aside 把列表宽度吃掉(与审核页/题目页同一处理方式)。
+  {
+    name: '归档提交用弹窗(无常驻 aside 表单)',
+    file: 'views/student/MyArchive.vue',
+    must: [/<el-dialog v-model="submitVisible"/, /destroy-on-close/],
+    mustNot: [/<aside/, /archive-form-panel/],
+  },
+  {
+    name: '管理端归档有待确认入口(学生提交后必须有人确认才能生效)',
+    file: 'views/admin/ArchiveAdmin.vue',
+    must: [/archiveApi\.approve\(/, /row\.status === 'PENDING'/, /value="PENDING"/],
+    mustNot: [/archiveApi\.create\(\s*\{\s*cycle_id: row/],
+  },
 ]
 
 function assertionSources(assertion) {

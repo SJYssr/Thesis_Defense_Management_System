@@ -1,5 +1,12 @@
 import request from './request'
-import type { ApiEnvelope, PageResult, StageTask, StageTaskVersion } from '@/types/api'
+import type {
+  ApiEnvelope,
+  ArchiveEligibility,
+  ArchiveSubmitPayload,
+  PageResult,
+  StageTask,
+  StageTaskVersion,
+} from '@/types/api'
 
 // ---------- 阶段任务(P1) ----------
 export const taskApi = {
@@ -75,9 +82,35 @@ export const rubricApi = {
 
 // ---------- 成果归档(P3) ----------
 export const archiveApi = {
-  search: (params: Record<string, unknown>) => request.get('/archive-packages', { params }),
+  /** GET /archive-packages: P9 起支持可选 status 查询参数(PENDING|ARCHIVED|REVOKED) */
+  search: (params: Record<string, unknown>) =>
+    request.get<unknown, ApiEnvelope<PageResult<Record<string, unknown>>>>('/archive-packages', { params }),
   detail: (id: number) => request.get(`/archive-packages/${id}`),
+  /**
+   * 管理员一次性提交归档(require_admin, 内部直接 approve → ARCHIVED)。
+   * 学生自助入口不要复用本方法, 走 submitStudent() —— 否则学生侧会拿到 40300。
+   */
   create: (data: Record<string, unknown>) => request.post('/archive-packages', data),
+  /**
+   * P9: 学生自助归档资格(require_student)。eligible=false 时 reason 是缺口说明;
+   * files 是可以挂进归档包的已上传文件(file_id → sys_file.id)。
+   */
+  eligibility: () => request.get<unknown, ApiEnvelope<ArchiveEligibility>>('/student/archive/eligibility'),
+  /**
+   * P9: 学生自助提交归档 → 落 PENDING「待学院确认」, 返回结构与 detail 同形。
+   * 落库后状态只能由 state_machine.transition(ARCHIVE, approve|revoke) 推进, 前端不得写 status。
+   */
+  submitStudent: (data: ArchiveSubmitPayload) =>
+    request.post<unknown, ApiEnvelope<Record<string, unknown>>>('/student/archive/packages', data),
+  /**
+   * P9: 学院确认归档 PENDING → ARCHIVED(require_admin)。
+   * 本批前端不出入口, 只保留方法供后续管理端页面接入。
+   */
+  approve: (id: number, comment?: string) =>
+    request.post<unknown, ApiEnvelope<Record<string, unknown>>>(
+      `/archive-packages/${id}/approve`,
+      comment ? { comment } : {},
+    ),
   grantConsent: (id: number, visibility: string) => request.post(`/archive-packages/${id}/consent`, { visibility }),
   revokeConsent: (id: number) => request.delete(`/archive-packages/${id}/consent`),
   revokePackage: (id: number) => request.post(`/archive-packages/${id}/revoke`),

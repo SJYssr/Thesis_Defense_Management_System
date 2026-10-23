@@ -161,3 +161,43 @@ export function clampPageSize(size?: number, fallback = 20): number {
   if (!Number.isFinite(value) || value < 1) return fallback
   return Math.min(Math.floor(value), PAGE_SIZE_MAX)
 }
+
+/** P9: 归档文件的业务用途(与后端 archive 的 file_role 取值一一对应, 前端不另立清单) */
+export type ArchiveFileRole = 'THESIS' | 'DESIGN' | 'SOURCE_CODE' | 'MANUAL' | 'VIDEO' | 'OTHER'
+
+/**
+ * P9: GET /student/archive/eligibility 的 files[] —— 该流程下「可以被挂进归档包」的已上传文件。
+ * file_id 是 sys_file.id, 提交时原样回填到 POST /student/archive/packages 的 files[].file_id。
+ */
+export interface ArchiveEligibleFile {
+  file_id: number
+  original_name: string
+  size: number
+  extension?: string | null
+  uploaded_at?: string | null
+}
+
+/**
+ * P9: GET /student/archive/eligibility 响应(P9-A 后端契约)。
+ * eligible=false 时 reason 是人话的缺口说明(如「毕业材料尚未审核通过」), 页面必须原样展示,
+ * 不要自己另拼一套条件文案 —— 判定口径只由后端 progress/material 汇总给出。
+ */
+export interface ArchiveEligibility {
+  eligible: boolean
+  reason: string | null
+  cycle_id: number | null
+  academic_year: string | null
+  /** 该流程已存在的归档包; 无则 null */
+  package_id: number | null
+  package_status: 'PENDING' | 'ARCHIVED' | 'REVOKED' | null
+  package_status_cn: string | null
+  files: ArchiveEligibleFile[]
+}
+
+/** P9: POST /student/archive/packages 请求体(至少 1 个文件, 由后端 min_length=1 兜底) */
+export interface ArchiveSubmitPayload {
+  title?: string
+  abstract?: string
+  keywords?: string
+  files: { file_id: number; file_role: ArchiveFileRole }[]
+}
