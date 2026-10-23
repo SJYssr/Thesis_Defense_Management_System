@@ -73,14 +73,7 @@ const menus = computed<MenuNode[]>(() => {
         { title: '教师信息', path: '/admin/users', query: { role: 'TEACHER' } },
         { title: '学生信息', path: '/admin/users', query: { role: 'STUDENT' } },
       ] },
-      {
-        title: '个人中心',
-        icon: 'gear',
-        children: [
-          { title: '个人信息', path: '/profile', query: { tab: 'info' } },
-          { title: '修改密码', path: '/profile', query: { tab: 'password' } },
-        ],
-      },
+      { title: '个人中心', icon: 'userbox', path: '/profile' },
       { title: '系统设置', icon: 'gear', path: '/admin/settings', chevron: true },
       { title: '学年配置', icon: 'gear', path: '/admin/academic-schedule', chevron: true },
       { title: 'Prompt 配置', icon: 'doc', path: '/admin/prompts', chevron: true },
@@ -123,6 +116,7 @@ const menus = computed<MenuNode[]>(() => {
     { title: 'PPT 大纲', icon: 'doc', path: '/student/ai-ppt' },
     { title: 'AI 知识准备', icon: 'spark', path: '/student/ai-knowledge' },
     { title: '知识问答', icon: 'spark', path: '/student/ai-chat' },
+    { title: '个人中心', icon: 'userbox', path: '/profile' },
   ]
 })
 
@@ -139,8 +133,7 @@ function syncViewport() {
 function isLeafActive(leaf: MenuLeaf) {
   if (route.path !== leaf.path) return false
   if (leaf.query?.role) return route.query.role === leaf.query.role
-  if (leaf.query?.tab) return (route.query.tab || 'password') === leaf.query.tab
-  return !route.query.role && !route.query.tab
+  return !route.query.role
 }
 
 function containingGroup(node: MenuNode) {
@@ -162,7 +155,7 @@ watch(
     if (!menusInitialized) {
       menusInitialized = true
       for (const node of menus.value) {
-        if (node.children && node.title !== '个人中心') expanded.value.add(node.title)
+        if (node.children) expanded.value.add(node.title)
       }
     }
     for (const node of menus.value) {
@@ -191,9 +184,6 @@ const pageTitle = computed(() => {
     const n = r === 'ADMIN' ? '管理员信息管理' : r === 'TEACHER' ? '教师信息管理' : '学生信息管理'
     return `毕业设计管理 / ${n}`
   }
-  if (route.path === '/profile') {
-    return route.query.tab === 'info' ? '个人中心 / 个人信息' : '个人中心 / 修改密码'
-  }
   if (route.meta.title) return String(route.meta.title)
   for (const node of menus.value) {
     if (node.path === route.path) return node.title
@@ -202,7 +192,6 @@ const pageTitle = computed(() => {
       if (leaf) return leaf.title
     }
   }
-  if (route.path === '/profile') return '个人中心'
   if (route.path === '/announcements') return '系统公告'
   return systemName.value
 })

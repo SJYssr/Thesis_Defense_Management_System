@@ -647,6 +647,20 @@ const SHAPE_ASSERTIONS = [
     must: [/<el-dialog v-model="formVisible"/],
     mustNot: [/<aside class="topic-form-panel">/],
   },
+  // 个人中心: 侧栏必须是单层直链, 不能再出现"个人信息/修改密码"二级分组
+  {
+    name: '个人中心是侧栏单层直链(无个人信息/修改密码二级分组)',
+    file: 'layouts/DefaultLayout.vue',
+    must: [/\{ title: '个人中心', icon: 'userbox', path: '\/profile' \}/],
+    mustNot: [/title: '个人信息', path: '\/profile'/, /title: '修改密码', path: '\/profile'/],
+  },
+  // 个人中心表单宽度必须自适应: 固定 560px + 96px 标签 + 64px 内边距 = 720px 最小需求, 窄容器会顶出卡片
+  {
+    name: '个人中心表单宽度自适应(不写固定像素宽)',
+    file: 'views/common/ProfileView.vue',
+    must: [/\.pwd-form :deep\(\.el-input\) \{\s*width: 100%;/, /max-width: 560px/, /@media \(max-width: 1024px\)/],
+    mustNot: [/width: 560px;\s*flex-shrink: 0;/, /flex: 0 0 560px;/, /white-space: nowrap/],
+  },
 ]
 
 function assertionSources(assertion) {

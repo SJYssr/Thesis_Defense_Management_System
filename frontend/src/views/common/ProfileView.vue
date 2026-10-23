@@ -132,7 +132,8 @@ const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 
-const tab = computed(() => (route.query.tab === 'info' ? 'info' : 'password'))
+/** 默认展示"个人信息"; 只有显式 tab=password 才切到改密页(登录页强制改密会用这个参数) */
+const tab = computed(() => (route.query.tab === 'password' ? 'password' : 'info'))
 /** P1-B: must_change_password 来自 /auth/me(profile)，只提示不强制拦截 */
 const mustChangePassword = computed(() => userStore.mustChangePassword)
 
@@ -305,6 +306,7 @@ onMounted(load)
   box-shadow: 0 1px 4px rgba(15, 46, 93, 0.06);
   padding: 24px 32px;
   height: 100%;
+  box-sizing: border-box;
 }
 .panel-head {
   display: flex;
@@ -347,19 +349,24 @@ onMounted(load)
   font-size: 13.5px;
   color: #3b4a5f;
 }
+/* 宽度必须自适应: 固定 560px + 96px 标签 + 32px*2 内边距 = 720px 最小需求,
+   容器不足时不收缩就会顶出卡片 */
 .pwd-form :deep(.el-input) {
-  width: 560px;
-  flex-shrink: 0;
+  width: 100%;
+  max-width: 560px;
 }
 .pwd-form :deep(.el-form-item__content) {
+  flex: 1 1 auto;
+  min-width: 0;
   flex-wrap: wrap;
 }
 .pwd-tip {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 0 0 560px;
+  flex: 1 1 560px;
   max-width: 560px;
+  min-width: 0;
   box-sizing: border-box;
   margin-top: 8px;
   padding: 7px 12px;
@@ -374,7 +381,8 @@ onMounted(load)
   flex-shrink: 0;
 }
 .pwd-tip span {
-  white-space: nowrap;
+  white-space: normal;
+  line-height: 1.5;
 }
 
 .panel-actions {
@@ -386,5 +394,52 @@ onMounted(load)
 .ghost-btn {
   border: 1px solid #dcdfe6;
   color: #3b4a5f;
+}
+
+@media (max-width: 1200px) {
+  .side-col {
+    width: 260px;
+  }
+}
+@media (max-width: 1024px) {
+  .profile-page {
+    flex-direction: column;
+    min-height: 0;
+  }
+  .side-col {
+    width: 100%;
+    flex-direction: row;
+    align-items: stretch;
+  }
+  .profile-card {
+    flex-shrink: 0;
+  }
+  .nav-card {
+    flex: 1;
+  }
+  .panel-card {
+    height: auto;
+  }
+  /* 标签上置: 窄屏保留 96px 左标签会把输入框压成一条 */
+  .pwd-form :deep(.el-form-item) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pwd-form :deep(.el-form-item__label) {
+    width: auto !important;
+    padding: 0 0 6px;
+    text-align: left;
+    line-height: 1.4;
+  }
+  .pwd-form :deep(.el-input) {
+    max-width: none;
+  }
+  .pwd-tip {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+  .panel-actions {
+    padding-left: 0;
+  }
 }
 </style>
