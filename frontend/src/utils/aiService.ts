@@ -1,19 +1,30 @@
 /**
- * AI 服务与 Agent 问答的展示工具(单源, 避免各页面各写一套)。
+ * AI 相关展示工具 + AI 管理端接口封装(单源, 避免各页面各写一套)。
  *
- * 三块内容:
- * 1. Agent 多步问答: `step.kind` 的中文徽标与配色、文案截断、来源文档类型中文名;
- * 2. 系统配置: `/admin/system-configs` 的裸值归一化 + "只提交变化字段"的差异计算。
- *    密钥类字段后端只回掩码(`***abcd` 或空串)并额外给 `has_keys`, 前端绝不回传掩码 ——
- *    判定逻辑集中在这里, 页面不重复实现;
- * 3. 健康检查: `/health` 与 `/health/ai` 的状态着色、摘要、修复指引与可用性提示。
+ * 四块内容:
+ * 1. Agent 多步问答: step.kind 的中文徽标与配色、文案截断、来源文档类型中文名;
+ * 2. 系统配置读取: /admin/system-configs 的裸值归一化(只管非 AI 字段, 如上传上限);
+ * 3. 健康检查: /health 与 /health/ai 的状态着色、摘要、修复指引与可用性提示;
+ * 4. AI 管理端: 供应商(预设/列表)与三个能力位绑定的类型 + api 封装。
  *
  * 为什么单独成文件: AiChat(学生端展示过程) 与 SystemSettings(管理员配置+健康检查)
- * 需要同一套判定; 写两份必然分叉 —— 例如把 `***abcd` 当成新 API Key 回传, 或把
- * `not_configured` 渲染成"正常"。
+ * 需要同一套判定; 写两份必然分叉 —— 例如把 ***abcd 当成已配置密钥再回传, 或把
+ * not_configured 渲染成"正常"。
+ *
+ * 为什么没有"三组 AI 配置键"了: AI 配置的唯一来源是数据库里的 ai_provider 表 +
+ * 能力绑定键, 唯一解析入口是后端 resolve_ai_config()。前端只经 /admin/ai/providers
+ * 与 /admin/ai/bindings 读写 —— 不再用 PUT /admin/system-configs 写 ai_ 前缀的
+ * 提供商/模型键, 那条口径连同 16 个旧键已被后端删除。
  */
+import request from '@/api/request'
 import { extractBackendMessage, resolveErrorMessage } from '@/utils/error'
-import type { AiChatStep, AiCitationSource, AiHasKeys, AiHealthBlock, AiHealthSnapshot } from '@/types/api'
+import type {
+  AiChatStep,
+  AiCitationSource,
+  AiHealthBlock,
+  AiHealthSnapshot,
+  ApiEnvelope,
+} from '@/types/api'
 
 /** 文档类型中文名(与后端 AIDocumentType 枚举一一对应; AiChat 引用来源展示用) */
 export const DOCUMENT_TYPE_CN: Record<string, string> = {
@@ -63,52 +74,15 @@ export function citationLine(source: AiCitationSource, max = 160): { meta: strin
   return { meta, body: truncate(source?.content, max) }
 }
 
-/** ------------------------------------------------------------ 系统配置(归一化 + 差异) */
-
-export interface AiServiceMeta {
-  id: 'llm' | 'embedding' | 'rerank'
-  label: string
-  /** 该组密钥的 sysconfig 键名(后端 SECRET_FIELDS) */
-  secretKey: string
-}
-
-/** 三组 AI 服务: 与后端 sysconfig FIELDS 的 ai_ 前缀项一一对应 */
-export const AI_SERVICES: AiServiceMeta[] = [
-  { id: 'llm', label: '大模型 (LLM)', secretKey: 'ai_llm_api_key' },
-  { id: 'embedding', label: '向量模型 (Embedding)', secretKey: 'ai_embedding_api_key' },
-  { id: 'rerank', label: '重排模型 (Rerank)', secretKey: 'ai_rerank_api_key' },
-]
-
-/** 界面会写回的 ai_ 配置键(顺序即表单顺序; 新增字段先加后端 FIELDS 再加这里) */
-export const AI_CONFIG_KEYS: string[] = [
-  'ai_llm_enabled', 'ai_llm_provider', 'ai_llm_base_url', 'ai_llm_api_key', 'ai_llm_model',
-  'ai_embedding_enabled', 'ai_embedding_provider', 'ai_embedding_base_url', 'ai_embedding_api_key',
-  'ai_embedding_model', 'ai_embedding_dim',
-  'ai_rerank_enabled', 'ai_rerank_provider', 'ai_rerank_base_url', 'ai_rerank_api_key',
-  'ai_rerank_model', 'ai_rerank_model_dir',
-]
-
-export function isSecretKey(key: string): boolean {
-  return AI_SERVICES.some((svc) => svc.secretKey === key)
-}
-
-/**
- * 后端 mask_secret 的输出: 空串=未配置, `***xxxx`/`***`=已配置但没有明文。
- * 只要以 `*` 开头就按掩码处理 —— 任何情况下都不把它当新密钥提交。
- */
-export function isMaskedValue(value: unknown): boolean {
-  return /^\*+/.test(String(value ?? '').trim())
-}
-
-/** 该段是否已配置密钥(掩码本身即表示"有值") */
-export function looksConfigured(value: unknown): boolean {
-  return String(value ?? '').trim().length > 0
-}
+/** ------------------------------------------------------------ 系统配置(归一化) */
 
 /**
  * 从 GET /admin/system-configs 的任意常见形状里抽出 key -> value。
  * 后端当前返回数组, 目标形态是数组 + 同级的 has_keys; 同时兼容 {items|configs|list|values}
- * 与 `{code,message,data}` 信封 —— 后端形态一旦再调整, 页面不需要跟着改。
+ * 与 {code,message,data} 信封 —— 后端形态一旦再调整, 页面不需要跟着改。
+ *
+ * 只服务本页的非 AI 字段(系统名称/上传上限/调用频率)。AI 供应商与模型绑定不在这里,
+ * 见文件末尾的 aiAdminApi。
  */
 export function normalizeConfigValues(body: unknown): Record<string, string> {
   const out: Record<string, string> = {}
@@ -145,85 +119,13 @@ export function normalizeConfigValues(body: unknown): Record<string, string> {
     // 用"键名有已知前缀"判断, 避免把 {code, message} 这类信封误当配置值。
     const entries = Object.entries(obj)
     const looksLikeConfig = entries.length > 0 && entries.every(([key, value]) =>
-      /^(system_|school_|ai_|max_)/.test(key) && (value === null || typeof value !== 'object'))
+      /^(system_|school_|ai_defense|ai_rate|max_)/.test(key) && (value === null || typeof value !== 'object'))
     if (looksLikeConfig) {
       for (const [key, value] of entries) out[key] = value == null ? '' : String(value)
       return out
     }
   }
   return out
-}
-
-/** 读出 has_keys(键名可能是服务名 llm/embedding/rerank, 也可能是 api_key 字段名) */
-export function extractHasKeys(body: unknown): Partial<AiHasKeys> {
-  const found: Partial<AiHasKeys> = {}
-  const candidates: unknown[] = [body]
-  if (body && typeof body === 'object' && !Array.isArray(body)) {
-    const obj = body as Record<string, unknown>
-    if (obj.data) candidates.push(obj.data)
-  }
-  for (const node of candidates) {
-    if (!node || typeof node !== 'object' || Array.isArray(node)) continue
-    const raw = (node as Record<string, unknown>).has_keys
-    if (!raw || typeof raw !== 'object') continue
-    const source = raw as Record<string, unknown>
-    for (const svc of AI_SERVICES) {
-      if (typeof found[svc.id] === 'boolean') continue
-      const short = source[svc.id]
-      const long = source[svc.secretKey]
-      if (typeof short === 'boolean') found[svc.id] = short
-      else if (typeof long === 'boolean') found[svc.id] = long
-    }
-  }
-  return found
-}
-
-/**
- * 三组"是否已配置密钥": 优先用后端下发的 has_keys, 缺失时退回掩码/非空判定。
- * 两者都要, 因为后端尚未返回 has_keys 时页面不能把"已配置"显示成"未配置"。
- */
-export function resolveHasKeys(values: Record<string, string>, explicit?: Partial<AiHasKeys> | null): AiHasKeys {
-  const out: AiHasKeys = { llm: false, embedding: false, rerank: false }
-  for (const svc of AI_SERVICES) {
-    const flag = explicit?.[svc.id]
-    out[svc.id] = typeof flag === 'boolean' ? flag : looksConfigured(values[svc.secretKey])
-  }
-  return out
-}
-
-export interface AiConfigChangeSet {
-  /** 只有真正变化的字段(未修改的 api_key 绝不出现) */
-  items: Record<string, string>
-  /** 被跳过的密钥字段: 空值(未修改)或掩码(后端回显) */
-  skippedSecrets: string[]
-}
-
-/**
- * 只提交发生变化的字段。
- * 密钥三类跳过: 空值 = 不修改; 掩码 = 后端回显; 与基线相同 = 没动过。
- * 清空密钥不通过前端提交(那会把"未配置"和"没改"混成一次误操作)。
- */
-export function collectAiConfigChanges(
-  current: Record<string, string>,
-  baseline: Record<string, string>,
-): AiConfigChangeSet {
-  const items: Record<string, string> = {}
-  const skippedSecrets: string[] = []
-  for (const key of AI_CONFIG_KEYS) {
-    const next = String(current[key] ?? '').trim()
-    const before = String(baseline[key] ?? '').trim()
-    if (isSecretKey(key)) {
-      if (!next || isMaskedValue(next) || next === before) {
-        skippedSecrets.push(key)
-        continue
-      }
-      items[key] = next
-      continue
-    }
-    if (next === before) continue
-    items[key] = next
-  }
-  return { items, skippedSecrets }
 }
 
 /** ------------------------------------------------------------ 健康检查 */
@@ -298,7 +200,7 @@ export interface AiHealthRow {
   detail: string
 }
 
-/** 五段探针 -> 表格行(测试连接按钮与状态带共用) */
+/** 五段探针 -> 表格行(状态带与测试连接按钮共用) */
 export function healthRows(health?: AiHealthSnapshot | null): AiHealthRow[] {
   return AI_HEALTH_SECTIONS.map((section) => {
     const block = health ? health[section.key] : null
@@ -323,7 +225,7 @@ export function healthIssueDetail(health?: AiHealthSnapshot | null): string {
 
 /**
  * 未配置/降级时的修复指引。not_configured 是"还没填", 不是故障 —— 文案要能直接照做:
- * 指到本页的 AI 服务卡片, 并点明换向量模型要重建知识库。
+ * 指到本页的供应商与绑定区, 并点明换向量模型要重建知识库。
  */
 export function aiHealthFixHint(health?: AiHealthSnapshot | null): string {
   const rows = healthRows(health)
@@ -333,11 +235,12 @@ export function aiHealthFixHint(health?: AiHealthSnapshot | null): string {
   const names = broken.map((row) => row.label).join(' / ')
   const unconfigured = broken.some((row) => row.status === 'not_configured')
   if (unconfigured) {
-    return '修复指引: 在下方「AI 服务」卡片为 ' + names
-      + ' 填写 Base URL / API Key / 模型名后保存(保存即生效, 无需重启); '
+    return '修复指引: 在下方「供应商」添加一个供应商(填 Base URL 与 API Key)并点「刷新模型」, '
+      + '再到「能力绑定」把 ' + names + ' 指向该供应商与具体模型名; 保存即生效, 无需重启。'
       + '使用本地模型时确认 Ollama 端口可达; 更换向量模型或维度后需要在知识库页重建索引。'
   }
-  return '排查指引: ' + names + ' 已配置但探测失败, 先核对 Base URL 与 Key 是否有效、模型名是否存在, 再保存重试。'
+  return '排查指引: ' + names + ' 已绑定但探测失败, 先核对供应商的 Base URL 与 Key 是否有效、模型名是否存在, '
+    + '再点该供应商的「刷新模型」重试。'
 }
 
 /** 学生端可用性提示: 未配置或降级必须可见, 不允许静默 */
@@ -372,4 +275,173 @@ export function describeRequestError(error: unknown): string {
     return resolveErrorMessage(code, backendMessage, err?.response?.status ?? null)
   }
   return resolveErrorMessage(null, err?.message ?? null, err?.response?.status ?? null)
+}
+
+/** ------------------------------------------------------------ AI 管理端(供应商 + 能力绑定) */
+
+/** GET /admin/ai/presets 一条: 代码内置预设(不是环境变量), 选中即填好 Base URL */
+export interface AiPreset {
+  kind: string
+  label: string
+  base_url: string
+  /** false = 该供应商不需要 Key(本地 ollama) */
+  needs_key: boolean
+  /** 推荐模型名: 绑定区的模型下拉在"还没拉过真实清单"时用它兜底 */
+  models: string[]
+  note: string
+}
+
+/** kind -> 中文标签; 后端 KINDS 是封闭集合, 未知 kind 原样显示 */
+export const PROVIDER_KIND_LABEL: Record<string, string> = {
+  openai: 'OpenAI 兼容',
+  deepseek: 'DeepSeek',
+  zhipu: '智谱 GLM',
+  dashscope: '阿里云百炼',
+  moonshot: 'Moonshot',
+  ollama: '本地 Ollama',
+  custom: '自定义',
+}
+
+export function providerKindLabel(kind?: string | null): string {
+  const key = String(kind ?? '').trim().toLowerCase()
+  if (!key) return '未知类型'
+  return PROVIDER_KIND_LABEL[key] ?? key
+}
+
+/**
+ * GET /admin/ai/providers 一条。永不含明文密钥: 只有 has_key 与后四位 key_hint。
+ * cipher_broken=true 表示库里存着密文但当前 secret_key 解不开(换过密钥) —— 必须显式提示,
+ * 否则管理员会看到"有 Key 但一直 401"。
+ */
+export interface AiProvider {
+  id: number
+  name: string
+  kind: string
+  base_url: string
+  openai_base_url: string
+  enabled: boolean
+  has_key: boolean
+  key_hint: string
+  cipher_broken: boolean
+  models: string[]
+  models_refreshed_at: string | null
+  last_status: string | null
+  last_detail: string | null
+  last_probe_at: string | null
+}
+
+/** POST /providers/{id}/refresh 与 /test 的同形返回(连接失败也 code=0) */
+export interface AiProbeResult {
+  status: 'ok' | 'down' | 'unauthorized' | string
+  detail: string
+  models: string[]
+  latency_ms: number | null
+  provider: AiProvider
+}
+
+/** 探测状态 -> el-tag 配色: ok=success / unauthorized=warning / down=danger */
+export function providerStatusMeta(status?: string | null): { type: TagType; label: string } {
+  switch (String(status ?? '').trim().toLowerCase()) {
+    case 'ok': return { type: 'success', label: '可用' }
+    case 'unauthorized': return { type: 'warning', label: '鉴权失败' }
+    case 'down': return { type: 'danger', label: '不可用' }
+    default: return { type: 'info', label: '未探测' }
+  }
+}
+
+/**
+ * 一个能力位(会话/向量/精排)的绑定。
+ * broken=true 表示供应商被删/停用 —— 页面必须显式提示, 不能静默当"未配置"。
+ */
+export interface AiBindingSlot {
+  label: string
+  provider_id: number | null
+  provider_name: string
+  model: string
+  configured: boolean
+  broken: boolean
+  provider_enabled: boolean
+}
+
+export type AiSlotKey = 'chat' | 'embedding' | 'rerank'
+
+/** GET /admin/ai/bindings 与 PUT 的同形返回 */
+export interface AiBindings {
+  enabled: boolean
+  embedding_dim: number | null
+  slots: Record<AiSlotKey, AiBindingSlot>
+}
+
+/** GET /admin/ai/overview: 供应商列表 + 绑定 + 三个能力位的真实探测结果 */
+export interface AiOverview extends AiBindings {
+  providers: AiProvider[]
+  /** 后端当前字段名是 probe(probe_all 的输出); health 是同义的兼容名, 两者取其一 */
+  probe?: AiHealthSnapshot
+  health?: AiHealthSnapshot
+  needs_reindex: boolean
+}
+
+/** overview 里探针段的取值(兼容 probe / health 两种字段名) */
+export function overviewProbe(overview?: AiOverview | null): AiHealthSnapshot | null {
+  if (!overview) return null
+  return overview.probe ?? overview.health ?? null
+}
+
+/** POST /admin/ai/providers 的请求体 */
+export interface AiProviderCreate {
+  name: string
+  kind: string
+  base_url: string
+  api_key?: string
+  enabled: boolean
+}
+
+/**
+ * PUT /admin/ai/providers/{id} 的请求体(任意子集)。
+ * 密钥三态: 不传/空串 = 不修改; 填新值 = 覆盖; clear_key=true = 清空。
+ */
+export interface AiProviderUpdate {
+  name?: string
+  kind?: string
+  base_url?: string
+  api_key?: string
+  clear_key?: boolean
+  enabled?: boolean
+}
+
+/**
+ * PUT /admin/ai/bindings 的请求体。
+ * provider_id 与 model 缺一不可(只传一个后端直接 400); provider_id=null 表示解除该能力位绑定。
+ */
+export interface AiBindingsUpdate {
+  enabled?: boolean
+  chat?: { provider_id: number | null; model?: string | null } | null
+  embedding?: { provider_id: number | null; model?: string | null } | null
+  rerank?: { provider_id: number | null; model?: string | null } | null
+}
+
+/**
+ * AI 管理端接口(全部需要管理员令牌, /api/v1 前缀已由 request.ts 带上)。
+ * 只走这四个端点: presets / providers / bindings / overview —— 页面不再拼任何
+ * ai_ 前缀的配置键, 也不再 PUT /admin/system-configs。
+ */
+export const aiAdminApi = {
+  presets: () => request.get<unknown, ApiEnvelope<AiPreset[]>>('/admin/ai/presets'),
+  providers: () => request.get<unknown, ApiEnvelope<AiProvider[]>>('/admin/ai/providers'),
+  createProvider: (data: AiProviderCreate) =>
+    request.post<unknown, ApiEnvelope<AiProvider>>('/admin/ai/providers', data),
+  updateProvider: (id: number, data: AiProviderUpdate) =>
+    request.put<unknown, ApiEnvelope<AiProvider>>(`/admin/ai/providers/${id}`, data),
+  /** 被绑定或不存在时后端 400, message 是中文原因 —— 直接展示给管理员 */
+  deleteProvider: (id: number) =>
+    request.delete<unknown, ApiEnvelope<{ deleted: number }>>(`/admin/ai/providers/${id}`),
+  /** 拉模型清单: 同时验证 Base URL / Key / 网络, 结果落库 */
+  refreshModels: (id: number) =>
+    request.post<unknown, ApiEnvelope<AiProbeResult>>(`/admin/ai/providers/${id}/refresh`),
+  testProvider: (id: number) =>
+    request.post<unknown, ApiEnvelope<AiProbeResult>>(`/admin/ai/providers/${id}/test`),
+  bindings: () => request.get<unknown, ApiEnvelope<AiBindings>>('/admin/ai/bindings'),
+  saveBindings: (data: AiBindingsUpdate) =>
+    request.put<unknown, ApiEnvelope<AiBindings>>('/admin/ai/bindings', data),
+  overview: () => request.get<unknown, ApiEnvelope<AiOverview>>('/admin/ai/overview'),
 }

@@ -737,46 +737,82 @@ const SHAPE_ASSERTIONS = [
     file: 'views/student/AiChat.vue',
     must: [/const agentEnabled = ref\(true\)/, /agent: agentEnabled\.value/],
   },
-  // P10: 管理员要能在界面填第三方 OpenAI 兼容服务的 Key —— 三组键必须真的绑定到表单,
-  // 且 Key 输入是 password(明文展示等于把密钥贴到屏幕上), 掩码由 placeholder 说明。
+  // P11: AI 配置已从"三组环境变量式输入框"改成"供应商 + 能力绑定"。旧键(ai_llm_* / ai_embedding_* /
+  // ai_rerank_*)在后端彻底删除, 前端只要有一个页面还在读写它们, 就是"管理端改了不生效"的回归,
+  // 所以这里既断言新接口被用上, 也断言旧键在 AI 相关前端源码里彻底消失。
   {
-    name: '系统设置含 AI 服务表单(三组键齐全, api_key 用 password 且不回显明文)',
+    name: 'AI 管理全部走 /admin/ai/{presets,providers,bindings,overview}(不再有三组环境变量输入框)',
+    files: ['utils/aiService.ts'],
+    must: [
+      /request\.get<unknown, ApiEnvelope<AiPreset\[\]>>\('\/admin\/ai\/presets'\)/,
+      /request\.get<unknown, ApiEnvelope<AiProvider\[\]>>\('\/admin\/ai\/providers'\)/,
+      /request\.post<unknown, ApiEnvelope<AiProvider>>\('\/admin\/ai\/providers', data\)/,
+      /request\.get<unknown, ApiEnvelope<AiBindings>>\('\/admin\/ai\/bindings'\)/,
+      /request\.put<unknown, ApiEnvelope<AiBindings>>\('\/admin\/ai\/bindings', data\)/,
+      /request\.get<unknown, ApiEnvelope<AiOverview>>\('\/admin\/ai\/overview'\)/,
+      /\/providers\/\$\{id\}\/refresh/,
+      /\/providers\/\$\{id\}\/test/,
+      /clear_key\?: boolean/,
+      /deleteProvider/,
+    ],
+    // 旧键与旧封装一律不许回到 AI 相关前端源码
+    mustNot: [/ai_llm_/, /ai_embedding_/, /ai_rerank_/],
+  },
+  {
+    name: '系统设置 AI 区: 供应商卡片 + 三个能力位 + 密钥只写不读',
     file: 'views/admin/SystemSettings.vue',
     must: [
-      /ai_llm_base_url/,
-      /ai_llm_api_key/,
-      /ai_embedding_dim/,
-      /ai_rerank_model_dir/,
+      // 三个能力位的 key 必须与后端 SLOT_KEYS 一致, 否则绑定保存会 400
+      /\{ key: 'chat', label: '会话模型'/,
+      /\{ key: 'embedding', label: '向量模型'/,
+      /\{ key: 'rerank', label: '精排模型'/,
+      // 供应商卡片: kind 中文标签 + 最近探测状态 + 刷新模型 + 删除确认
+      /providerKindLabel\(row\.kind\)/,
+      /providerStatusMeta\(row\.last_status\)/,
+      /aiAdminApi\.refreshModels\(row\.id\)/,
+      /ElMessageBox\.confirm\(/,
+      // 密钥只写不读: password + 掩码 placeholder + 显式清空勾选
       /type="password"/,
       /show-password/,
-      /已配置\(保存后覆盖\)/,
+      /留空不修改/,
+      /editor\.clear_key/,
+      // 状态带: 总开关 + 五盏灯 + 向量维度/重建索引提示
+      /healthRows\(probe\.value\)/,
+      /aiHealthFixHint\(probe\.value\)/,
+      /needs_reindex/,
+      /embeddingDim/,
     ],
-    mustNot: [/console\.(log|info|debug)\([^\n]*ai_/],
+    // 旧表单的三组输入框必须彻底消失, 否则会与 /admin/ai/bindings 形成两份互相覆盖的口径
+    mustNot: [/ai_llm_/, /ai_embedding_/, /ai_rerank_/, /collectAiConfigChanges/, /isMaskedValue\(/],
   },
-  // P10: 密钥字段后端只回掩码。把整张表单(含掩码)提交回去, 轻则被后端当"不修改"忽略,
-  // 重则把 ***abcd 写进库。保存必须只提交变化项, 且掩码/空值一律跳过。
   {
-    name: '系统设置保存只提交变化字段(未修改/掩码/空的 api_key 不进请求体)',
-    files: ['views/admin/SystemSettings.vue', 'utils/aiService.ts'],
-    must: [
-      /collectAiConfigChanges\(aiForm, aiBaseline\.value\)/,
-      /isMaskedValue\(/,
-      /skippedSecrets/,
-      /if \(!next \|\| isMaskedValue\(next\) \|\| next === before\)/,
-      /MAX_ITEMS_PER_PUT/,
-    ],
-    mustNot: [/items\[key\] = String\(value\)/],
-  },
-  // P10: 未配置/降级不许静默 —— 页头状态带 + 逐段探针必须都在界面上。
-  {
-    name: '系统设置页头状态带与测试连接(未配置/降级必须可见)',
+    name: '绑定保存只提交变化的能力位(provider_id 与 model 缺一不可)',
     file: 'views/admin/SystemSettings.vue',
     must: [
-      /尚未配置 AI 服务, AI 问答暂不可用/,
-      /AI 服务异常/,
-      /healthApi\.ai\(\)/,
-      /testConnection/,
-      /:loading="testing"/,
+      /const payload: AiBindingsUpdate = \{\}/,
+      /if \(same\) continue/,
+      /if \(providerId && !model\)/,
+      /payload\[meta\.key\] = \{ provider_id: providerId, model: providerId \? model : null \}/,
+      /aiAdminApi\.saveBindings\(payload\)/,
+    ],
+  },
+  {
+    name: 'AI 相关前端源码不再出现旧配置键(回归守卫)',
+    files: [
+      'views/admin/SystemSettings.vue',
+      'utils/aiService.ts',
+      'api/common.ts',
+      'views/student/AiChat.vue',
+    ],
+    // 至少有一处真的在用新绑定接口, 否则本断言会因为"文件里什么都没有"而空转通过
+    must: [/admin\/ai\/bindings/, /admin\/ai\/providers/],
+    mustNot: [
+      /ai_llm_/,
+      /ai_embedding_/,
+      /ai_rerank_/,
+      /llm_model_effective/,
+      /llm_openai_mode/,
+      /aiModelInfo/,
     ],
   },
 ]

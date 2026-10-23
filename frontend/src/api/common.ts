@@ -127,7 +127,6 @@ export const sysConfigApi = {
    * 所以调用方只能提交真正变化的字段, 不能把整张表单全量塞进来。
    */
   update: (items: Record<string, string>) => request.put('/admin/system-configs', { items }),
-  aiModelInfo: () => request.get('/admin/ai-model-info'),
 }
 
 /**
