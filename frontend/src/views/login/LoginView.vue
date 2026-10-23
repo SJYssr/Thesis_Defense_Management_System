@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { authApi } from '@/api/auth'
 import { roleHome } from '@/utils/token'
 import { useUserStore } from '@/stores/user'
-import { loadPublicConfig, systemName } from '@/stores/app'
+import { loadPublicConfig, schoolName, systemName } from '@/stores/app'
 import { MEDIA } from '@/config/media'
 
 const router = useRouter()
@@ -121,7 +121,8 @@ async function handleLogin() {
           <i class="card-cap"><svg viewBox="0 0 24 24" fill="currentColor" v-html="CAP_ICON" /></i>
           <div>
             <div class="card-title">{{ systemName }}</div>
-            <div class="card-sub">欢迎登录系统</div>
+            <!-- 学校名称来自系统设置; 未填写时退回通用文案, 不留空白行 -->
+            <div class="card-sub">{{ schoolName || '欢迎登录系统' }}</div>
           </div>
         </div>
 

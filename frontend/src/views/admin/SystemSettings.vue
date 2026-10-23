@@ -405,6 +405,11 @@ async function load(): Promise<void> {
 }
 
 async function save(): Promise<void> {
+  // 系统名称是侧栏/登录页/浏览器标题的唯一来源, 空值保存等于把界面清空(后端同样会 40001)
+  if (!String(form.system_name ?? '').trim()) {
+    ElMessage.warning('系统名称不能为空')
+    return
+  }
   saving.value = true
   try {
     // 只提交发生变化的字段: 后端对未知 key 整体拒绝(40001), 全量提交必然踩雷

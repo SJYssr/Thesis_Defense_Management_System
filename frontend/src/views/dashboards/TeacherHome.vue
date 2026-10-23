@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { useUserStore } from '@/stores/user'
 import { dashboardApi } from '@/api/common'
+import { systemName } from '@/stores/app'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -136,7 +137,7 @@ onBeforeUnmount(() => {
     <div class="banner">
       <div class="banner-text">
         <h1>{{ greeting }}，{{ teacherName }}!</h1>
-        <p>欢迎使用毕业设计管理系统，祝您工作顺利！</p>
+        <p>欢迎使用{{ systemName }}，祝您工作顺利！</p>
       </div>
       <!-- 提示板插画 -->
       <svg class="banner-illus" viewBox="0 0 420 130" preserveAspectRatio="xMaxYMax meet" aria-hidden="true">

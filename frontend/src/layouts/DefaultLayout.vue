@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
-import { loadPublicConfig, systemName } from '@/stores/app'
+import { aiEnabled, loadPublicConfig, schoolName, systemName } from '@/stores/app'
 import { notificationApi } from '@/api/common'
 
 const router = useRouter()
@@ -40,9 +40,33 @@ interface MenuNode {
   children?: MenuLeaf[]
 }
 
+/**
+ * 关闭 AI 后要隐藏的入口: 只收录"点进去就会真正调模型"的页面。
+ * 「答辩报告」(/student/ai-report)读的是历史记录、「AI 调用日志」是运维审计,
+ * 关掉 AI 后仍应有据可查, 所以不在这张表里。
+ */
+const AI_ONLY_PATHS = new Set([
+  '/teacher/ai-progress',
+  '/student/ai-defense',
+  '/student/ai-ppt',
+  '/student/ai-knowledge',
+  '/student/ai-chat',
+])
+
+/** 系统设置里关掉 AI 时, 把菜单里的 AI 入口收敛掉, 避免"看得见、点进去 40300"。 */
+function withoutAiEntries(nodes: MenuNode[]): MenuNode[] {
+  if (aiEnabled.value) return nodes
+  return nodes
+    .map((node) => (node.children
+      ? { ...node, children: node.children.filter((leaf) => !AI_ONLY_PATHS.has(leaf.path)) }
+      : node))
+    .filter((node) => !node.path || !AI_ONLY_PATHS.has(node.path))
+    .filter((node) => !node.children || node.children.length > 0)
+}
+
 const menus = computed<MenuNode[]>(() => {
   if (userStore.role === 'ADMIN') {
-    return [
+    return withoutAiEntries([
       { title: '系统首页', icon: 'home', path: '/admin/home' },
       { title: '数据统计', icon: 'chart', path: '/admin/statistics', chevron: true },
       {
@@ -79,11 +103,11 @@ const menus = computed<MenuNode[]>(() => {
       { title: 'Prompt 配置', icon: 'doc', path: '/admin/prompts', chevron: true },
       { title: '操作日志', icon: 'doc', path: '/admin/logs' },
       { title: 'AI 调用日志', icon: 'chart', path: '/admin/ai-logs', chevron: true },
-    ]
+    ])
   }
   if (userStore.role === 'TEACHER') {
     /* 与设计稿 15 的侧栏严格一致（平铺菜单） */
-    return [
+    return withoutAiEntries([
       { title: '系统首页', icon: 'home', path: '/teacher/home' },
       { title: '我的题目', icon: 'doc', path: '/teacher/topics' },
       { title: '选题审核', icon: 'userbox', path: '/teacher/selections' },
@@ -97,9 +121,9 @@ const menus = computed<MenuNode[]>(() => {
       { title: 'AI 进度分析', icon: 'spark', path: '/teacher/ai-progress' },
       { title: '公告信息', icon: 'horn', path: '/announcements' },
       { title: '个人中心', icon: 'userbox', path: '/profile' },
-    ]
+    ])
   }
-  return [
+  return withoutAiEntries([
     { title: '系统首页', icon: 'home', path: '/student/home' },
     { title: '我的任务', icon: 'doc', path: '/student/my-tasks' },
     { title: '我的答辩', icon: 'userbox', path: '/student/my-defense' },
@@ -117,7 +141,7 @@ const menus = computed<MenuNode[]>(() => {
     { title: 'AI 知识准备', icon: 'spark', path: '/student/ai-knowledge' },
     { title: '知识问答', icon: 'spark', path: '/student/ai-chat' },
     { title: '个人中心', icon: 'userbox', path: '/profile' },
-  ]
+  ])
 })
 
 /* ---------- 展开/折叠 ---------- */
@@ -265,7 +289,7 @@ onUnmounted(() => {
           <path d="M20.4 8.6v5.2" stroke="#fff" stroke-width="1.6" stroke-linecap="round" />
           <circle cx="20.4" cy="14.6" r="1.1" fill="#fff" />
         </svg>
-        <span v-if="!collapsed" class="logo-text">{{ systemName }}</span>
+        <span v-if="!collapsed" class="logo-text" :title="schoolName ? `${systemName} · ${schoolName}` : systemName">{{ systemName }}</span>
       </div>
       <el-scrollbar>
         <div class="menu-wrap" :class="{ collapsed }">

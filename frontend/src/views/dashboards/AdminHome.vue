@@ -5,14 +5,16 @@ import * as echarts from 'echarts'
 import { STAT_ICONS } from '@/components/statIcons'
 import { dashboardApi } from '@/api/common'
 import { scopeLabel, scopeLabelWithYear } from '@/utils/dashboardScope'
+import { systemName } from '@/stores/app'
 import type { DashboardScopeMeta, DashboardStats, PassCountRow } from '@/types/api'
 
 const router = useRouter()
 
 /* ================= 欢迎横幅 ================= */
-const slides = [
+/** 品牌文案跟随「系统设置 → 系统名称」, 写成 computed 才能改名后立即反映 */
+const slides = computed(() => [
   {
-    title: '欢迎使用毕业设计管理系统',
+    title: `欢迎使用${systemName.value}`,
     sub: '规范流程 · 提高效率 · 智能辅助 · 助力毕业',
     art1: '以创新致未来',
     art2: '用实践铸成长',
@@ -29,7 +31,7 @@ const slides = [
     art1: '以规范立流程',
     art2: '以协同促高效',
   },
-]
+])
 const slideIndex = ref(0)
 let slideTimer: number | undefined
 
@@ -188,7 +190,7 @@ onMounted(async () => {
   await nextTick()
   renderCharts()
   window.addEventListener('resize', resizeCharts)
-  slideTimer = window.setInterval(() => { slideIndex.value = (slideIndex.value + 1) % slides.length }, 5000)
+  slideTimer = window.setInterval(() => { slideIndex.value = (slideIndex.value + 1) % slides.value.length }, 5000)
 })
 onUnmounted(() => {
   window.removeEventListener('resize', resizeCharts)
