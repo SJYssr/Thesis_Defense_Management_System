@@ -40,6 +40,9 @@ def _check_ai_rate(user: CurrentUser, db: Session) -> None:
     D41: 计数与过期时间放进同一事务型 pipeline 原子提交(SET NX EX 打底 + INCR),
     进程在两步之间崩溃不再留下没有 TTL 的裸 key(否则该用户永久 42901);
     Redis 任何异常都降级放行并记 warning, 不让缓存故障把 AI 打成全站 500。
+
+    计数初值必须是 0: INCR 之后第一次请求才等于 1。若初值写 1, 每个窗口都多算一次,
+    "每分钟限 N 次"实际只放行 N-1 次(上限填 1 时第一个请求即 429) —— 阈值就不再按填写值生效。
     """
     from app.shared.sysconfig import get_all
 
@@ -53,7 +56,7 @@ def _check_ai_rate(user: CurrentUser, db: Session) -> None:
     key = RedisKeys.RATE_AI.format(user_id=user.id)
     try:
         pipe = redis_client.pipeline(transaction=True)
-        pipe.set(key, 1, nx=True, ex=60)  # 仅首次请求生效: 原子建立计数与 60s 过期
+        pipe.set(key, 0, nx=True, ex=60)  # 仅首次请求生效: 原子建立计数与 60s 过期
         pipe.incr(key)
         _, current = pipe.execute()
         current = int(current)
@@ -175,7 +178,8 @@ class ChatRequest(BaseModel):
 def chat_stream(body: ChatRequest, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     """RAG 问答 SSE 流式输出(roadmap 七十二章).
 
-    agent=True(或未显式指定时系统配置 agent_enabled=True)走多步 Agent 路径:
+    agent=True(或未显式指定时运维开关 AGENT_ENABLED=settings.agent_enabled 为真)走多步 Agent 路径:
+    注意该开关是部署级环境变量, 不在「系统设置」里, 只能在 .env / compose 里改并重启:
     事件名只在 meta/delta/error/done 之外新增 step/citations, 旧事件语义不变;
     多步路径内部任何异常都会先发 error 再回退单轮 answer_stream, 前端不会白屏。
     """

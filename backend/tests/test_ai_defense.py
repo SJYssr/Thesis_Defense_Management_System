@@ -207,6 +207,8 @@ class AiDefenseBoundaryTest(unittest.TestCase):
         set_kwargs = recorder.pipe.calls[0][1]
         self.assertIs(set_kwargs.get("nx"), True, "首次写入必须是 NX, 不能覆盖已有 TTL")
         self.assertEqual(set_kwargs.get("ex"), 60, "TTL 必须与限流窗口一致(60s)")
+        self.assertEqual(set_kwargs.get("value"), 0,
+                         "计数初值必须是 0: 写 1 会让每个窗口少算一次, 阈值实际变成 N-1")
 
     def test_rate_limit_redis_error_lets_request_through(self):
         """D41: RedisError 时降级放行, 接口返回 200 而不是 500."""
@@ -216,6 +218,36 @@ class AiDefenseBoundaryTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(resp.json().get("code"), 0, resp.text)
+
+    def test_rate_limit_threshold_matches_configured_value(self):
+        """限流必须严格按填写值放行: limit=2 时第 1、2 次通过, 第 3 次才 429.
+
+        历史 bug: 计数初值写 1, 每个窗口多算一次, 上限填 1 时第一个请求就被 429,
+        等于「系统设置 → AI 每分钟上限」没有按填写值生效。
+        """
+        self.db.add(SystemConfig(key="ai_rate_limit_per_minute", value="2"))
+        self.db.commit()
+
+        def _redis_returning(current):
+            class _P:
+                def set(self, *a, **k):
+                    return self
+
+                def incr(self, *a, **k):
+                    return self
+
+                def execute(self):
+                    return [True, current]
+
+            return mock.Mock(pipeline=lambda **k: _P())
+
+        for current in (1, 2):
+            with mock.patch("app.modules.ai.router.redis_client", _redis_returning(current)):
+                _check_ai_rate(_fake_user(), self.db)  # 未超阈值, 不抛异常
+        with mock.patch("app.modules.ai.router.redis_client", _redis_returning(3)):
+            with self.assertRaises(BusinessException) as ctx:
+                _check_ai_rate(_fake_user(), self.db)
+        self.assertEqual(ctx.exception.code, 42901)
 
     def test_rate_limit_over_threshold_still_429(self):
         """限流本身仍然生效: 超阈值必须是业务码 42901, 不能被降级吃掉."""
