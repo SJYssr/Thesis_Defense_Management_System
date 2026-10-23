@@ -13,6 +13,9 @@ from app.db.mysql import get_db
 from app.models.business import GraduationTopic, TopicSelection
 from app.models.system import OperationLog
 from app.models.user import College, Major, SysUser, TeacherProfile
+from app.shared import audit
+from app.shared import state_machine as sm
+from app.shared.query import paginate
 
 router = APIRouter(prefix="/topics", tags=["Topic"])
 
@@ -78,8 +81,9 @@ def list_topics(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=
         conds.append(GraduationTopic.major_id == major_id)
     if difficulty:
         conds.append(GraduationTopic.difficulty == difficulty)
-    total = db.execute(select(func.count(GraduationTopic.id)).where(*conds)).scalar()
-    rows = db.execute(select(GraduationTopic).where(*conds).order_by(GraduationTopic.publish_time.desc()).offset((page - 1) * page_size).limit(page_size)).scalars().all()
+    # 统一分页(shared/query): 过滤在 SQL 层, total 与 items 同口径
+    rows, total = paginate(db, select(GraduationTopic).order_by(GraduationTopic.publish_time.desc()),
+                           page=page, size=page_size, filters=conds)
     return ResponseUtil.page([_topic_item(db, t) for t in rows], total, page, page_size)
 
 
@@ -102,8 +106,8 @@ def my_topics(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=10
     conds = [GraduationTopic.teacher_id == user.profile_id, GraduationTopic.deleted_at.is_(None)]
     if status:
         conds.append(GraduationTopic.status == status)
-    total = db.execute(select(func.count(GraduationTopic.id)).where(*conds)).scalar()
-    rows = db.execute(select(GraduationTopic).where(*conds).order_by(GraduationTopic.id.desc()).offset((page - 1) * page_size).limit(page_size)).scalars().all()
+    rows, total = paginate(db, select(GraduationTopic).order_by(GraduationTopic.id.desc()),
+                           page=page, size=page_size, filters=conds)
     return ResponseUtil.page([_topic_item(db, t) for t in rows], total, page, page_size)
 
 
@@ -150,11 +154,12 @@ def publish_topic(topic_id: int, user: CurrentUser = Depends(require_teacher), d
     t = db.get(GraduationTopic, topic_id)
     if t is None or t.deleted_at is not None:
         raise ResourceNotFoundException("题目不存在")
+    # 归属校验先于状态校验: 他人题目应 403 而不是泄露题目状态
     PermissionService.ensure_teacher_owns_topic(db, user, topic_id)
-    if t.status != "DRAFT":
-        raise BusinessException("仅草稿状态可发布")
-    t.status = "PUBLISHED"
-    t.publish_time = datetime.now()
+    # D52: 状态迁移与 publish_time/published_by 副作用统一由状态机完成
+    sm.transition(db, sm.TOPIC, t, "publish", user)
+    audit.record(db, user, "TOPIC", "PUBLISH_TOPIC", commit=False,
+                 detail={"topic_id": t.id, "title": t.title})
     db.commit()
     return ResponseUtil.success(message="题目已发布")
 
@@ -165,9 +170,10 @@ def close_topic(topic_id: int, user: CurrentUser = Depends(require_teacher), db:
     if t is None or t.deleted_at is not None:
         raise ResourceNotFoundException("题目不存在")
     PermissionService.ensure_teacher_owns_topic(db, user, topic_id)
-    if t.status != "PUBLISHED":
-        raise BusinessException("仅已发布状态可下架")
-    t.status = "CLOSED"
+    # D52: 只有状态机允许的发布态可以 → 关闭态
+    sm.transition(db, sm.TOPIC, t, "close", user)
+    audit.record(db, user, "TOPIC", "CLOSE_TOPIC", commit=False,
+                 detail={"topic_id": t.id, "title": t.title})
     db.commit()
     return ResponseUtil.success(message="题目已下架")
 
@@ -235,8 +241,8 @@ def admin_list_topics(page: int = Query(1, ge=1), page_size: int = Query(20, ge=
         conds.append(GraduationTopic.publish_time >= published_from)
     if published_to:
         conds.append(GraduationTopic.publish_time < published_to)
-    total = db.execute(select(func.count(GraduationTopic.id)).where(*conds)).scalar()
-    rows = db.execute(select(GraduationTopic).where(*conds).order_by(GraduationTopic.id.desc()).offset((page - 1) * page_size).limit(page_size)).scalars().all()
+    rows, total = paginate(db, select(GraduationTopic).order_by(GraduationTopic.id.desc()),
+                           page=page, size=page_size, filters=conds)
     return ResponseUtil.page([_topic_item(db, t) for t in rows], total, page, page_size)
 
 
@@ -274,10 +280,8 @@ def admin_update_topic(topic_id: int, body: AdminTopicRequest,
 @admin_router.post("/{topic_id}/publish")
 def admin_publish_topic(topic_id: int, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
     topic = _admin_topic_or_404(db, topic_id)
-    if topic.status != "DRAFT":
-        raise BusinessException("仅草稿可发布")
-    topic.status = "PUBLISHED"
-    topic.publish_time = datetime.now()
+    # D52: 管理员发布同样只经状态机(源状态校验 + publish_time 副作用)
+    sm.transition(db, sm.TOPIC, topic, "publish", user)
     db.add(OperationLog(user_id=user.id, username=user.username, module="TOPIC", action="PUBLISH_TOPIC",
                         detail=f"发布题目#{topic.id}: {topic.title}"))
     db.commit()

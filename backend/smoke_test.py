@@ -82,7 +82,13 @@ target = next((o for o in openings if o["student_no"] == "20230001"), None)
 check("教师1能看到自己学生的开题", target is not None)
 if target:
     r = client.get(f"{BASE}/teacher/opening-reports/{target['id']}", headers=auth(t2))
-    check("教师2访问教师1学生开题被拒(场景5)", r.json()["code"] == 40400, r.text)
+    # P1-A §8: 该场次答辩评委可拿到只读视图(can_edit=False, is_examiner=True); 非评委仍是 40400。
+    # 两种语义都接受, 但"非导师永远不能编辑"这条对象级权限必须在。
+    body = r.json()
+    ok = body["code"] == 40400 or (body["code"] == 0 and body["data"].get("can_edit") is False
+                                   and body["data"].get("is_examiner") is True)
+    check("教师2访问教师1学生开题被拒或仅评委只读(场景5)", ok,
+          f"status={r.status_code} {r.text[:250]}")
 
 r = client.get(f"{BASE}/teacher/students/progress", headers=auth(t2))
 check("教师2进度列表只含自己学生", r.json()["code"] == 0)
@@ -202,7 +208,9 @@ due_pass = (datetime.now() - timedelta(days=3)).isoformat(timespec="seconds")
 r = client.post(f"{BASE}/stage-tasks", headers=auth(t1),
                 json={"academic_year": "2025-2026", "stage": "OPENING", "title": "提交开题报告并完成文献综述",
                       "description": "请在截止前完成开题报告提交", "requirements": ["开题报告", "文献综述"],
-                      "opens_at": now_iso, "due_at": due_ok, "late_policy": "ALLOW"})
+                      "opens_at": now_iso, "due_at": due_ok, "late_policy": "ALLOW",
+                      # D59: 创建缺省进草稿态, 只有显式 PUBLISHED 才经状态机发布, 学生侧 /mine 只列已发布任务
+                      "status": "PUBLISHED"})
 check("教师创建阶段任务", r.json()["code"] == 0, r.text[:200])
 task_id = r.json()["data"]["id"]
 
@@ -214,7 +222,8 @@ check("教师修改任务(版本化)", r.json()["code"] == 0 and r.json()["data"
 
 r = client.post(f"{BASE}/stage-tasks", headers=auth(t1),
                 json={"academic_year": "2025-2026", "stage": "OPENING", "title": "逾期示例任务",
-                      "requirements": ["开题报告"], "opens_at": now_iso, "due_at": due_pass})
+                      "requirements": ["开题报告"], "opens_at": now_iso, "due_at": due_pass,
+                      "status": "PUBLISHED"})
 overdue_task_id = r.json()["data"]["id"]
 
 r = client.get(f"{BASE}/stage-tasks/mine", headers=auth(s6))
@@ -364,12 +373,12 @@ r = client.get(f"{BASE}/archive-packages", headers=auth(s6))
 check("未公开归档对他人不可见(P3验收)", not any(p["cycle_id"] == 1 for p in r.json()["data"]["items"]), r.text[:300])
 
 r = client.get(f"{BASE}/files/{thesis_file_id}/download", headers=auth(s6))
-check("私有论文文件直链下载被拒(P3验收)", r.status_code == 200 and r.json().get("code") == 40300, r.text[:150])
+check("私有论文文件直链下载被拒(P3验收)", r.status_code == 403 and r.json().get("code") == 40300, r.text[:150])
 r = client.get(f"{BASE}/files/{thesis_file_id}/download", headers=auth(s1))
 check("作者本人可下载", r.status_code == 200 and r.headers.get("content-type", "").startswith(("application/octet-stream", "text/markdown", "application/md", "text/plain")), str(r.status_code))
 
 r = client.get(f"{BASE}/archive-files/{pkg_detail['files'][0]['id']}/download", headers=auth(s6))
-check("未授权归档下载被拒", r.status_code == 200 and r.json().get("code") == 40300, r.text[:150])
+check("未授权归档下载被拒", r.status_code == 403 and r.json().get("code") == 40300, r.text[:150])
 
 r = client.post(f"{BASE}/archive-packages/{pkg1['id']}/consent", headers=auth(s1), json={"visibility": "FULL_TEXT"})
 check("作者授权公开全文", r.json()["code"] == 0, r.text[:150])
@@ -380,7 +389,7 @@ check("授权后他人可下载全文", r.status_code == 200 and b"LangChain" in
 r = client.delete(f"{BASE}/archive-packages/{pkg1['id']}/consent", headers=auth(s1))
 check("作者撤回公开", r.json()["code"] == 0)
 r = client.get(f"{BASE}/archive-files/{pkg_detail['files'][0]['id']}/download", headers=auth(s6))
-check("撤回后下载立即失效(P3验收)", r.status_code == 200 and r.json().get("code") == 40300, r.text[:150])
+check("撤回后下载立即失效(P3验收)", r.status_code == 403 and r.json().get("code") == 40300, r.text[:150])
 r = client.get(f"{BASE}/archive-packages", headers=auth(s6))
 check("撤回后检索失效", not any(p["cycle_id"] == 1 for p in r.json()["data"]["items"]), r.text[:200])
 
@@ -400,7 +409,7 @@ r = client.get(f"{BASE}/config/public")
 check("配置即时生效(缓存失效)", r.json()["data"]["system_name"] == "验收专用系统名"
       and r.json()["data"]["ai_defense_enabled"] is False, r.text[:150])
 r = client.post(f"{BASE}/ai/rag/query", headers=auth(s1), json={"query": "状态机包含哪几个阶段"})
-check("AI 总开关关闭后拦截调用", r.status_code == 200 and r.json()["code"] == 40300, r.text[:150])
+check("AI 总开关关闭后拦截调用", r.status_code == 403 and r.json()["code"] == 40300, r.text[:150])
 r = client.put(f"{BASE}/admin/system-configs", headers=auth(admin),
                json={"items": {"system_name": "毕业设计管理系统", "ai_defense_enabled": "true", "not_a_key": "1"}})
 check("未知配置项整体拒绝", r.json()["code"] == 40001, r.text[:150])
@@ -428,9 +437,11 @@ r = client.post(f"{BASE}/admin/progress/overdue-scan", headers=auth(s1))
 check("学生无权触发扫描", r.json()["code"] == 40300)
 
 print("== 16. 学年配置 / 选题时间窗 / AI调用日志(八十四/七十七章) ==")
-r = client.get(f"{BASE}/admin/academic-schedules", headers=auth(admin))
-schedules = r.json()["data"]
+r = client.get(f"{BASE}/admin/academic-schedules?page=1&page_size=100", headers=auth(admin))
+data = r.json()["data"]
+schedules = data["items"] if isinstance(data, dict) else data
 check("学年配置列表可查", r.json()["code"] == 0 and len(schedules) >= 1, r.text[:150])
+check("学年配置列表分页契约", isinstance(data, dict) and data["total"] >= len(schedules), str(data)[:150])
 check("同一时间仅一个激活学年", sum(1 for s in schedules if s["is_active"]) == 1)
 origin = next((s for s in schedules if s["is_active"]), None)
 check("存在激活学年配置", origin is not None)
@@ -458,8 +469,8 @@ restore = {"academic_year": origin["academic_year"], "is_active": True,
            "windows": {k: origin[k] for k in origin if k.endswith(("_start", "_end")) and origin[k]}}
 r = client.put(f"{BASE}/admin/academic-schedules/{origin['id']}", headers=auth(admin), json=restore)
 check("恢复原学年激活", r.json()["code"] == 0 and r.json()["data"]["is_active"] is True, r.text[:150])
-r = client.get(f"{BASE}/admin/academic-schedules", headers=auth(admin))
-after = r.json()["data"]
+r = client.get(f"{BASE}/admin/academic-schedules?page=1&page_size=100", headers=auth(admin))
+after = r.json()["data"]["items"]
 check("激活切换后仍唯一生效",
       sum(1 for s in after if s["is_active"]) == 1
       and next(s for s in after if s["is_active"])["academic_year"] == origin["academic_year"])
@@ -520,7 +531,16 @@ r = client.post(f"{BASE}/admin/ai-prompts/DEFENSE_EVALUATE_ANSWER/reset", header
 check("重置恢复内置默认", r.json()["code"] == 0 and r.json()["data"]["version"] == 3, r.text[:150])
 r = client.get(f"{BASE}/admin/ai-prompts", headers=auth(admin))
 row = next(p for p in r.json()["data"] if p["code"] == "DEFENSE_EVALUATE_ANSWER")
-check("重置后内容与内置一致", row["source"] == "DB" and "模拟答辩教师" in row["system_prompt"])
+# D69: 重置只改内容、不动 status —— 该场景此前已停用, 所以重置后仍是"回退内置"
+check("重置后内容与内置一致(停用态仍回退内置)",
+      row["source"] == "BUILT_IN" and "模拟答辩教师" in row["system_prompt"])
+r = client.post(f"{BASE}/admin/ai-prompts/DEFENSE_EVALUATE_ANSWER/status",
+                headers=auth(admin), json={"enabled": True})
+check("显式启用成功", r.json()["code"] == 0, r.text[:150])
+r = client.get(f"{BASE}/admin/ai-prompts", headers=auth(admin))
+row = next(p for p in r.json()["data"] if p["code"] == "DEFENSE_EVALUATE_ANSWER")
+check("启用后 source=DB 且内容为重置后的内置文本",
+      row["source"] == "DB" and "模拟答辩教师" in row["system_prompt"])
 r = client.get(f"{BASE}/admin/ai-prompts", headers=auth(s1))
 check("学生无权管理 Prompt", r.json()["code"] == 40300)
 r = client.put(f"{BASE}/admin/ai-prompts/RAG_ANSWER", headers=auth(t1), json={"system_prompt": custom})
@@ -543,6 +563,64 @@ check("清空覆盖回退环境变量", r.json()["code"] == 0
       and client.get(f"{BASE}/admin/ai-model-info", headers=auth(admin)).json()["data"]["ai_llm_model"] == "")
 r = client.get(f"{BASE}/admin/ai-model-info", headers=auth(s1))
 check("学生无权查看模型信息", r.json()["code"] == 40300)
+
+print("== 17. 安全硬化验收(P1-B: D11/D13/D21/D22/D23) ==")
+# D11: 错误响应必须返回真实 HTTP 状态码, 响应体仍为 {code, message, data}
+r = client.get(f"{BASE}/admin/users/STUDENT", headers=auth(s1))
+check("D11 权限错误返回 403", r.status_code == 403 and r.json()["code"] == 40300, f"{r.status_code} {r.text[:120]}")
+check("D11 错误体结构不变", set(r.json().keys()) == {"code", "message", "data"}, r.text[:120])
+r = client.post(f"{BASE}/auth/login", json={"username": "admin", "password": "definitely-wrong"})
+check("D11 认证错误返回 401", r.status_code == 401 and r.json()["code"] == 40100, f"{r.status_code} {r.text[:120]}")
+r = client.delete(f"{BASE}/admin/users/TEACHER/99999999", headers=auth(admin))
+check("D11 资源不存在返回 404", r.status_code == 404 and r.json()["code"] == 40400, f"{r.status_code} {r.text[:120]}")
+r = client.get(f"{BASE}/admin/users/UNKNOWN", headers=auth(admin))
+check("D11 业务错误返回 400", r.status_code == 400 and r.json()["code"] == 400, f"{r.status_code} {r.text[:120]}")
+r = client.get(f"{BASE}/admin/users/TEACHER", headers=auth(admin), params={"page": 0})
+check("D11 参数校验错误返回 400(400xx)", r.status_code == 400 and r.json()["code"] == 40002,
+      f"{r.status_code} {r.text[:120]}")
+
+# D21: 新建账号密码必填且 >=8 位含字母+数字, 返回 must_change_password
+r = client.post(f"{BASE}/admin/users/TEACHER", headers=auth(admin),
+                json={"username": "smoke_tmp_teacher", "password": "12345678", "real_name": "临时账号",
+                      "role": "TEACHER", "teacher_no": "T-SMOKE-1"})
+check("D21 纯数字弱口令被拒", r.status_code == 400 and r.json()["code"] == 40002, f"{r.status_code} {r.text[:150]}")
+r = client.post(f"{BASE}/admin/users/TEACHER", headers=auth(admin),
+                json={"username": "smoke_tmp_teacher", "real_name": "临时账号", "role": "TEACHER",
+                      "teacher_no": "T-SMOKE-1"})
+check("D21 密码缺失被拒", r.status_code == 400 and r.json()["code"] == 40002, f"{r.status_code} {r.text[:150]}")
+r = client.post(f"{BASE}/admin/users/TEACHER", headers=auth(admin),
+                json={"username": "smoke_tmp_teacher", "password": "Smoke12345", "real_name": "临时账号",
+                      "role": "TEACHER", "teacher_no": "T-SMOKE-1"})
+check("D21 强口令建号并标记 must_change_password",
+      r.json()["code"] == 0 and r.json()["data"]["must_change_password"] is True, r.text[:150])
+tmp_teacher_id = r.json()["data"]["id"]
+
+# D22: 用户模块操作全部落审计(自动补 method/path/ip)
+r = client.get(f"{BASE}/admin/operation-logs", headers=auth(admin),
+               params={"module": "USER", "action": "CREATE_USER", "keyword": "smoke_tmp_teacher"})
+items = r.json()["data"]["items"]
+check("D22 建号写入审计日志", r.json()["code"] == 0 and any(i["result"] == "SUCCESS" for i in items), r.text[:200])
+check("D22 审计自动补 method/path/ip",
+      bool(items) and all(i["method"] == "POST" and i["path"].endswith("/admin/users/TEACHER") and i["ip"]
+                          for i in items), str(items[:1])[:200])
+r = client.delete(f"{BASE}/admin/users/TEACHER/{tmp_teacher_id}", headers=auth(admin))
+check("D22 删除账号成功", r.json()["code"] == 0, r.text[:150])
+r = client.get(f"{BASE}/admin/operation-logs", headers=auth(admin),
+               params={"module": "USER", "action": "DELETE_USER", "keyword": "smoke_tmp_teacher"})
+check("D22 删除写入审计(SUCCESS)",
+      r.json()["code"] == 0 and any(i["result"] == "SUCCESS" for i in r.json()["data"]["items"]), r.text[:200])
+
+# D23: 结果字段始终有值(历史 NULL 由单测覆盖 UNKNOWN)
+r = client.get(f"{BASE}/admin/operation-logs", headers=auth(admin), params={"module": "USER"})
+check("D23 审计结果字段非空", r.json()["code"] == 0
+      and all(i["result"] for i in r.json()["data"]["items"]), r.text[:200])
+
+# D13: 登出后旧 access token 立即失效(token_version + 1 + jti 黑名单)
+r = client.post(f"{BASE}/auth/logout", headers=auth(s1))
+check("D13 登出成功", r.json()["code"] == 0, r.text[:150])
+r = client.get(f"{BASE}/auth/profile", headers=auth(s1))
+check("D13 登出后旧令牌被拒 401", r.status_code == 401 and r.json()["code"] == 40100,
+      f"{r.status_code} {r.text[:150]}")
 
 print(f"\n结果: {passed} 通过, {failed} 失败")
 sys.exit(1 if failed else 0)

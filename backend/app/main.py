@@ -17,16 +17,38 @@ logging.basicConfig(
 logger = logging.getLogger("app")
 
 
+def _alembic_head_present() -> bool:
+    """库是否已由 Alembic 接管(存在 alembic_version 且非空)."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "alembic_version" not in insp.get_table_names():
+        return False
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).first()
+    return bool(row and row[0])
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 开发环境自动建表(生产应使用 Alembic 迁移)
+    """启动自检: 建表只走 Alembic, create_all 仅作显式逃生口.
+
+    历史上 create_all 与迁移基线并存会让表结构漂移(模型改了而迁移没改),
+    这里默认关闭 create_all, 并在库未迁移时直接把原因喊出来, 而不是等第一个请求 500。
+    """
     import os
 
-    if os.getenv("AUTO_CREATE_TABLES", "true").lower() == "true":
+    if os.getenv("AUTO_CREATE_TABLES", "false").lower() == "true":
         from app.db.base import Base
 
         Base.metadata.create_all(bind=engine)
-        logger.info("数据库表已就绪")
+        logger.warning("AUTO_CREATE_TABLES=true: 已用 create_all 建表, 该库不再受 Alembic 约束")
+    elif not _alembic_head_present():
+        raise RuntimeError(
+            "数据库未初始化或未迁移: 未找到 alembic_version。"
+            "请先执行 alembic upgrade head (cd backend && .venv/bin/python -m alembic upgrade head); "
+            "仅本地临时库可设置 AUTO_CREATE_TABLES=true 绕过。"
+        )
     yield
 
 

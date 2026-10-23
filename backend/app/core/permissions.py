@@ -2,21 +2,28 @@
 
 - require_roles: 接口级角色控制
 - PermissionService: 数据级权限(teacher → own topics / student → self / admin → all)
+
+D15: Redis 仅作为"登出黑名单"的快速通道, 故障时降级放行;
+令牌有效性最终由 sys_user.token_version 的数据库校验兜底, 不能因 Redis 抖动拒绝合法用户.
 """
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+import redis
 from fastapi import Depends, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AuthenticationException, PermissionDeniedException
-from app.core.security import decode_token
+from app.core.security import TOKEN_VERSION_CLAIM, decode_token
 from app.db.mysql import get_db
 from app.db.redis import RedisKeys, redis_client
 from app.models.business import GraduationProcess, GraduationTopic, TopicSelection
 from app.models.enums import Role
 from app.models.user import StudentProfile, SysUser, TeacherProfile
+
+logger = logging.getLogger("app")
 
 
 @dataclass
@@ -27,6 +34,7 @@ class CurrentUser:
     role: str
     profile_id: int | None  # TEACHER→teacher_profile.id, STUDENT→student_profile.id
     avatar: str | None = None
+    must_change_password: bool = False
 
 
 def _extract_token(request: Request) -> str:
@@ -36,20 +44,34 @@ def _extract_token(request: Request) -> str:
     return auth[7:].strip()
 
 
+def _is_blacklisted(jti: str | None) -> bool:
+    """D15: Redis 故障时降级为"未命中", 不阻断业务; 令牌失效由 token_version 兜底."""
+    if not jti:
+        return False
+    try:
+        return bool(redis_client.exists(RedisKeys.BLACKLIST.format(jti=jti)))
+    except redis.RedisError as exc:
+        logger.warning("Redis 不可用, 跳过令牌黑名单校验(降级放行): %s", exc)
+        return False
+
+
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> CurrentUser:
     token = _extract_token(request)
     payload = decode_token(token, expected_type="access")
-
-    # 黑名单校验(登出后的 token 立即失效)
-    jti = payload.get("jti")
-    if jti and redis_client.exists(RedisKeys.BLACKLIST.format(jti=jti)):
-        raise AuthenticationException("令牌已注销")
 
     user = db.execute(select(SysUser).where(SysUser.id == int(payload["sub"]))).scalar_one_or_none()
     if user is None or user.deleted_at is not None:
         raise AuthenticationException("用户不存在")
     if user.status != 1:
         raise AuthenticationException("账号已被禁用")
+
+    # D14: token_version 与数据库不一致 → 已登出/已改密, 立即失效(不依赖 Redis)
+    if int(payload.get(TOKEN_VERSION_CLAIM, 0)) != int(user.token_version or 0):
+        raise AuthenticationException("令牌已失效,请重新登录")
+
+    # 黑名单校验(登出后的 token 立即失效); Redis 故障降级
+    if _is_blacklisted(payload.get("jti")):
+        raise AuthenticationException("令牌已注销")
 
     profile_id = None
     if user.role == Role.TEACHER.value:
@@ -66,6 +88,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> Current
         role=user.role,
         profile_id=profile_id,
         avatar=user.avatar,
+        must_change_password=bool(user.must_change_password),
     )
 
 

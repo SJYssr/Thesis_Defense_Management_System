@@ -1,4 +1,5 @@
 """Progress 模块: 毕设进度时间轴/教师提醒/风险视图."""
+import logging
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -16,9 +17,11 @@ from app.models.enums import ProcessStage
 from app.models.system import OperationLog, Reminder, ReviewRecord
 from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
 from app.shared.events import push_notification
-from app.shared.cycle import formal_defense_snapshot
+from app.shared.cycle import academic_year_for, formal_defense_snapshot
 from app.shared.progress import ProgressService, STAGE_LABELS
 from app.shared.workflow import GraduationWorkflowService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/student/progress", tags=["Progress"])
 teacher_router = APIRouter(prefix="/teacher/students", tags=["Progress-Teacher"])
@@ -100,8 +103,7 @@ def _progress_item(db: Session, process: GraduationProcess, student_id: int) -> 
 @router.get("")
 def my_progress(user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     student_id = user.profile_id
-    ProgressService.recompute(db, student_id)  # 惰性重算, 保证截止时间相关的风险实时
-    db.commit()
+    # D71: GET 只读现值 —— 请求内不再 recompute()+commit(), 重算下沉到状态变更点与每日定时任务
     process = GraduationWorkflowService.get_process(db, student_id)
     item = _progress_item(db, process, student_id) if process else {
         **_student_base(db, student_id), "current_stage": "SELECTION", "current_stage_cn": "选题",
@@ -139,22 +141,27 @@ def teacher_students_progress(risk_level: str | None = None, stage: str | None =
         conds.append(GraduationProcess.risk_level == risk_level)
     if stage:
         conds.append(GraduationProcess.current_stage == stage)
+    text = (keyword or "").strip()
+    if text:
+        # D57: 关键字条件下推到 SQL(姓名/学号子查询), count 与分页同源, 不再"取页后内存过滤"
+        conds.append(GraduationProcess.student_id.in_(
+            select(StudentProfile.id)
+            .join(SysUser, SysUser.id == StudentProfile.user_id)
+            .where(or_(SysUser.real_name.contains(text), StudentProfile.student_no.contains(text)))
+        ))
     total = db.execute(select(func.count(GraduationProcess.id)).where(*conds)).scalar()
     processes = db.execute(
         select(GraduationProcess).where(*conds).order_by(GraduationProcess.risk_level.desc(), GraduationProcess.progress_percent)
         .offset((page - 1) * page_size).limit(page_size)
     ).scalars().all()
     items = [_progress_item(db, p, p.student_id) for p in processes]
-    if keyword:
-        items = [i for i in items if keyword in (i.get("student_name") or "") or keyword in (i.get("student_no") or "")]
     return ResponseUtil.page(items, total, page, page_size)
 
 
 @teacher_router.get("/{student_id}/progress")
 def student_progress_detail(student_id: int, user: CurrentUser = Depends(require_teacher), db: Session = Depends(get_db)):
     PermissionService.ensure_teacher_can_access_student(db, user, student_id)
-    ProgressService.recompute(db, student_id)
-    db.commit()
+    # D71: 同为 GET 读接口, 只读现值, 请求内不写库
     process = GraduationWorkflowService.get_process(db, student_id)
     item = _progress_item(db, process, student_id) if process else _student_base(db, student_id)
     item["timeline"] = _timeline(db, student_id)
@@ -223,17 +230,19 @@ def admin_progress(risk_level: str | None = None, stage: str | None = None,
 @admin_router.get("/summary")
 def admin_progress_summary(academic_year: str | None = None,
                            _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
-    base = [GraduationProcess.cycle_id.in_(select(GraduationCycle.id).where(
-        GraduationCycle.academic_year == academic_year))] if academic_year else []
+    # D63/D72: 全表统计只有一个学年口径 —— 显式学年优先, 缺省即当前学年,
+    # 不再混用"跨学年累计 + current_stage 字面值"; 完成与否只认 progress.compute() 的投影 completed_at。
+    year = academic_year or academic_year_for(db)
+    year_cycles = select(GraduationCycle.id).where(GraduationCycle.academic_year == year)
+    year_students = select(GraduationCycle.student_id).where(GraduationCycle.academic_year == year)
+    base = [GraduationProcess.cycle_id.in_(year_cycles)]
     total_students = db.execute(select(func.count(StudentProfile.id)).where(
-        StudentProfile.deleted_at.is_(None),
-        *([StudentProfile.id.in_(select(GraduationCycle.student_id).where(
-            GraduationCycle.academic_year == academic_year))] if academic_year else []))).scalar_one()
+        StudentProfile.deleted_at.is_(None), StudentProfile.id.in_(year_students))).scalar_one()
     process_total = db.execute(select(func.count(GraduationProcess.id)).where(*base)).scalar_one()
     completed = db.execute(select(func.count(GraduationProcess.id)).where(
-        *base, GraduationProcess.current_stage == "COMPLETED")).scalar_one()
+        *base, GraduationProcess.completed_at.is_not(None))).scalar_one()
     risk = {level: db.execute(select(func.count(GraduationProcess.id)).where(
-        *base, GraduationProcess.current_stage != "COMPLETED",
+        *base, GraduationProcess.completed_at.is_(None),
         GraduationProcess.risk_level == level)).scalar_one()
             for level in ("NORMAL", "WARNING", "HIGH")}
     stage_models = [("选题", TopicSelection), ("开题报告", OpeningReport),
@@ -241,10 +250,10 @@ def admin_progress_summary(academic_year: str | None = None,
                     ("毕业材料", GraduationMaterial)]
     stages = []
     for label, model in stage_models:
-        conditions = [model.status == "APPROVED"]
-        if academic_year:
-            conditions.append(model.cycle_id.in_(select(GraduationCycle.id).where(
-                GraduationCycle.academic_year == academic_year)))
+        # D72: 五段计数统一口径 —— 只认 APPROVED + 同一学年 cycle, 选题额外只认 active_flag=1
+        conditions = [model.status == "APPROVED", model.cycle_id.in_(year_cycles)]
+        if model is TopicSelection:
+            conditions.append(model.active_flag == 1)
         stages.append({"name": label, "value": db.execute(select(func.count(model.id)).where(
             *conditions)).scalar_one()})
     trend = []
@@ -285,13 +294,70 @@ def admin_send_reminders(body: AdminReminderRequest, user: CurrentUser = Depends
     return ResponseUtil.success({"sent": len(ids)}, message="提醒已发送")
 
 
+# ---------- 逾期风险扫描(D67) ----------
+
+# 逾期扫描只有一个实现: app.tasks.risk_scan.scan_overdue_risk_batched()。
+# 本模块只保留"入队 / 直接跑"的差异, 批处理主体不在这里复制(避免两套规则引擎漂移)。
+
+
+def _overdue_scan_module():
+    """延迟取任务模块: web 启动不初始化 Celery, 且调用走模块属性以便测试替换."""
+    from app.tasks import risk_scan
+
+    return risk_scan
+
+
+def __getattr__(name):
+    """OVERDUE_SCAN_BATCH_SIZE 单一来源在 app.tasks.risk_scan(PEP 562 模块级转发)."""
+    if name == "OVERDUE_SCAN_BATCH_SIZE":
+        return _overdue_scan_module().OVERDUE_SCAN_BATCH_SIZE
+    raise AttributeError(name)
+
+
+def _enqueue_overdue_scan() -> bool:
+    """优先分发到 Celery(与 app/tasks/dispatcher.py 同一套 CELERY_ENABLED/CELERY_AVAILABLE 分支)。
+
+    返回 True = 已入队, 请求立即返回受理信息; False = 队列不可用, 交给同步兜底。
+    """
+    try:
+        from app.tasks.celery_app import CELERY_AVAILABLE, CELERY_ENABLED, celery_app
+        from app.tasks.risk_scan import daily_scan_task
+    except Exception:  # noqa: BLE001 — 任务模块不可导入等同队列不可用
+        logger.warning("逾期扫描入队失败: 任务模块不可导入", exc_info=True)
+        return False
+    if not (CELERY_ENABLED and CELERY_AVAILABLE and celery_app is not None):
+        return False
+    if daily_scan_task is None or celery_app.conf.task_always_eager:
+        return False
+    try:
+        queued = daily_scan_task.delay()
+    except Exception:  # noqa: BLE001 — broker 不可达时退回同步兜底, 不能让请求失败
+        logger.warning("逾期扫描入队失败, 转同步兜底", exc_info=True)
+        return False
+    logger.info("逾期风险扫描已入队: task_id=%s", getattr(queued, "id", None))
+    return True
+
+
+def _run_overdue_scan_batched(session_factory=None) -> dict:
+    """同步兜底: 直接转调逾期扫描唯一实现(每批一个事务, 见 app/tasks/risk_scan.py)."""
+    return _overdue_scan_module().scan_overdue_risk_batched(session_factory=session_factory)
+
+
 @admin_router.post("/overdue-scan")
 def admin_overdue_scan(user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
-    """手动触发逾期风险扫描(与每日 01:00 Celery Beat 同一逻辑, roadmap 八十六章)."""
-    from app.tasks.risk_scan import run_overdue_risk_scan
+    """手动触发逾期风险扫描(与每日 01:00 Celery Beat 同一逻辑, roadmap 八十六章).
 
-    summary = run_overdue_risk_scan()
+    D67: HTTP 请求不再遍历全表 —— 优先入队后立即返回受理信息;
+    只有 Celery 不可用时才同步兜底, 且兜底按批提交。
+    """
+    if _enqueue_overdue_scan():
+        summary = {"mode": "celery", "queued": True, "scanned": 0, "normal": 0,
+                   "warning": 0, "high": 0, "notified": 0}
+        message = "逾期风险扫描已提交后台队列"
+    else:
+        summary = _run_overdue_scan_batched()
+        message = "逾期风险扫描完成(队列不可用, 已分批同步执行)"
     db.add(OperationLog(user_id=user.id, username=user.username, module="PROGRESS", action="OVERDUE_SCAN",
                         detail=f"扫描{summary['scanned']}个流程: 高风险{summary['high']} 警告{summary['warning']}"))
     db.commit()
-    return ResponseUtil.success(summary, message="逾期风险扫描完成")
+    return ResponseUtil.success(summary, message=message)

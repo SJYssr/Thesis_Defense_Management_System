@@ -5,16 +5,53 @@
 """
 import base64
 import logging
+import re
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.ai.embedding.factory import EmbeddingFactory
 from app.db.redis import RedisKeys, redis_client
 from app.models.ai import AIDocumentChunk
+from app.models.enums import AIDocumentType
 
 logger = logging.getLogger("app.ai.vector")
+
+_TAG_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_ALLOWED_DOCUMENT_TYPES = frozenset(t.value for t in AIDocumentType)
+
+
+def student_scope_filter(student_id: int | None):
+    """学生私有库 + 全局库的统一过滤条件(D43).
+
+    历史实现用 in_([student_id, None]): SQL 的 IN 对 NULL 行永不成立, 全局 chunk
+    (student_id 为 NULL)在降级路径上永远检索不到, global_scope 成为空承诺。
+    改用显式 OR 条件: student_id = sid 或 student_id IS NULL。
+    """
+    if student_id is None:
+        return AIDocumentChunk.student_id.is_(None)
+    return or_(AIDocumentChunk.student_id == student_id, AIDocumentChunk.student_id.is_(None))
+
+
+def safe_document_types(values) -> list[str]:
+    """RediSearch TAG 白名单过滤(D50): 只放行枚举内文档类型, 其余丢弃, 防查询语法注入."""
+    out: list[str] = []
+    for value in values or []:
+        text = str(value)
+        if text in _ALLOWED_DOCUMENT_TYPES and _TAG_RE.match(text) and text not in out:
+            out.append(text)
+    return out
+
+
+def safe_student_tag(student_id: int | None) -> str:
+    """TAG 数值标签白名单化: 非整数一律按全局库(0)处理."""
+    if student_id is None:
+        return "0"
+    try:
+        return str(int(student_id))
+    except (TypeError, ValueError):
+        return "0"
 
 
 def vec_to_bytes(vec: list[float]) -> bytes:
@@ -56,14 +93,23 @@ class VectorStore:
     """统一向量库接口."""
 
     def __init__(self):
-        self._mode: str | None = None
+        self._mode: str | None = None  # 仅记录最近一次探测结果用于日志, 不再作为进程内锁定
 
     @property
     def mode(self) -> str:
-        if self._mode is None:
-            self._mode = "redis" if self._try_create_index() else "mysql"
-            logger.info("Vector store mode: %s", self._mode)
-        return self._mode
+        """每次真实探测 Redis(RediSearch)能力, 失败即降级 MySQL(D42).
+
+        历史实现把首次探测结果永久缓存在进程内: Redis/RediSearch 中途失效后仍走 Redis
+        分支导致召回恒空; 现改为每次尝试(FT.INFO 探测为本地微秒级开销)。
+        """
+        mode = "redis" if self._probe_redis() else "mysql"
+        if mode != self._mode:
+            logger.info("Vector store mode: %s", mode)
+        self._mode = mode
+        return mode
+
+    def _probe_redis(self) -> bool:
+        return self._try_create_index()
 
     def _try_create_index(self) -> bool:
         try:
@@ -105,15 +151,21 @@ class VectorStore:
                 "content": metadata.get("content") or "",
                 "embedding": vec_to_bytes(embedding),
             }
-            redis_client.hset(key, mapping=mapping)
-        # mysql 模式: embedding 直接写入 AIDocumentChunk.embedding 列(由调用方落库)
+            try:
+                redis_client.hset(key, mapping=mapping)
+            except Exception as exc:  # noqa: BLE001 — 向量库故障不影响已落库的降级副本
+                logger.warning("Redis 向量写入失败, 仅保留 MySQL 降级副本: %s", exc)
+        # mysql 模式: embedding 直接写入 AIDocumentChunk.embedding 列(由调用方无条件落库)
 
     def delete_chunks(self, chunk_ids: list[int]) -> None:
         if not chunk_ids:
             return
         if self.mode == "redis":
             keys = [RedisKeys.RAG_CHUNK.format(chunk_id=cid) for cid in chunk_ids]
-            redis_client.delete(*keys)
+            try:
+                redis_client.delete(*keys)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Redis 向量删除失败, 索引残留由回表 student 过滤兜底(D44): %s", exc)
 
     # ---------- 检索 ----------
 
@@ -126,10 +178,10 @@ class VectorStore:
 
     def _search_redis(self, query_embedding, student_id, document_types, top_k) -> list[tuple[int, float]]:
         # 全局知识库 chunk 的 student_id 标签存为 0
-        sid = str(student_id) if student_id is not None else "0"
+        sid = safe_student_tag(student_id)
         filter_parts = [f"@student_id:{{{sid}|0}}"]
-        if document_types:
-            types = "|".join(t for t in document_types)
+        types = "|".join(safe_document_types(document_types))
+        if types:
             filter_parts.append(f"@document_type:{{{types}}}")
         query = "(" + " ".join(filter_parts) + f")=>[KNN {top_k} @embedding $BLOB AS __score]"
         try:
@@ -170,11 +222,10 @@ class VectorStore:
             return []
         db: Session = SessionLocal()
         try:
-            conds = [AIDocumentChunk.embedding.is_not(None),
-                     AIDocumentChunk.student_id.in_([student_id, None]) if student_id is not None
-                     else AIDocumentChunk.student_id.is_(None)]
-            if document_types:
-                conds.append(AIDocumentChunk.document_type.in_(document_types))
+            conds = [AIDocumentChunk.embedding.is_not(None), student_scope_filter(student_id)]
+            types = safe_document_types(document_types)
+            if types:
+                conds.append(AIDocumentChunk.document_type.in_(types))
             rows = db.execute(select(AIDocumentChunk.id, AIDocumentChunk.embedding).where(*conds)).all()
             scored = []
             for cid, emb in rows:

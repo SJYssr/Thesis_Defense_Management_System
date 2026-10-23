@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import BusinessException, ResourceNotFoundException
+from app.core.exceptions import BusinessException, PermissionDeniedException, ResourceNotFoundException
 from app.core.permissions import CurrentUser, require_student, require_teacher_or_admin
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
@@ -18,7 +18,9 @@ from app.models.business import FinalDefense, GraduationCycle, GraduationMateria
 from app.models.defense import StageTask, StageTaskVersion
 from app.models.enums import ProcessStage
 from app.models.user import StudentProfile
+from app.shared import state_machine as sm
 from app.shared.events import now
+from app.shared.query import paginate
 from app.shared.workflow import GraduationWorkflowService
 
 router = APIRouter(tags=["StageTask"])
@@ -54,7 +56,11 @@ class TaskCreate(BaseModel):
     college_id: int | None = None
     major_id: int | None = None
     class_id: int | None = None
-    status: str = Field(default="PUBLISHED", pattern="^(DRAFT|PUBLISHED)$")
+    # D59: status 不再是"请求体想赋什么就赋什么"的目标状态, 而是创建动作语义:
+    # 缺省/DRAFT = 建为草稿; PUBLISHED = 建为草稿后立刻经 state_machine.transition 发布。
+    # 之后的发布/关闭只能走 POST /stage-tasks/{id}/publish|close。
+    status: str | None = Field(default=None, pattern="^(DRAFT|PUBLISHED)$",
+                               description="兼容字段: PUBLISHED=创建后立即发布(内部仍走状态机)")
 
 
 class TaskPatch(TaskCreate):
@@ -80,6 +86,7 @@ def _task_item(t: StageTask) -> dict:
         "late_policy": t.late_policy,
         "college_id": t.college_id, "major_id": t.major_id, "class_id": t.class_id,
         "status": t.status, "current_version": t.current_version,
+        "allowed_actions": sm.allowed_actions(sm.STAGE_TASK, t.status),
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
@@ -104,6 +111,22 @@ def list_tasks(academic_year: str | None = None, stage: str | None = None, statu
     return ResponseUtil.page([_task_item(t) for t in rows], total, page, page_size)
 
 
+def _ensure_task_writable(t: StageTask, user: CurrentUser) -> None:
+    """D58: 阶段任务的对象级权限——教师只能改自己创建的任务, 管理员不受限."""
+    if user.role == "ADMIN":
+        return
+    if t.created_by is None or t.created_by != user.id:
+        raise PermissionDeniedException("无权修改该任务(仅创建人与管理员可操作)")
+
+
+def _load_task(db: Session, task_id: int, user: CurrentUser) -> StageTask:
+    t = db.get(StageTask, task_id)
+    if t is None:
+        raise ResourceNotFoundException("任务不存在")
+    _ensure_task_writable(t, user)
+    return t
+
+
 @router.post("/stage-tasks")
 def create_task(body: TaskCreate, user: CurrentUser = Depends(require_teacher_or_admin), db: Session = Depends(get_db)):
     t = StageTask(
@@ -112,20 +135,27 @@ def create_task(body: TaskCreate, user: CurrentUser = Depends(require_teacher_or
         requirements_json=json.dumps(body.requirements, ensure_ascii=False) if body.requirements else None,
         opens_at=_parse_dt(body.opens_at), due_at=_parse_dt(body.due_at),
         late_policy=body.late_policy, college_id=body.college_id, major_id=body.major_id,
-        class_id=body.class_id, status=body.status, created_by=user.id, current_version=1,
+        class_id=body.class_id, status="DRAFT", created_by=user.id, current_version=1,
     )
     db.add(t)
     db.commit()
-    return ResponseUtil.success(_task_item(t), message="任务已创建")
+    if body.status == "PUBLISHED":
+        # 兼容旧请求体: 发布只能经状态机, 不接受直接赋值 status
+        sm.transition(db, sm.STAGE_TASK, t, "publish", user)
+        db.commit()
+    return ResponseUtil.success(_task_item(t),
+                                message="任务已发布" if t.status == "PUBLISHED" else "任务已创建")
 
 
 @router.put("/stage-tasks/{task_id}")
 def update_task(task_id: int, body: TaskPatch, user: CurrentUser = Depends(require_teacher_or_admin),
                 db: Session = Depends(get_db)):
-    """修改任务: 版本化保存修改前快照(docs §4 stage_task 版本化修改)."""
-    t = db.get(StageTask, task_id)
-    if t is None:
-        raise ResourceNotFoundException("任务不存在")
+    """修改任务: 版本化保存修改前快照(docs §4 stage_task 版本化修改).
+
+    D58: 只有创建人与管理员可改(教师互相改写是越权);
+    D59: 本接口不动 status, 发布/关闭走 /publish、/close 两个动作端点。
+    """
+    t = _load_task(db, task_id, user)
     snapshot = {f: getattr(t, f).isoformat() if isinstance(getattr(t, f), datetime) else getattr(t, f)
                 for f in _TASK_FIELDS}
     db.add(StageTaskVersion(task_id=t.id, version_no=t.current_version,
@@ -140,21 +170,45 @@ def update_task(task_id: int, body: TaskPatch, user: CurrentUser = Depends(requi
     t.college_id = body.college_id
     t.major_id = body.major_id
     t.class_id = body.class_id
-    t.status = body.status
     t.current_version += 1
     db.commit()
     return ResponseUtil.success(_task_item(t), message="任务已更新并留痕")
 
 
 @router.get("/stage-tasks/{task_id}/versions")
-def task_versions(task_id: int, user: CurrentUser = Depends(require_teacher_or_admin), db: Session = Depends(get_db)):
-    rows = db.execute(
-        select(StageTaskVersion).where(StageTaskVersion.task_id == task_id).order_by(StageTaskVersion.id.desc())
-    ).scalars().all()
-    return ResponseUtil.success([{
+def task_versions(task_id: int, page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+                  user: CurrentUser = Depends(require_teacher_or_admin), db: Session = Depends(get_db)):
+    """D60: 版本历史分页(先 SQL 层 count 再取页, 口径与 items 一致)."""
+    rows, total = paginate(
+        db,
+        select(StageTaskVersion).where(StageTaskVersion.task_id == task_id)
+        .order_by(StageTaskVersion.id.desc()),
+        page=page, size=page_size,
+    )
+    return ResponseUtil.page([{
         "version_no": v.version_no, "snapshot": json.loads(v.snapshot_json),
         "created_at": v.created_at.isoformat() if v.created_at else None,
-    } for v in rows])
+    } for v in rows], total, page, page_size)
+
+
+@router.post("/stage-tasks/{task_id}/publish")
+def publish_task(task_id: int, user: CurrentUser = Depends(require_teacher_or_admin),
+                 db: Session = Depends(get_db)):
+    """D59: DRAFT → PUBLISHED(发布只经 state_machine.transition)."""
+    t = _load_task(db, task_id, user)
+    sm.transition(db, sm.STAGE_TASK, t, "publish", user)
+    db.commit()
+    return ResponseUtil.success(_task_item(t), message="任务已发布")
+
+
+@router.post("/stage-tasks/{task_id}/close")
+def close_task(task_id: int, user: CurrentUser = Depends(require_teacher_or_admin),
+               db: Session = Depends(get_db)):
+    """D59: PUBLISHED → CLOSED(截止/撤回入口; 关闭后学生待办不再展示, 历史留痕保留)."""
+    t = _load_task(db, task_id, user)
+    sm.transition(db, sm.STAGE_TASK, t, "close", user)
+    db.commit()
+    return ResponseUtil.success(_task_item(t), message="任务已关闭")
 
 
 @router.get("/stage-tasks/mine")

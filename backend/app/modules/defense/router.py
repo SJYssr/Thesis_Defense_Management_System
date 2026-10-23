@@ -28,6 +28,7 @@ from app.models.enums import ResultStatus, ScoreStatus, SeatStatus, SessionStatu
 from app.models.system import OperationLog
 from app.models.user import StudentProfile, SysUser, TeacherProfile
 from app.shared.events import push_notification
+from app.modules.defense.seat_state import mark_seat
 from app.modules.defense.service import (
     STAGE_CN,
     SCORE_STATUS_CN,
@@ -35,11 +36,19 @@ from app.modules.defense.service import (
     SESSION_STATUS_CN,
     _notify_session_members,
     assignment_item,
+    calculate_result as calculate_result_flow,
+    cancel_session as cancel_session_flow,
     compute_result,
+    finish_session as finish_session_flow,
     get_effective_score,
     get_rubric_for,
+    mark_result_under_review,
+    publish_result as publish_result_flow,
+    publish_session as publish_session_flow,
+    start_session as start_session_flow,
     session_item,
     validate_session,
+    withdraw_result as withdraw_result_flow,
 )
 
 router = APIRouter(tags=["Defense"])
@@ -223,21 +232,7 @@ def validate(session_id: int, user: CurrentUser = Depends(require_admin), db: Se
 
 @router.post("/defense-sessions/{session_id}/publish")
 def publish_session(session_id: int, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
-    s = db.get(DefenseSession, session_id)
-    if s is None:
-        raise ResourceNotFoundException("场次不存在")
-    if s.status not in (SessionStatus.DRAFT.value, SessionStatus.READY.value):
-        raise BusinessException(f"当前状态「{SESSION_STATUS_CN.get(s.status)}」不允许发布")
-    conflicts = validate_session(db, s)
-    if conflicts:
-        raise ConflictException("存在排期冲突, 不能发布: " + "; ".join(c["detail"] for c in conflicts))
-    examiners = db.execute(select(DefenseExaminer).where(DefenseExaminer.session_id == s.id)).scalars().all()
-    if not examiners:
-        raise BusinessException("请先为场次分配评委")
-    if not any(e.examiner_role == "CHAIR" for e in examiners):
-        raise BusinessException("场次必须指定一名评委主席(CHAIR)")
-    s.status = SessionStatus.PUBLISHED.value
-    s.revision += 1
+    s = publish_session_flow(db, session_id, user)  # DRAFT -> PUBLISHED, 非法状态由状态机抛 40003
     db.add(OperationLog(user_id=user.id, module="DEFENSE", action="PUBLISH_SESSION",
                         detail=f"发布场次#{s.id} {STAGE_CN.get(s.stage, s.stage)}"))
     _notify_session_members(db, s,
@@ -250,20 +245,36 @@ def publish_session(session_id: int, user: CurrentUser = Depends(require_admin),
 @router.post("/defense-sessions/{session_id}/cancel")
 def cancel_session(session_id: int, body: SessionPatch | None = None, user: CurrentUser = Depends(require_admin),
                    db: Session = Depends(get_db)):
-    s = db.get(DefenseSession, session_id)
-    if s is None:
-        raise ResourceNotFoundException("场次不存在")
-    if s.status == SessionStatus.CANCELLED.value:
-        raise BusinessException("场次已取消")
-    s.status = SessionStatus.CANCELLED.value
-    s.revision += 1
     reason = body.change_reason if body else None
+    s = cancel_session_flow(db, session_id, user, reason)  # 任意活态 -> CANCELLED, 原因必填
     db.add(OperationLog(user_id=user.id, username=user.username, module="DEFENSE", action="CANCEL_SESSION",
                         detail=f"取消场次#{s.id}: {reason or '未说明'}"))
     _notify_session_members(db, s, title=f"答辩场次取消: {STAGE_CN.get(s.stage, s.stage)}",
                             content=f"场次「{s.title or s.id}」已取消。原因: {reason or '未说明'}")
     db.commit()
     return ResponseUtil.success(session_item(db, s), message="场次已取消")
+
+
+@router.post("/defense-sessions/{session_id}/start")
+def start_session(session_id: int, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """开始答辩: PUBLISHED -> IN_PROGRESS; 未发布就 start 由状态机抛 40003."""
+    s = start_session_flow(db, session_id, user)
+    db.add(OperationLog(user_id=user.id, username=user.username, module="DEFENSE", action="START_SESSION",
+                        detail=f"开始场次#{s.id} {STAGE_CN.get(s.stage, s.stage)}"))
+    _notify_session_members(db, s, title=f"答辩已开始: {STAGE_CN.get(s.stage, s.stage)}",
+                            content=f"场次「{s.title or s.id}」已开始, 请准时参加。")
+    db.commit()
+    return ResponseUtil.success(session_item(db, s), message="场次已开始")
+
+
+@router.post("/defense-sessions/{session_id}/finish")
+def finish_session(session_id: int, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """结束答辩: IN_PROGRESS -> FINISHED."""
+    s = finish_session_flow(db, session_id, user)
+    db.add(OperationLog(user_id=user.id, username=user.username, module="DEFENSE", action="FINISH_SESSION",
+                        detail=f"结束场次#{s.id} {STAGE_CN.get(s.stage, s.stage)}"))
+    db.commit()
+    return ResponseUtil.success(session_item(db, s), message="场次已结束")
 
 
 @router.patch("/defense-sessions/{session_id}")
@@ -407,8 +418,8 @@ def patch_seat(assignment_id: int, body: SeatPatch, user: CurrentUser = Depends(
     a = _get_assignment_or_404(db, assignment_id)
     if body.seat_status == SeatStatus.POSTPONED.value and not body.remark:
         raise BusinessException("延期必须填写原因")
-    a.seat_status = body.seat_status
-    a.remark = body.remark if body.remark is not None else a.remark
+    # 席位状态只能经状态机流转(SCHEDULED -> ATTENDED/ABSENT); 其余目标态转移表未定义, 直接 40003
+    mark_seat(db, a, body.seat_status, user, remark=body.remark)
     db.commit()
     cycle = db.get(GraduationCycle, a.cycle_id)
     return ResponseUtil.success(assignment_item(db, a, cycle), message="席位状态已更新")
@@ -483,11 +494,28 @@ def my_review_queue(user: CurrentUser = Depends(get_current_user), db: Session =
 
 
 def _ensure_examiner_can_review(db: Session, a: DefenseAssignment, user: CurrentUser) -> DefenseSession:
+    """读接口: 管理员可读任意席位, 教师须是本场次被指派评委."""
     s = db.get(DefenseSession, a.session_id)
     if s is None:
         raise ResourceNotFoundException("场次不存在")
     if user.role == "ADMIN":
         return s
+    _ensure_examiner_of(db, s.id, user)
+    return s
+
+
+def _ensure_scoring_owner(db: Session, a: DefenseAssignment, user: CurrentUser) -> DefenseSession:
+    """写接口(暂存/提交评分): 只允许被指派的评委教师.
+
+    D19: 管理员 profile_id 与 DefenseExaminer.teacher_id 不同域, 管理员写评分会落出没有评委
+    主体的评分行(examiner_id 对不上任何评委, 历史表现为 500 / 汇总结算漏算), 故写路径一律拒绝
+    管理员; 管理员改分只能通过"复核重开"把评分交回原评委。
+    """
+    s = db.get(DefenseSession, a.session_id)
+    if s is None:
+        raise ResourceNotFoundException("场次不存在")
+    if user.role != "TEACHER":
+        raise PermissionDeniedException("仅被指派评委教师可暂存/提交评分")
     _ensure_examiner_of(db, s.id, user)
     return s
 
@@ -577,7 +605,7 @@ def save_review(assignment_id: int, body: ReviewSave, user: CurrentUser = Depend
                 db: Session = Depends(get_db)):
     """评委暂存评审草稿. 已提交锁定的评分需管理员复核重开后方可修改."""
     a = _get_assignment_or_404(db, assignment_id)
-    s = _ensure_examiner_can_review(db, a, user)
+    s = _ensure_scoring_owner(db, a, user)
     if s.status == SessionStatus.CANCELLED.value:
         raise BusinessException("场次已取消, 不能评审")
     eff = get_effective_score(db, a.id, user.profile_id)
@@ -609,7 +637,7 @@ def submit_score(assignment_id: int, body: ReviewSave, user: CurrentUser = Depen
                  db: Session = Depends(get_db)):
     """提交并锁定评分版本; 校验评分项与启用评分表一致, 禁止重复提交有效评分."""
     a = _get_assignment_or_404(db, assignment_id)
-    s = _ensure_examiner_can_review(db, a, user)
+    s = _ensure_scoring_owner(db, a, user)
     if s.status == SessionStatus.CANCELLED.value:
         raise BusinessException("场次已取消, 不能提交评分")
     cycle = db.get(GraduationCycle, a.cycle_id)
@@ -649,13 +677,22 @@ def submit_score(assignment_id: int, body: ReviewSave, user: CurrentUser = Depen
     eff.comment = body.comment
     eff.status = ScoreStatus.SUBMITTED.value
     eff.submitted_at = datetime.now()
+    # 评分变化后不直接改结论状态: RESULT 的 PENDING 只能由 transition(RESULT, "compute") 进入,
+    # 已 READY 的结论在校验发布时会重新复算, 因此无需(也无权)在这里回写 result.status。
 
-    # 若结论已存在且未发布, 评分变化后回到待汇总
-    result = db.execute(select(DefenseResult).where(DefenseResult.assignment_id == a.id)).scalar_one_or_none()
-    if result and result.status in (ResultStatus.READY.value, ResultStatus.UNDER_REVIEW.value):
-        result.status = ResultStatus.PENDING.value
-
-    sp_user = db.execute(select(StudentProfile.user_id).where(StudentProfile.id == cycle.student_id)).scalar()
+    # D24: 评委评分齐备时通知学生等待汇总(此前是未使用的死变量)
+    assigned = db.execute(select(func.count(DefenseExaminer.id)).where(
+        DefenseExaminer.session_id == s.id)).scalar() or 0
+    submitted = db.execute(select(func.count(ExaminerScore.id)).where(
+        ExaminerScore.assignment_id == a.id,
+        ExaminerScore.status == ScoreStatus.SUBMITTED.value)).scalar() or 0
+    if assigned and submitted >= assigned:
+        sp_user = db.execute(select(StudentProfile.user_id).where(StudentProfile.id == cycle.student_id)).scalar()
+        if sp_user:
+            push_notification(db, user_id=sp_user, type="REVIEW_RESULT",
+                              title="评委评分已齐备",
+                              content=f"您的{STAGE_CN.get(s.stage, s.stage)}评分已全部提交, 等待管理员汇总发布。",
+                              business_type="DEFENSE_RESULT", business_id=a.id)
     db.add(OperationLog(user_id=user.id, module="DEFENSE", action="SUBMIT_SCORE",
                         detail=f"评委#{user.profile_id}提交席位#{a.id}评分 v{eff.version}"))
     db.commit()
@@ -704,8 +741,25 @@ def generate_result(body: ResultGenerate, user: CurrentUser = Depends(require_ad
         r = DefenseResult(assignment_id=a.id, cycle_id=a.cycle_id,
                           stage=db.get(DefenseSession, a.session_id).stage, status=ResultStatus.PENDING.value)
         db.add(r)
-        db.commit()
-    return ResponseUtil.success({"id": r.id, "status": r.status}, message="汇总记录已生成")
+        db.flush()  # 取到主键; 状态变更随后交给状态机
+    if r.status == ResultStatus.PENDING.value:
+        # PENDING -> READY(internal 系统动作); 未复算的结论不允许发布
+        calculate_result_flow(db, r.id, user)
+    db.commit()
+    return ResponseUtil.success({"id": r.id, "status": r.status}, message="汇总记录已生成并完成复算")
+
+
+@router.post("/defense-results/{result_id}/calculate")
+def calculate_result(result_id: int, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """复算汇总: PENDING -> READY(重复复算由状态机抛 40003, 保证口径不可被随意改写)."""
+    r, computed = calculate_result_flow(db, result_id, user)
+    db.add(OperationLog(user_id=user.id, username=user.username, module="DEFENSE", action="CALCULATE_RESULT",
+                        detail=f"复算结论#{r.id}: {computed['score']}({computed['decision']}) "
+                               f"精确分 {computed['score_precise']} 样本 {computed['valid_count']}/{computed['min_required']}"))
+    db.commit()
+    return ResponseUtil.success({"id": r.id, "status": r.status, "score": r.score,
+                                 "score_precise": computed["score_precise"], "decision": r.decision},
+                                message="结论已复算")
 
 
 @router.get("/defense-results/{result_id}/preview")
@@ -728,8 +782,9 @@ def preview_result(result_id: int, user: CurrentUser = Depends(require_admin), d
     computed["publishable"] = (
         computed["valid_count"] >= rubric.min_examiners
         and computed["score"] is not None
-        and a.seat_status == SeatStatus.ATTENDED.value
-        and r.status != ResultStatus.PUBLISHED.value
+        and computed["seat_attended"]
+        and s.status not in (SessionStatus.DRAFT.value, SessionStatus.CANCELLED.value)
+        and r.status in (ResultStatus.READY.value, ResultStatus.UNDER_REVIEW.value)
     )
     if r.score is not None:
         computed["recompute_match"] = (r.score == computed["score"])
@@ -739,34 +794,11 @@ def preview_result(result_id: int, user: CurrentUser = Depends(require_admin), d
 @router.post("/defense-results/{result_id}/publish")
 def publish_result(result_id: int, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
     """发布正式结论: 同一事务中复查评委人数/评分完整性/到场状态, 并留痕."""
-    r = db.get(DefenseResult, result_id)
-    if r is None:
-        raise ResourceNotFoundException("结论不存在")
-    if r.status == ResultStatus.PUBLISHED.value:
-        raise BusinessException("结论已发布")
-    if r.status == ResultStatus.WITHDRAWN.value:
-        raise BusinessException("结论已撤回, 请复核后重新生成")
+    # 服务层取行锁 + 复检场次/到场/评委/完整性, 再走 READY|UNDER_REVIEW -> PUBLISHED
+    r, computed = publish_result_flow(db, result_id, user)
     a = db.get(DefenseAssignment, r.assignment_id)
     s = db.get(DefenseSession, a.session_id)
     cycle = db.get(GraduationCycle, a.cycle_id)
-    rubric = get_rubric_for(db, s, cycle)
-    if rubric is None:
-        raise BusinessException("未配置启用的评分表")
-    computed = compute_result(db, a, rubric)
-    if computed["valid_count"] < rubric.min_examiners:
-        raise BusinessException(f"有效评委评分不足({computed['valid_count']}/{rubric.min_examiners}), 不能发布结论")
-    if computed["score"] is None:
-        raise BusinessException("评分项不完整, 不能发布结论")
-    if a.seat_status != SeatStatus.ATTENDED.value:
-        raise BusinessException("该学生未标记到场, 不能发布结论")
-
-    r.score = computed["score"]
-    r.decision = computed["decision"]
-    r.rubric_snapshot = computed["rubric_snapshot"]
-    r.score_detail_json = json.dumps(computed["detail"], ensure_ascii=False, default=str)
-    r.status = ResultStatus.PUBLISHED.value
-    r.published_at = datetime.now()
-    r.published_by = user.id
     db.add(OperationLog(user_id=user.id, module="DEFENSE", action="PUBLISH_RESULT",
                         detail=f"发布席位#{a.id}正式结论: {computed['score']}分 {computed['decision']}"))
 
@@ -789,15 +821,8 @@ class WithdrawRequest(BaseModel):
 @router.post("/defense-results/{result_id}/withdraw")
 def withdraw_result(result_id: int, body: WithdrawRequest, user: CurrentUser = Depends(require_admin),
                     db: Session = Depends(get_db)):
-    r = db.get(DefenseResult, result_id)
-    if r is None:
-        raise ResourceNotFoundException("结论不存在")
-    if r.status != ResultStatus.PUBLISHED.value:
-        raise BusinessException("仅已发布结论可撤回")
-    r.status = ResultStatus.WITHDRAWN.value
-    r.withdraw_reason = body.reason
-    r.withdrawn_at = datetime.now()
-    r.withdrawn_by = user.id
+    # PUBLISHED -> WITHDRAWN; 转移表要求 comment, 未发布/已撤回会由状态机抛 40003
+    r = withdraw_result_flow(db, result_id, user, body.reason)
     db.add(OperationLog(user_id=user.id, module="DEFENSE", action="WITHDRAW_RESULT",
                         detail=f"撤回结论#{r.id}: {body.reason}"))
     a = db.get(DefenseAssignment, r.assignment_id)
@@ -826,11 +851,9 @@ def reopen_score(score_id: int, body: ReopenRequest, user: CurrentUser = Depends
     eff.status = ScoreStatus.REOPENED.value
     a = db.get(DefenseAssignment, eff.assignment_id)
     result = db.execute(select(DefenseResult).where(DefenseResult.assignment_id == a.id)).scalar_one_or_none()
-    if result and result.status == ResultStatus.PUBLISHED.value:
-        result.status = ResultStatus.UNDER_REVIEW.value
-        result.withdraw_reason = body.reason
-    elif result:
-        result.status = ResultStatus.UNDER_REVIEW.value
+    if result is not None:
+        # 已发布结论转入复核中(状态机 RESULT.review, 见 shared/state_machine.py)
+        mark_result_under_review(db, result, body.reason, actor=user)
     tu = db.execute(select(TeacherProfile.user_id).where(TeacherProfile.id == eff.examiner_id)).scalar()
     if tu:
         push_notification(db, user_id=tu, type="SYSTEM", title="评分复核重开通知",

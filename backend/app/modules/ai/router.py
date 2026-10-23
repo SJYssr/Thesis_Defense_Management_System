@@ -1,5 +1,6 @@
 """AI 模块路由: 文档索引/RAG检索/AI模拟答辩/PPT大纲/进度分析/SSE流式问答(roadmap 六十五章)."""
 import json
+import logging
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -19,13 +20,20 @@ from app.core.config import settings
 from app.models.ai import AIDocument
 from app.models.enums import AIDocumentType
 
+logger = logging.getLogger("app.ai.router")
+
 router = APIRouter(prefix="/ai", tags=["AI"])
 
 STATUS_CN = {"WAITING": "待处理", "PROCESSING": "处理中", "SUCCESS": "已完成", "FAILED": "失败"}
 
 
 def _check_ai_rate(user: CurrentUser, db: Session) -> None:
-    """AI 总开关 + 每分钟限流, 阈值均来自系统配置(roadmap 七十七/八十五章)."""
+    """AI 总开关 + 每分钟限流, 阈值均来自系统配置(roadmap 七十七/八十五章).
+
+    D41: 计数与过期时间放进同一事务型 pipeline 原子提交(SET NX EX 打底 + INCR),
+    进程在两步之间崩溃不再留下没有 TTL 的裸 key(否则该用户永久 42901);
+    Redis 任何异常都降级放行并记 warning, 不让缓存故障把 AI 打成全站 500。
+    """
     from app.shared.sysconfig import get_all
 
     cfg = get_all(db)
@@ -33,12 +41,18 @@ def _check_ai_rate(user: CurrentUser, db: Session) -> None:
         raise BusinessException("AI 功能已由管理员暂时关闭", 40300)
     try:
         limit = int(cfg.get("ai_rate_limit_per_minute") or settings.ai_rate_limit_per_minute)
-    except ValueError:
+    except (TypeError, ValueError):
         limit = settings.ai_rate_limit_per_minute
     key = RedisKeys.RATE_AI.format(user_id=user.id)
-    current = redis_client.incr(key)
-    if current == 1:
-        redis_client.expire(key, 60)
+    try:
+        pipe = redis_client.pipeline(transaction=True)
+        pipe.set(key, 1, nx=True, ex=60)  # 仅首次请求生效: 原子建立计数与 60s 过期
+        pipe.incr(key)
+        _, current = pipe.execute()
+        current = int(current)
+    except Exception as exc:  # noqa: BLE001 — Redis 故障只降级限流, 不阻断 AI 功能
+        logger.warning("AI 限流计数失败, 本次放行: %s", exc)
+        return
     if current > limit:
         raise BusinessException(f"AI 接口调用过于频繁(每分钟限 {limit} 次)", 42901)
 
@@ -46,22 +60,32 @@ def _check_ai_rate(user: CurrentUser, db: Session) -> None:
 # ---------- 文档索引 ----------
 
 @router.get("/documents")
-def list_documents(_: CurrentUser = Depends(require_student), db: Session = Depends(get_db), user: CurrentUser = Depends(require_student)):
+def list_documents(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
+                   user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+    """学生知识库文档列表(D50): 依赖只注入一次, 分页下推到 SQL, size 上限 100."""
+    from sqlalchemy import func
+
     from app.models.system import SysFile
 
+    total = db.execute(
+        select(func.count(AIDocument.id)).where(AIDocument.student_id == user.profile_id)
+    ).scalar() or 0
     rows = db.execute(
         select(AIDocument, SysFile.size)
         .outerjoin(SysFile, AIDocument.file_id == SysFile.id)
-        .where(AIDocument.student_id == user.profile_id).order_by(AIDocument.id.desc())
+        .where(AIDocument.student_id == user.profile_id)
+        .order_by(AIDocument.id.desc())
+        .offset((page - 1) * size).limit(size)
     ).all()
-    return ResponseUtil.success([{
+    items = [{
         "id": d.id, "document_name": d.document_name, "document_type": d.document_type,
         "index_status": d.index_status, "status_cn": STATUS_CN.get(d.index_status, d.index_status),
         "chunk_count": d.chunk_count, "version": d.version, "error_message": d.error_message,
-        "file_size": size, "file_id": d.file_id,
+        "file_size": file_size, "file_id": d.file_id,
         "indexed_at": d.indexed_at.isoformat() if d.indexed_at and d.index_status == "SUCCESS" else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
-    } for d, size in rows])
+    } for d, file_size in rows]
+    return ResponseUtil.page(items, total, page, size)
 
 
 @router.get("/rag/config")
@@ -114,7 +138,8 @@ def index_stage_reports(user: CurrentUser = Depends(require_student), db: Sessio
 
 class RAGQueryRequest(BaseModel):
     query: str = Field(min_length=2, max_length=500)
-    document_types: list[str] | None = None
+    # D50: 文档类型枚举强校验, 非法值在入口即 422, 不再有机会拼进 RediSearch TAG 表达式
+    document_types: list[AIDocumentType] | None = None
     top_k: int = Field(default=6, ge=1, le=20)
 
 
@@ -122,7 +147,8 @@ class RAGQueryRequest(BaseModel):
 def rag_query(body: RAGQueryRequest, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     _check_ai_rate(user, db)
     rag = RAGService(db)
-    chunks = rag.retrieve(body.query, user.profile_id, body.document_types, top_k=body.top_k)
+    doc_types = [t.value for t in body.document_types] if body.document_types else None
+    chunks = rag.retrieve(body.query, user.profile_id, doc_types, top_k=body.top_k)
     return ResponseUtil.success({
         "query": body.query,
         "chunks": [{"chunk_id": c.chunk_id, "document_id": c.document_id, "document_type": c.document_type,

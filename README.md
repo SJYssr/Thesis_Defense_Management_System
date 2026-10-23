@@ -50,7 +50,7 @@ docker compose up -d        # MySQL 8 (3306) + redis-stack (6380, 含 RediSearch
 cd backend
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env        # 按需修改; 不填 LLM API Key 也可运行(内置离线 Mock)
-.venv/bin/python seed.py    # 建表 + 种子数据 + 演示论文入知识库
+.venv/bin/python seed.py    # 自动补齐 Alembic 迁移 + 种子数据 + 演示论文入知识库
 .venv/bin/python -m uvicorn app.main:app --port 8000
 ```
 
@@ -204,7 +204,8 @@ docker compose -f docker-compose.prod.yml exec backend python seed.py   # 首次
 - 生产编排默认 `CELERY_ENABLED=true`, 论文解析/Embedding 由独立 Worker 执行
 - nginx 已为 `/api` 关闭缓冲, SSE 流式回答可直接穿透
 - 数据卷: `gs-mysql-data` / `gs-redis-data` / `gs-uploads`
-- 后续演进: Alembic 迁移替代启动建表(`AUTO_CREATE_TABLES=false` + `alembic upgrade head`)
+- 建表只走 Alembic: 启动时不建表, 未迁移会直接报错提示执行 `alembic upgrade head`
+  (仅本地临时库可用 `AUTO_CREATE_TABLES=true` 逃生; `seed.py` 会自动补迁移)
 
 ## 七、与 roadmap 的对应
 

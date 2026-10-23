@@ -1,7 +1,7 @@
 """用户与组织模型: sys_user / 三种 profile / 院系-专业-班级."""
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, SmallInteger, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
@@ -22,6 +22,14 @@ class SysUser(Base, TimestampMixin):
     last_login_time: Mapped[datetime | None] = mapped_column(DateTime)
     last_login_ip: Mapped[str | None] = mapped_column(String(64))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, comment="软删除")
+    # D14: 登出/改密后自增, 使已签发的 access/refresh 令牌立即失效
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0", comment="令牌版本号"
+    )
+    # D21: 管理员新建账号后置 1, 提示用户修改初始密码
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0", comment="是否需要修改初始密码"
+    )
 
 
 class AdminProfile(Base, TimestampMixin):

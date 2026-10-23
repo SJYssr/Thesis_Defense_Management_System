@@ -7,7 +7,9 @@
 """
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from typing import Any
+
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,6 +20,7 @@ from app.core.response import ResponseUtil
 from app.db.mysql import get_db
 from app.models.business import GraduationSchedule
 from app.models.system import OperationLog
+from app.shared.query import paginate
 
 router = APIRouter(prefix="/academic-schedule", tags=["Schedule"])
 admin_router = APIRouter(prefix="/admin/academic-schedules", tags=["Schedule-Admin"])
@@ -27,14 +30,43 @@ STAGE_LABELS = {"selection": "选题", "opening": "开题", "midterm": "中期",
 WINDOW_KEYS = [f"{stage}_{side}" for stage in STAGES for side in ("start", "end")]
 
 
-def validate_windows(windows: dict[str, datetime | None]) -> None:
-    unknown = set(windows) - set(WINDOW_KEYS)
+def to_naive(value: Any, field: str = "") -> datetime | None:
+    """D62: 时间窗口一律转成 naive datetime 再入库。
+
+    前端可能传 "2026-03-01T00:00:00+08:00" 或 "2026-03-01T00:00:00"; 若不剥离时区,
+    带 tzinfo 的值会落进 DateTime(无时区) 列并把偏移吞掉, 消费方(shared/events.naive now())
+    做差时 days_left 整体偏若干小时。这里统一"保留墙上时间, 丢弃偏移", 两种写法入库等价。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            value = datetime.fromisoformat(text)
+        except ValueError:
+            raise BusinessException(
+                f"时间字段 {field or 'window'} 格式错误, 应为 ISO 8601(如 2026-03-01T00:00:00)", 40002) from None
+    if not isinstance(value, datetime):
+        raise BusinessException(f"时间字段 {field or 'window'} 类型错误", 40002)
+    return value.replace(tzinfo=None)
+
+
+def normalize_windows(windows: dict[str, Any]) -> dict[str, datetime | None]:
+    """把请求体里的 str/naive/aware datetime 统一规范化(键名不改)."""
+    return {key: to_naive(value, key) for key, value in windows.items()}
+
+
+def validate_windows(windows: dict[str, Any]) -> None:
+    normalized = normalize_windows(windows)
+    unknown = set(normalized) - set(WINDOW_KEYS)
     if unknown:
         raise BusinessException(f"未知的时间字段: {', '.join(sorted(unknown))}", 40002)
 
     # 仅约束单阶段 start < end; 阶段之间允许交叉(如补选期间其他学生已进入开题)
     for stage in STAGES:
-        start, end = windows.get(f"{stage}_start"), windows.get(f"{stage}_end")
+        start, end = normalized.get(f"{stage}_start"), normalized.get(f"{stage}_end")
         if start and end and start >= end:
             raise BusinessException(f"{STAGE_LABELS[stage]}阶段的开始时间必须早于结束时间", 40002)
 
@@ -50,13 +82,15 @@ def _item(s: GraduationSchedule) -> dict:
 class ScheduleBody(BaseModel):
     academic_year: str = Field(min_length=3, max_length=32, description="如 2025-2026")
     is_active: bool = False
-    windows: dict[str, datetime | None] = Field(default_factory=dict, max_length=20)
+    # D62: 收 str 而非 datetime, 由 to_naive 统一剥离时区(带 +08:00 也不会被静默吞掉)
+    windows: dict[str, str | None] = Field(default_factory=dict, max_length=20,
+                                           description="键如 selection_start, 值 ISO 8601 字符串或 null")
 
 
-def _set_windows(schedule: GraduationSchedule, windows: dict[str, datetime | None], user: CurrentUser,
+def _set_windows(schedule: GraduationSchedule, windows: dict[str, Any], user: CurrentUser,
                  db: Session, action: str) -> None:
     validate_windows(windows)
-    for key, value in windows.items():
+    for key, value in normalize_windows(windows).items():
         setattr(schedule, key, value)
     if schedule.is_active:
         for other in db.execute(select(GraduationSchedule).where(
@@ -75,9 +109,14 @@ def active_schedule(user: CurrentUser = Depends(get_current_user), db: Session =
 
 
 @admin_router.get("")
-def list_schedules(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
-    rows = db.execute(select(GraduationSchedule).order_by(GraduationSchedule.academic_year.desc())).scalars().all()
-    return ResponseUtil.success([_item(s) for s in rows])
+def list_schedules(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+                   _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """D61: 学年配置列表分页(先 count 后取页, 不再一次性全量返回)."""
+    rows, total = paginate(
+        db, select(GraduationSchedule).order_by(GraduationSchedule.academic_year.desc()),
+        page=page, size=page_size,
+    )
+    return ResponseUtil.page([_item(s) for s in rows], total, page, page_size)
 
 
 @admin_router.post("")

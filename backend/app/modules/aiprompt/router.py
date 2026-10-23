@@ -80,7 +80,11 @@ class PromptUpdateRequest(BaseModel):
 @router.put("/{code}")
 def update_prompt(code: str, body: PromptUpdateRequest, user: CurrentUser = Depends(require_admin),
                   db: Session = Depends(get_db)):
-    """覆盖场景 System Prompt: 新建或更新, 版本号+1 并留痕."""
+    """覆盖场景 System Prompt: 新建或更新, 版本号+1 并留痕.
+
+    D69: 编辑内容不动 status —— 启停只由 POST /{code}/status 显式控制,
+    否则"已停用的场景"会被一次内容编辑静默复活。
+    """
     spec = _require_spec(code)
     content = body.system_prompt.strip()
     if len(content) < MIN_PROMPT_LEN:
@@ -97,7 +101,7 @@ def update_prompt(code: str, body: PromptUpdateRequest, user: CurrentUser = Depe
             row.name = body.name
         row.system_prompt = content
         row.version = (row.version or 0) + 1
-        row.status = 1
+        # 不回写 status: 停用状态下编辑内容仍保持停用(D69)
         row.updated_by = user.id
         version = row.version
     _record_history(db, code, version, content, "UPDATE", user.id)
@@ -131,14 +135,18 @@ def toggle_status(code: str, body: PromptStatusRequest, user: CurrentUser = Depe
 
 @router.post("/{code}/reset")
 def reset_prompt(code: str, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
-    """内容重置为内置默认(版本号+1 留痕, 行保留供审计)."""
+    """内容重置为内置默认(版本号+1 留痕, 行保留供审计).
+
+    D69: 重置同样不动 status —— 停用的场景重置后仍是停用, 回退内置默认;
+    需要启用时显式调用 POST /{code}/status {"enabled": true}。
+    """
     spec = _require_spec(code)
     row = _get_row(db, code)
     if row is None:
         raise ResourceNotFoundException("该场景尚未自定义")
     row.system_prompt = spec.default_system
     row.version = (row.version or 0) + 1
-    row.status = 1
+    # 保持原 status(停用即停用), 启停只走 /status 接口(D69)
     row.updated_by = user.id
     _record_history(db, code, row.version, row.system_prompt, "RESET", user.id)
     _log_op(db, user, "RESET_PROMPT", code, row.version)

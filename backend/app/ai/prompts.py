@@ -9,6 +9,7 @@
   强制追加(spec.untrusted), 不随自定义内容存储, 管理员无法删改.
 """
 import json
+import re
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -35,6 +36,17 @@ DOC_TYPE_CN = {
 
 def untrusted_note() -> str:
     return UNTRUSTED_NOTE
+
+
+def strip_untrusted_note(text: str) -> str:
+    """移除正文里出现的全部安全声明原文(D39).
+
+    声明只允许由 resolve_system_prompt 在末尾追加一次; 自定义内容里预先写一遍声明
+    属于"用子串短路绕过防护"的攻击面, 因此一律剥离后由系统重新追加。
+    """
+    if not text or UNTRUSTED_NOTE not in text:
+        return text
+    return re.sub(r"\n{3,}", "\n\n", text.replace(UNTRUSTED_NOTE, "")).strip()
 
 
 # ---------- 内置默认 Prompt(不含安全声明, 声明在解析时追加) ----------
@@ -130,9 +142,9 @@ PROMPT_SPECS: dict[str, PromptSpec] = {
         PromptSpec("DEFENSE_REPORT", "答辩报告", "整场模拟答辩结束后的五维报告生成",
                    _DEFENSE_REPORT_CORE),
         PromptSpec("PPT_OUTLINE", "PPT 大纲生成", "12~15页答辩PPT大纲(含页面目标/要点/讲稿/建议图表)",
-                   _PPT_OUTLINE_CORE),
+                   _PPT_OUTLINE_CORE, untrusted=True),
         PromptSpec("PROGRESS_ANALYSIS", "进度分析", "教师端进度与风险分析(规则引擎结果+材料文本)",
-                   _PROGRESS_ANALYSIS_CORE),
+                   _PROGRESS_ANALYSIS_CORE, untrusted=True),
         PromptSpec("QUERY_REWRITE", "多轮查询重写", "将多轮对话最新问题改写为独立检索问题",
                    _QUERY_REWRITE_CORE),
     ]
@@ -166,8 +178,10 @@ def resolve_system_prompt(db: Session, code: str) -> str:
         raise ValueError(f"未知 Prompt 场景: {code}")
     content = _custom_content(db, code)
     system = content if content is not None else spec.default_system
-    if spec.untrusted and UNTRUSTED_NOTE not in system:
-        system = system.rstrip() + "\n\n" + UNTRUSTED_NOTE
+    if spec.untrusted:
+        # 无条件追加(D39): 不再用 "声明是否已存在" 做子串短路(自定义内容里写一遍声明即可绕过),
+        # 改为剥离正文中的声明原文后, 在末尾追加唯一一份。
+        system = strip_untrusted_note(system).rstrip() + "\n\n" + UNTRUSTED_NOTE
     return system
 
 

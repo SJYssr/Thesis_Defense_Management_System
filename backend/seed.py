@@ -9,6 +9,7 @@
 """
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
 sys.path.insert(0, ".")
 
@@ -108,10 +109,56 @@ RAG 流程包括: 文档解析(PyMuPDF/python-docx)、文本清洗、章节感�
 """
 
 
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def _alembic_config():
+    from alembic.config import Config
+
+    return Config(str(BASE_DIR / "alembic.ini"))
+
+
+def _upgrade_head() -> None:
+    from alembic import command
+
+    command.upgrade(_alembic_config(), "head")
+
+
+def _schema_ready() -> bool:
+    from sqlalchemy import inspect
+
+    return "alembic_version" in inspect(engine).get_table_names()
+
+
+def _ensure_schema() -> None:
+    """建表只走 Alembic: 未迁移就先补迁移, 不再用 create_all 造一套与迁移不一致的表."""
+    if not _schema_ready():
+        print("库未迁移, 执行 alembic upgrade head ...")
+        _upgrade_head()
+
+
+def _flush_config_caches() -> None:
+    """D75: 重建配置表后必须让配置/Prompt 缓存失效。
+
+    配置缓存 TTL 5 分钟, 且本机/多套环境常只靠 REDIS_DB 隔离; 不清会读到
+    上一个库的残留值(例如 ai_defense_enabled=false 直接把整个 AI 域关掉)。
+    """
+    from app.ai.prompts import PROMPT_CACHE_KEY, PROMPT_SPECS
+    from app.db.redis import redis_client
+    from app.shared.sysconfig import CACHE_KEY
+
+    keys = [CACHE_KEY] + [PROMPT_CACHE_KEY.format(code=code) for code in PROMPT_SPECS]
+    try:
+        redis_client.delete(*keys)
+        print("配置缓存已清理:", len(keys), "个键")
+    except Exception as exc:  # Redis 不可用不应阻断种子
+        print("配置缓存清理失败(忽略):", exc)
+
+
 def seed(force: bool = False):
+    _ensure_schema()
     db = SessionLocal()
     try:
-        Base.metadata.create_all(bind=engine)
         existing = db.execute(select(SysUser).where(SysUser.username == "admin")).scalar_one_or_none()
         if existing and not force:
             print("种子数据已存在, 跳过。(删除数据后或 --force 重新执行)")
@@ -122,9 +169,14 @@ def seed(force: bool = False):
         db.close()
 
         if force:
+            from sqlalchemy import text
+
             for table in reversed(Base.metadata.sorted_tables):
                 table.drop(bind=engine, checkfirst=True)
-            Base.metadata.create_all(bind=engine)
+            # 版本指针必须一起清掉, 否则重建后 alembic 仍以为表已就绪
+            with engine.begin() as conn:
+                conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+            _upgrade_head()
             db = SessionLocal()
 
         now = datetime.now()
@@ -390,6 +442,7 @@ def seed(force: bool = False):
         result = RAGService(db).index_document(doc.id)
         print("演示论文索引完成:", result)
 
+        _flush_config_caches()
         print("种子数据完成。")
         print("  管理员: admin / admin123")
         print("  教师:   teacher01 / 123456, teacher02 / 123456")

@@ -12,6 +12,7 @@ from app.db.mysql import get_db
 from app.models.ai import AIUsageLog
 from app.models.business import (
     FinalDefense,
+    GraduationCycle,
     GraduationMaterial,
     GraduationProcess,
     GraduationTopic,
@@ -23,11 +24,29 @@ from app.models.enums import ProcessStage
 from app.models.system import Announcement, Notification, ReviewRecord
 from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
 from app.models.defense import DefenseExaminer, DefenseSession
+from app.shared.cycle import academic_year_for
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 STAGE_CN = {"SELECTION": "选题", "OPENING": "开题材料", "MIDTERM": "中期材料", "FINAL": "终期材料", "MATERIAL": "毕业材料", "COMPLETED": "材料审核完成"}
 RISK_CN = {"NORMAL": "正常", "WARNING": "警告", "HIGH": "高风险"}
+
+
+def _current_year_cycles(db: Session):
+    """当前学年的 cycle id 子查询 —— 后台"完成/毕业"类口径统一以此为范围(D63/D64)."""
+    return select(GraduationCycle.id).where(GraduationCycle.academic_year == academic_year_for(db))
+
+
+def _completed_count(db: Session) -> int:
+    """D63/D64: "已完成/已毕业"唯一口径.
+
+    只认 GraduationProcess.completed_at(progress.compute() 的结果投影, 见 app/shared/progress.py),
+    并限定当前学年 cycle; 不再用 current_stage == "COMPLETED" 这个另立的字面值口径。
+    """
+    return db.execute(select(func.count(GraduationProcess.id)).where(
+        GraduationProcess.completed_at.is_not(None),
+        GraduationProcess.cycle_id.in_(_current_year_cycles(db)),
+    )).scalar_one()
 
 
 @router.get("/teacher-activity")
@@ -134,7 +153,12 @@ def teacher_activity(user: CurrentUser = Depends(get_current_user), db: Session 
 
 @router.get("/analytics")
 def admin_analytics(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Real all-year figures for the administrator statistics page."""
+    """管理员统计页数据.
+
+    口径(D63/D73): 进度类指标(通过率/月度提交/答辩结论/已完成)统一为当前学年;
+    实体总量(学生/教师/题目)与待办队列保持全量, 由响应里的 scope_map 显式标注,
+    不允许"同一响应内两种口径却不标注"。
+    """
     from app.core.exceptions import PermissionDeniedException
     from app.models.defense import DefenseResult
     from app.models.enums import ResultStatus
@@ -142,14 +166,16 @@ def admin_analytics(user: CurrentUser = Depends(get_current_user), db: Session =
     if user.role != "ADMIN":
         raise PermissionDeniedException("仅管理员可查看全局统计")
 
+    academic_year = academic_year_for(db)  # 注意: 下方月份循环里 year 会被重绑定为公历年
+    year_cycles = _current_year_cycles(db)  # 进度类统计的唯一范围
     active_students = StudentProfile.deleted_at.is_(None)
     student_total = db.execute(select(func.count(StudentProfile.id)).where(active_students)).scalar_one()
     teacher_total = db.execute(select(func.count(TeacherProfile.id))).scalar_one()
     topic_total = db.execute(select(func.count(GraduationTopic.id)).where(GraduationTopic.deleted_at.is_(None))).scalar_one()
     selected_total = db.execute(select(func.count(func.distinct(TopicSelection.student_id))).where(
-        TopicSelection.status == "APPROVED", TopicSelection.active_flag == 1)).scalar_one()
-    completed_total = db.execute(select(func.count(GraduationProcess.id)).where(
-        GraduationProcess.current_stage == "COMPLETED")).scalar_one()
+        TopicSelection.status == "APPROVED", TopicSelection.active_flag == 1,
+        TopicSelection.cycle_id.in_(year_cycles))).scalar_one()
+    completed_total = _completed_count(db)  # D63: 与 progress.compute() 同源 + 当前学年口径
     pending_total = sum(db.execute(select(func.count(model.id)).where(model.status == "SUBMITTED")).scalar_one()
                         for model in (OpeningReport, MidtermReport, FinalDefense, GraduationMaterial))
     pending_total += db.execute(select(func.count(TopicSelection.id)).where(
@@ -183,7 +209,9 @@ def admin_analytics(user: CurrentUser = Depends(get_current_user), db: Session =
     ]
     pass_rates = []
     for name, model in stage_models:
-        base = [model.active_flag == 1] if model is TopicSelection else []
+        base = [model.cycle_id.in_(year_cycles)]
+        if model is TopicSelection:
+            base.append(model.active_flag == 1)
         approved = db.execute(select(func.count(model.id)).where(*base, model.status == "APPROVED")).scalar_one()
         reviewed = db.execute(select(func.count(model.id)).where(*base, model.status.in_(
             ["APPROVED", "REJECTED", "RESUBMIT_REQUIRED", "SUBMITTED"]))).scalar_one()
@@ -204,10 +232,12 @@ def admin_analytics(user: CurrentUser = Depends(get_current_user), db: Session =
         months.append(f"{year}-{month_zero + 1:02d}")
         for name, model in stage_models[1:]:
             monthly[name].append(db.execute(select(func.count(model.id)).where(
-                model.submitted_at >= start, model.submitted_at < end)).scalar_one())
+                model.submitted_at >= start, model.submitted_at < end,
+                model.cycle_id.in_(year_cycles))).scalar_one())
 
     result_rows = db.execute(select(DefenseResult.score, DefenseResult.decision).where(
-        DefenseResult.stage == "FINAL", DefenseResult.status == ResultStatus.PUBLISHED.value)).all()
+        DefenseResult.stage == "FINAL", DefenseResult.status == ResultStatus.PUBLISHED.value,
+        DefenseResult.cycle_id.in_(year_cycles))).all()
     grade_counts = {name: 0 for name in ("优秀", "良好", "中等", "及格", "不及格")}
     for score, decision in result_rows:
         if decision != "PASS" or score is None or score < 60:
@@ -233,6 +263,16 @@ def admin_analytics(user: CurrentUser = Depends(get_current_user), db: Session =
         "month_series": [{"name": name, "data": values} for name, values in monthly.items()],
         "defense_results": [{"name": name, "value": count} for name, count in grade_counts.items()],
         "defense_total": len(result_rows),
+        "scope": "current_year",
+        "academic_year": academic_year,
+        "scope_map": {
+            "cards.completed_count": "current_year", "cards.selected_count": "current_year",
+            "cards.pending_count": "all_years", "cards.student_count": "all_years",
+            "cards.teacher_count": "all_years", "cards.topic_count": "all_years",
+            "pass_rates": "current_year", "month_series": "current_year",
+            "defense_results": "current_year",
+            "colleges": "all_years", "majors": "all_years", "topic_types": "all_years",
+        },
     })
 
 
@@ -301,28 +341,47 @@ def home(user: CurrentUser = Depends(get_current_user), db: Session = Depends(ge
     unread = db.execute(select(func.count(Notification.id)).where(Notification.user_id == user.id, Notification.is_read == 0)).scalar()
 
     if user.role == "ADMIN":
+        year = academic_year_for(db)
+        year_cycles = _current_year_cycles(db)  # D73: 进度类卡片统一当前学年
         data = {
             "role": "ADMIN",
             "cards": {
                 "student_count": db.execute(select(func.count(StudentProfile.id)).where(StudentProfile.deleted_at.is_(None))).scalar(),
                 "teacher_count": db.execute(select(func.count(TeacherProfile.id))).scalar(),
                 "topic_count": db.execute(select(func.count(GraduationTopic.id)).where(GraduationTopic.deleted_at.is_(None))).scalar(),
-                "selected_count": db.execute(select(func.count(TopicSelection.id)).where(TopicSelection.status == "APPROVED", TopicSelection.active_flag == 1)).scalar(),
-                "completed_count": db.execute(select(func.count(GraduationProcess.id)).where(GraduationProcess.current_stage == "COMPLETED")).scalar(),
-                "risk_count": db.execute(select(func.count(GraduationProcess.id)).where(GraduationProcess.risk_level.in_(["WARNING", "HIGH"]))).scalar(),
+                "selected_count": db.execute(select(func.count(TopicSelection.id)).where(
+                    TopicSelection.status == "APPROVED", TopicSelection.active_flag == 1,
+                    TopicSelection.cycle_id.in_(year_cycles))).scalar(),
+                "completed_count": _completed_count(db),  # D63: 唯一口径, 见 _completed_count
+                "risk_count": db.execute(select(func.count(GraduationProcess.id)).where(
+                    GraduationProcess.risk_level.in_(["WARNING", "HIGH"]),
+                    GraduationProcess.cycle_id.in_(year_cycles))).scalar(),
+            },
+            # 同一屏不允许两种口径混排而不标注: 进度类当前学年, 实体总量全量
+            "scope": "current_year", "academic_year": year,
+            "scope_map": {
+                "cards.completed_count": "current_year", "cards.risk_count": "current_year",
+                "cards.selected_count": "current_year",
+                "cards.student_count": "all_years", "cards.teacher_count": "all_years",
+                "cards.topic_count": "all_years",
             },
             "announcements": ann_items, "unread": unread,
         }
         return ResponseUtil.success(data)
 
     if user.role == "TEACHER":
+        year = academic_year_for(db)
+        year_cycles = _current_year_cycles(db)
         pending_selections = db.execute(select(func.count(TopicSelection.id)).where(TopicSelection.teacher_id == user.profile_id, TopicSelection.status == "PENDING")).scalar()
         pending_opening = db.execute(select(func.count(OpeningReport.id)).where(OpeningReport.teacher_id == user.profile_id, OpeningReport.status == "SUBMITTED")).scalar()
         pending_midterm = db.execute(select(func.count(MidtermReport.id)).where(MidtermReport.teacher_id == user.profile_id, MidtermReport.status == "SUBMITTED")).scalar()
         pending_final = db.execute(select(func.count(FinalDefense.id)).where(FinalDefense.teacher_id == user.profile_id, FinalDefense.status == "SUBMITTED")).scalar()
         pending_material = db.execute(select(func.count(GraduationMaterial.id)).where(GraduationMaterial.teacher_id == user.profile_id, GraduationMaterial.status == "SUBMITTED")).scalar()
-        student_ids = [r for r in db.execute(select(TopicSelection.student_id).where(TopicSelection.teacher_id == user.profile_id, TopicSelection.status == "APPROVED", TopicSelection.active_flag == 1)).scalars().all()]
-        risk = db.execute(select(func.count(GraduationProcess.id)).where(GraduationProcess.student_id.in_(student_ids), GraduationProcess.risk_level.in_(["WARNING", "HIGH"]))).scalar() if student_ids else 0
+        student_ids = [r for r in db.execute(select(TopicSelection.student_id).where(TopicSelection.teacher_id == user.profile_id, TopicSelection.status == "APPROVED", TopicSelection.active_flag == 1, TopicSelection.cycle_id.in_(year_cycles))).scalars().all()]
+        risk = db.execute(select(func.count(GraduationProcess.id)).where(
+            GraduationProcess.student_id.in_(student_ids),
+            GraduationProcess.risk_level.in_(["WARNING", "HIGH"]),
+            GraduationProcess.cycle_id.in_(year_cycles))).scalar() if student_ids else 0
         data = {
             "role": "TEACHER",
             "cards": {
@@ -331,6 +390,13 @@ def home(user: CurrentUser = Depends(get_current_user), db: Session = Depends(ge
                 "pending_selections": pending_selections, "pending_opening": pending_opening,
                 "pending_midterm": pending_midterm, "pending_final": pending_final,
                 "pending_material": pending_material, "risk_count": risk,
+            },
+            "scope": "current_year", "academic_year": year,
+            "scope_map": {
+                "cards.risk_count": "current_year", "cards.student_count": "current_year",
+                "cards.topic_count": "all_years", "cards.pending_selections": "all_years",
+                "cards.pending_opening": "all_years", "cards.pending_midterm": "all_years",
+                "cards.pending_final": "all_years", "cards.pending_material": "all_years",
             },
             "announcements": ann_items, "unread": unread,
         }
@@ -376,11 +442,19 @@ def admin_stats(user: CurrentUser = Depends(get_current_user), db: Session = Dep
 
         raise PermissionDeniedException("仅管理员可查看全局统计")
 
-    total_students = db.execute(select(func.count(StudentProfile.id)).where(StudentProfile.deleted_at.is_(None))).scalar() or 1
+    # D73: 进度类指标统一当前学年; 实体总量(学生总数/教师工作量/AI 用量)保持全量,
+    # 由响应 scope_map 显式标注, 前端可据此加"当前学年/全量"标签。
+    year = academic_year_for(db)
+    year_cycles = _current_year_cycles(db)
 
-    # 进度分布(饼图)
+    total_students = db.execute(select(func.count(StudentProfile.id)).where(
+        StudentProfile.deleted_at.is_(None))).scalar_one()
+
+    # 进度分布(饼图) —— 当前学年
     stage_dist_rows = db.execute(
-        select(GraduationProcess.current_stage, func.count(GraduationProcess.id)).group_by(GraduationProcess.current_stage)
+        select(GraduationProcess.current_stage, func.count(GraduationProcess.id))
+        .where(GraduationProcess.cycle_id.in_(year_cycles))
+        .group_by(GraduationProcess.current_stage)
     ).all()
     no_selection = db.execute(
         select(func.count(StudentProfile.id)).where(
@@ -392,22 +466,32 @@ def admin_stats(user: CurrentUser = Depends(get_current_user), db: Session = Dep
         {"name": STAGE_CN.get(s, s), "value": c} for s, c in stage_dist_rows
     ]
 
-    # 各阶段通过率(柱状图)
-    def _rate(model, teacher_field=True):
-        approved = db.execute(select(func.count(model.id)).where(model.status == "APPROVED")).scalar()
-        submitted_total = db.execute(
-            select(func.count(model.id)).where(model.status.in_(["APPROVED", "REJECTED", "RESUBMIT_REQUIRED", "SUBMITTED"]))
-        ).scalar()
-        return round(approved / submitted_total * 100, 1) if submitted_total else 0
+    # D66: 各阶段通过情况 —— 统一 {name, value, total} 三元组, 比率由前端 value/total 计算,
+    # 不再把裸计数塞进 value 冒充比率; 计数全部带当前学年 cycle 条件(与完成口径同源同域)。
+    selected = db.execute(select(func.count(func.distinct(TopicSelection.student_id))).where(
+        TopicSelection.status == "APPROVED", TopicSelection.active_flag == 1,
+        TopicSelection.cycle_id.in_(year_cycles))).scalar_one()
 
-    selected = db.execute(select(func.count(TopicSelection.id)).where(TopicSelection.active_flag == 1)).scalar()
-    pass_rates = [
-        {"name": "选题", "value": db.execute(select(func.count(TopicSelection.id)).where(TopicSelection.status == "APPROVED", TopicSelection.active_flag == 1)).scalar()},
-        {"name": "开题", "value": db.execute(select(func.count(OpeningReport.id)).where(OpeningReport.status == "APPROVED")).scalar()},
-        {"name": "中期", "value": db.execute(select(func.count(MidtermReport.id)).where(MidtermReport.status == "APPROVED")).scalar()},
-        {"name": "终期", "value": db.execute(select(func.count(FinalDefense.id)).where(FinalDefense.status == "APPROVED")).scalar()},
-        {"name": "毕业", "value": db.execute(select(func.count(GraduationMaterial.id)).where(GraduationMaterial.status == "APPROVED")).scalar()},
-    ]
+    def _stage_counts(model) -> tuple[int, int]:
+        """(已通过数, 已评审数) —— 原 _rate 的死代码在此真正启用, 且带 cycle 过滤."""
+        conditions = [model.cycle_id.in_(year_cycles)]
+        if model is TopicSelection:
+            conditions.append(model.active_flag == 1)
+        approved = db.execute(select(func.count(model.id)).where(
+            *conditions, model.status == "APPROVED")).scalar_one()
+        reviewed = db.execute(select(func.count(model.id)).where(
+            *conditions, model.status.in_(["APPROVED", "REJECTED", "RESUBMIT_REQUIRED", "SUBMITTED"]))).scalar_one()
+        return approved, reviewed
+
+    year_process_total = db.execute(select(func.count(GraduationProcess.id)).where(
+        GraduationProcess.cycle_id.in_(year_cycles))).scalar_one()
+    pass_counts = []
+    for _name, _model in (("选题", TopicSelection), ("开题", OpeningReport),
+                          ("中期", MidtermReport), ("终期", FinalDefense)):
+        _approved, _reviewed = _stage_counts(_model)
+        pass_counts.append({"name": _name, "value": _approved, "total": _reviewed})
+    # D64: "已毕业"柱与后台"已完成"同源(completed_at 投影 + 当前学年), 不再数材料审核通过
+    pass_counts.append({"name": "已毕业", "value": _completed_count(db), "total": year_process_total})
 
     # 最近7天提交趋势(折线图)
     trend = []
@@ -417,7 +501,9 @@ def admin_stats(user: CurrentUser = Depends(get_current_user), db: Session = Dep
         count = 0
         for model in (OpeningReport, MidtermReport, FinalDefense, GraduationMaterial):
             count += db.execute(
-                select(func.count(model.id)).where(model.submitted_at >= day, model.submitted_at < next_day)
+                select(func.count(model.id)).where(
+                    model.submitted_at >= day, model.submitted_at < next_day,
+                    model.cycle_id.in_(year_cycles))
             ).scalar()
         trend.append({"date": day.isoformat(), "value": count})
 
@@ -431,9 +517,11 @@ def admin_stats(user: CurrentUser = Depends(get_current_user), db: Session = Dep
     ).all()
     supervision = [{"name": name, "value": c} for name, c in supervision_rows]
 
-    # 风险分布
+    # 风险分布 —— 当前学年(与 completed/pass_counts 同域)
     risk_rows = db.execute(
-        select(GraduationProcess.risk_level, func.count(GraduationProcess.id)).group_by(GraduationProcess.risk_level)
+        select(GraduationProcess.risk_level, func.count(GraduationProcess.id))
+        .where(GraduationProcess.cycle_id.in_(year_cycles))
+        .group_by(GraduationProcess.risk_level)
     ).all()
     risk_dist = [{"name": RISK_CN.get(r, r), "value": c} for r, c in risk_rows]
 
@@ -453,11 +541,22 @@ def admin_stats(user: CurrentUser = Depends(get_current_user), db: Session = Dep
 
     return ResponseUtil.success({
         "stage_distribution": stage_dist,
-        "pass_counts": pass_rates,
+        "pass_counts": pass_counts,
+        "student_total": total_students,
+        "selected_total": selected,
         "submit_trend": trend,
         "supervision": supervision,
         "risk_distribution": risk_dist,
         "ai_usage": {"total": ai_total, "today": ai_today, "scenes": ai_scenes},
+        "scope": "current_year",
+        "academic_year": year,
+        "scope_map": {
+            "stage_distribution": "current_year", "pass_counts": "current_year",
+            "submit_trend": "current_year", "risk_distribution": "current_year",
+            "selected_total": "current_year",
+            "student_total": "all_years", "no_selection": "all_years",
+            "supervision": "all_years", "ai_usage": "all_years",
+        },
     })
 
 
@@ -513,14 +612,16 @@ def defense_stats(user: CurrentUser = Depends(get_current_user), db: Session = D
     ).scalar()
 
     # 归档完成率: 归档数 / 归档达标数(终期结论 PUBLISHED PASS 且材料 APPROVED 的流程)
+    # D65: 分母按 cycle 去重 —— 一个 cycle 有多份材料/多条结论时只算一个应归档单元, 归档率不会虚高
     eligible_cycles = db.execute(
         select(DefenseResult.cycle_id)
         .join(GraduationMaterial, GraduationMaterial.cycle_id == DefenseResult.cycle_id)
         .where(DefenseResult.stage == "FINAL", DefenseResult.status == ResultStatus.PUBLISHED.value,
                DefenseResult.decision == "PASS", GraduationMaterial.status == "APPROVED")
+        .distinct()
     ).scalars().all()
     archived = db.execute(
-        select(func.count(ArchivePackage.id)).where(
+        select(func.count(func.distinct(ArchivePackage.cycle_id))).where(
             ArchivePackage.cycle_id.in_(eligible_cycles) if eligible_cycles else ArchivePackage.id.is_(None),
             ArchivePackage.status == ArchiveStatus.ARCHIVED.value)
     ).scalar()

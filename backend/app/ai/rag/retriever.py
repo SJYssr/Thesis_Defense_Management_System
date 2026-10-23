@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.ai.embedding.factory import EmbeddingFactory
 from app.ai.llm.factory import LLMFactory, extract_json
 from app.ai.prompts import resolve_system_prompt
-from app.ai.vector.store import vector_store
+from app.ai.vector.store import safe_document_types, student_scope_filter, vector_store
 from app.models.ai import AIDocumentChunk
 
 
@@ -58,10 +58,11 @@ class HybridRetriever:
         grams = sorted(_ngrams(query))[:12]  # 排序保证跨进程可复现(set 顺序受哈希种子影响)
         if not grams:
             return []
-        conds = [AIDocumentChunk.student_id.in_([student_id, None]) if student_id is not None
-                 else AIDocumentChunk.student_id.is_(None)]
-        if document_types:
-            conds.append(AIDocumentChunk.document_type.in_(document_types))
+        # D43: 与向量侧统一为 OR(student_id = sid, student_id IS NULL), IN 对 NULL 行永不成立
+        conds = [student_scope_filter(student_id)]
+        types = safe_document_types(document_types)
+        if types:
+            conds.append(AIDocumentChunk.document_type.in_(types))
         rows = self.db.execute(
             select(AIDocumentChunk.id, AIDocumentChunk.content).where(*conds).limit(3000)
         ).all()
@@ -114,10 +115,18 @@ class HybridRetriever:
         if not ranked:
             return []
 
-        chunks = self.db.execute(
-            select(AIDocumentChunk).where(AIDocumentChunk.id.in_([cid for cid, _ in ranked]))
-        ).scalars().all()
-        chunk_map = {c.id: c for c in chunks}
+        # D44: 回表必须带同样的 student 过滤 —— 向量库索引残留(重新索引/删除失败/Redis 越权写入)
+        # 不能成为跨学生泄露通道; 命中他人 chunk 时这里直接取不到行。
+        chunk_map = {
+            c.id: c for c in self.db.execute(
+                select(AIDocumentChunk).where(
+                    AIDocumentChunk.id.in_([cid for cid, _ in ranked]),
+                    student_scope_filter(student_id),
+                )
+            ).scalars().all()
+        }
+        # 裁剪 ranked 到实际取到的行, 避免"有排名无内容"的空占位与后续计分偏差
+        ranked = [(cid, fused) for cid, fused in ranked if cid in chunk_map]
 
         results = []
         for cid, fused in ranked:

@@ -85,8 +85,9 @@ class RAGService:
                     chunk_index=chunk["chunk_index"], section_title=chunk["section_title"],
                     content=chunk["content"], token_count=chunk["token_count"],
                 )
-                if vector_store.mode == "mysql":
-                    row.embedding = vec_to_b64(emb)
+                # D42: 无条件写 MySQL 降级副本 —— Redis 侧随时可能失效/换实例,
+                # 有副本才能"失败即降级", 否则降级路径召回恒空。
+                row.embedding = vec_to_b64(emb)
                 self.db.add(row)
                 self.db.flush()
                 vector_store.upsert_chunk(row.id, {
@@ -122,16 +123,29 @@ class RAGService:
             (AIDocumentType.MIDTERM_REPORT.value, MidtermReport, ["progress_description", "completed_content", "next_plan"]),
             (AIDocumentType.FINAL_REPORT.value, FinalDefense, ["summary", "innovation", "technical_solution", "test_result"]),
         ]
+        from app.shared.cycle import get_active_cycle
+
+        # D45: 只取当前 cycle 的已通过报告; 历史实现不带 cycle 过滤, 跨学年两份 APPROVED
+        # (旧数据 cycle_id 为 NULL)会触发 MultipleResultsFound, 接口直接 500。
+        cycle = get_active_cycle(self.db, student_id)
         for doc_type, model, fields in mapping:
-            report = self.db.execute(select(model).where(model.student_id == student_id, model.status == "APPROVED")).scalar_one_or_none()
+            stmt = select(model).where(model.student_id == student_id, model.status == "APPROVED")
+            if cycle is not None:
+                stmt = stmt.where(model.cycle_id == cycle.id)
+            report = self.db.execute(stmt.order_by(model.id.desc()).limit(1)).scalars().first()
             if report is None:
                 continue
             text = "\n\n".join(f"## {f}\n{getattr(report, f, '')}" for f in fields if getattr(report, f, None))
             if not text.strip():
                 continue
+            # D40(本模块侧防御): 论文重传会留下同类型多份 AIDocument, 这里只取 version 最新的一条,
+            # 旧文档作废由 material 模块负责, 但检索侧不能因历史脏数据抛 MultipleResultsFound。
             existing = self.db.execute(
-                select(AIDocument).where(AIDocument.student_id == student_id, AIDocument.document_type == doc_type)
-            ).scalar_one_or_none()
+                select(AIDocument)
+                .where(AIDocument.student_id == student_id, AIDocument.document_type == doc_type)
+                .order_by(AIDocument.version.desc(), AIDocument.id.desc())
+                .limit(1)
+            ).scalars().first()
             if existing and existing.content_text == text:
                 continue
             if existing is None:
@@ -164,41 +178,82 @@ class RAGService:
             parts.append(f"[{i}] {label}\n{c.content}")
         return "\n\n".join(parts)
 
-    # ---------- 回答 ----------
+    # ---------- 回答与用量记录 ----------
+
+    def _write_usage_log(self, *, user_id: int | None, scene: str, model: str, input_tokens: int,
+                         output_tokens: int, latency_ms: int, status: str) -> None:
+        """写 AI 用量记录(D47): 由调用方在 finally 中调用, 异常与客户端断连都不能丢计费.
+
+        兼容说明: ai_usage_log 目前没有 status 列(models 层不在本模块边界内), 存在该列时
+        以 SUCCESS/FAILED 落库; 不存在时把状态写进日志, 便于计费侧按日志对账。
+        """
+        try:
+            log = AIUsageLog(user_id=user_id, scene=scene, model=model,
+                             input_tokens=input_tokens, output_tokens=output_tokens,
+                             latency_ms=latency_ms)
+            if "status" in AIUsageLog.__mapper__.columns:
+                log.status = status
+            self.db.add(log)
+            self.db.commit()
+            logger.info("AI usage 记录: scene=%s model=%s in=%d out=%d %dms status=%s",
+                        scene, model, input_tokens, output_tokens, latency_ms, status)
+        except Exception:  # noqa: BLE001 — 计费落库失败不得影响已出的回答
+            try:
+                self.db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            logger.exception("AI 用量记录写入失败(scene=%s status=%s)", scene, status)
 
     def answer_stream(self, query: str, student_id: int | None, history: list[dict] | None = None,
                       user_id: int | None = None, scene: str = "QA") -> Generator[dict, None, None]:
-        """RAG 增强回答, SSE 事件流: meta(引用) / delta(增量文本) / done."""
-        started = datetime.now()
-        chunks = self.retrieve(query, student_id, top_k=6, history=history)
-        context = self.build_context(chunks)
-
+        """RAG 增强回答, SSE 事件流: meta(引用) / delta(增量文本) / error / done."""
         from app.ai.prompts import resolve_system_prompt, untrusted_note
 
-        system = resolve_system_prompt(self.db, "RAG_ANSWER")
-        user = (
-            f"{untrusted_note()}\n【检索上下文】\n{context}\n\n"
-            f"【学生问题】{query}\n请依据上下文回答; 上下文无法支持时明确说明。"
-        )
-
-        llm = LLMFactory.get()
-        yield {"event": "meta", "data": {
-            "provider": llm.name,
-            "sources": [{"chunk_id": c.chunk_id, "document_type": c.document_type,
-                         "section": c.section_title, "score": c.score} for c in chunks],
-        }}
-        text_parts = []
-        for piece in llm.stream(system, user, history):
-            text_parts.append(piece)
-            yield {"event": "delta", "data": piece}
-
-        # 用量记录(Mock 时 token 以字符近似)
-        full = "".join(text_parts)
+        started = datetime.now()
+        system = ""
+        user = ""
+        chunks: list[RetrievedChunk] = []
+        text_parts: list[str] = []
+        full_text = ""
+        model_name = "unknown"
+        status = "FAILED"
+        failure = ""
         try:
-            self.db.add(AIUsageLog(user_id=user_id, scene=scene, model=llm.name,
-                                   input_tokens=len(system) + len(user), output_tokens=len(full),
-                                   latency_ms=int((datetime.now() - started).total_seconds() * 1000)))
-            self.db.commit()
-        except Exception:
-            self.db.rollback()
-        yield {"event": "done", "data": {"length": len(full)}}
+            chunks = self.retrieve(query, student_id, top_k=6, history=history)
+            context = self.build_context(chunks)
+            system = resolve_system_prompt(self.db, "RAG_ANSWER")
+            user = (
+                f"{untrusted_note()}\n【检索上下文】\n{context}\n\n"
+                f"【学生问题】{query}\n请依据上下文回答; 上下文无法支持时明确说明。"
+            )
+
+            llm = LLMFactory.get()
+            model_name = llm.name
+            yield {"event": "meta", "data": {
+                "provider": llm.name,
+                "sources": [{"chunk_id": c.chunk_id, "document_type": c.document_type,
+                             "section": c.section_title, "score": c.score} for c in chunks],
+            }}
+            for piece in llm.stream(system, user, history):
+                text_parts.append(piece)
+                yield {"event": "delta", "data": piece}
+            status = "SUCCESS"
+        except Exception as exc:  # noqa: BLE001 — D47: 任何异常都转成 error 事件, 不中断 SSE 契约
+            status = "FAILED"
+            failure = str(exc)[:200] or exc.__class__.__name__
+            logger.exception("RAG 流式回答失败")
+            yield {"event": "error", "data": {"message": "AI 回答生成失败, 请稍后重试"}}
+        finally:
+            # D47: 用量记录移入 finally —— 异常路径与客户端断连(GeneratorExit)同样留痕
+            full_text = "".join(text_parts)
+            self._write_usage_log(
+                user_id=user_id, scene=scene, model=model_name,
+                input_tokens=len(system) + len(user), output_tokens=len(full_text),
+                latency_ms=int((datetime.now() - started).total_seconds() * 1000),
+                status=status,
+            )
+        done_payload = {"length": len(full_text), "status": status}
+        if failure:
+            done_payload["message"] = failure
+        yield {"event": "done", "data": done_payload}
+

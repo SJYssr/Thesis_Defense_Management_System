@@ -3,6 +3,8 @@
 流程: 生成问题库 → 创建Session → 逐题问答(RAG评价+动态追问) → 答辩报告 → PPT大纲.
 """
 import json
+import logging
+import re
 from datetime import datetime
 
 from sqlalchemy import select
@@ -26,6 +28,13 @@ from app.models.ai import (
 )
 from app.models.business import GraduationTopic
 from app.models.enums import QuestionType, QUESTION_GENERATION_PLAN
+
+logger = logging.getLogger("app.ai.defense")
+
+
+def _normalize_question(text: str | None) -> str:
+    """题面比较用的归一化: 去空白 + 全角/半角标点差异不参与判定."""
+    return re.sub(r"\s+", "", (text or "")).strip()
 
 
 class DefenseService:
@@ -81,7 +90,12 @@ class DefenseService:
             resolve_system_prompt(self.db, "DEFENSE_GENERATE_QUESTIONS"),
             defense_question_prompt(topic.title, context),
         )
-        data = extract_json(raw)
+        try:
+            data = extract_json(raw)
+        except ValueError:
+            # D48: LLM 返回非 JSON 时回落固定模板, 不把 500 抛给前端
+            logger.warning("问题生成返回非 JSON, 已回落固定模板: %s", raw[:200])
+            data = {}
         questions_data = data.get("questions") or []
 
         if not questions_data:  # 兜底: 固定模板问题
@@ -175,35 +189,32 @@ class DefenseService:
         return session
 
     def _next_turn(self, db: Session, session: AIDefenseSession) -> AIDefenseTurn | None:
-        """从未使用问题中选取下一题(优先选择未覆盖的类型)."""
-        used_types = db.execute(
-            select(AIDefenseTurn.question).where(AIDefenseTurn.session_id == session.id)
-        ).scalars().all()
+        """从未使用问题中选取下一题(D51): 两轮策略——先排已覆盖题型, 再按 id 顺序兜底."""
         candidates = db.execute(
             select(AIDefenseQuestion).where(AIDefenseQuestion.student_id == session.student_id,
                                             AIDefenseQuestion.used == 0)
         ).scalars().all()
         if not candidates:
             return None
-        # 简单策略: 先按类型多样性选, 再按id顺序
-        picked = None
-        seen_types = set()
         existing = db.execute(
             select(AIDefenseTurn).where(AIDefenseTurn.session_id == session.id)
         ).scalars().all()
         # 找出该会话已问过的题目文本
         asked = {t.question for t in existing}
-        for c in candidates:
-            if c.question in asked:
-                continue
-            if c.question_type not in seen_types:
-                picked = c
-                break
+        # D51: 已覆盖题型必须真正写入集合(历史实现从不 add, "优先未覆盖题型"恒失效)
+        seen_types: set[str] = set()
+        asked_qids = [t.question_id for t in existing if t.question_id]
+        if asked_qids:
+            seen_types = {
+                q.question_type for q in db.execute(
+                    select(AIDefenseQuestion).where(AIDefenseQuestion.id.in_(asked_qids))
+                ).scalars().all()
+            }
+        # 第一轮: 只看未覆盖题型; 第二轮: 任意未问过的题
+        picked = next((c for c in candidates
+                       if c.question not in asked and c.question_type not in seen_types), None)
         if picked is None:
-            for c in candidates:
-                if c.question not in asked:
-                    picked = c
-                    break
+            picked = next((c for c in candidates if c.question not in asked), None)
         if picked is None:
             return None
         picked.used = 1
@@ -227,11 +238,6 @@ class DefenseService:
         topic = self.db.get(GraduationTopic, session.topic_id)
         topic_title = topic.title if topic else ""
 
-        # 检索论文依据
-        history = [{"role": "user", "content": question}, ]
-        chunks = self.rag.retrieve(question, student_id, top_k=5)
-        context = self.rag.build_context(chunks)
-
         # 之前轮次概要(最近6轮, roadmap 三十九章裁剪策略)
         prev_turns = self.db.execute(
             select(AIDefenseTurn).where(AIDefenseTurn.session_id == session_id)
@@ -239,11 +245,26 @@ class DefenseService:
         ).scalars().all()
         summary = " ".join(f"Q:{t.question[:40]} A:{(t.student_answer or '')[:60]}" for t in reversed(prev_turns))
 
+        # D51: 答案必须落到"当前未回答的那一轮", 且题面以 turn.question 为准。
+        # 客户端传入的 question 与轮次不一致时直接拒绝(40003), 防止提交与题不符的答案骗分。
+        turn = self.db.execute(
+            select(AIDefenseTurn).where(AIDefenseTurn.session_id == session_id,
+                                        AIDefenseTurn.student_answer.is_(None))
+            .order_by(AIDefenseTurn.id.desc())
+        ).scalars().first()
+        if turn is not None and question and _normalize_question(question) != _normalize_question(turn.question):
+            raise BusinessException("提交的题目与当前轮次不一致, 请刷新后重试", 40003)
+        asked_question = turn.question if turn is not None else question
+
+        # 检索论文依据
+        chunks = self.rag.retrieve(asked_question, student_id, top_k=5)
+        context = self.rag.build_context(chunks)
+
         llm = LLMFactory.get()
         started = datetime.now()
         raw = llm.complete(
             resolve_system_prompt(self.db, "DEFENSE_EVALUATE_ANSWER"),
-            defense_evaluate_prompt(topic_title, question, answer, context, summary),
+            defense_evaluate_prompt(topic_title, asked_question, answer, context, summary),
         )
         try:
             data = extract_json(raw)
@@ -251,14 +272,9 @@ class DefenseService:
             data = {"accuracy": 22, "logic": 16, "clarity": 14, "depth": 12,
                     "feedback": raw[:800], "follow_up_needed": False, "follow_up_question": None}
 
-        # 记录 turn: 找当前未回答的最新turn, 或新建
-        turn = self.db.execute(
-            select(AIDefenseTurn).where(AIDefenseTurn.session_id == session_id,
-                                        AIDefenseTurn.student_answer.is_(None))
-            .order_by(AIDefenseTurn.id.desc())
-        ).scalars().first()
+        # 记录 turn: 复用上面定位到的当前未回答轮次, 没有则新建(题库外提问的兜底)
         if turn is None:
-            turn = AIDefenseTurn(session_id=session_id, turn_no=len(prev_turns) + 1, question=question)
+            turn = AIDefenseTurn(session_id=session_id, turn_no=len(prev_turns) + 1, question=asked_question)
             self.db.add(turn)
         turn.student_answer = answer
         turn.ai_feedback = data.get("feedback", "")
@@ -276,7 +292,8 @@ class DefenseService:
 
         session.answered_count = self.db.execute(
             select(func.count(AIDefenseTurn.id)).where(AIDefenseTurn.session_id == session_id,
-                                                       AIDefenseTurn.student_answer.is_not(None))
+                                                       AIDefenseTurn.student_answer.is_not(None),
+                                                       AIDefenseTurn.is_follow_up == 0)
         ).scalar()
         self.db.add(AIUsageLog(user_id=user_id, scene="DEFENSE_QA", model=llm.name,
                                input_tokens=len(context), output_tokens=len(raw),
@@ -316,9 +333,11 @@ class DefenseService:
             return {"turn_no": turn.turn_no, "question": turn.question, "is_follow_up": True,
                     "finished": False}
 
+        # D46: 结束判定只统计非追问轮 —— 追问是同一道正题的追加, 计入会让正题没答完就提前交卷
         total_answered = self.db.execute(
             select(AIDefenseTurn).where(AIDefenseTurn.session_id == session_id,
-                                        AIDefenseTurn.student_answer.is_not(None))
+                                        AIDefenseTurn.student_answer.is_not(None),
+                                        AIDefenseTurn.is_follow_up == 0)
         ).scalars().all()
         if len(total_answered) >= (session.question_count or 8):
             report = self.finish_session(student_id, session_id)
@@ -414,6 +433,33 @@ class DefenseService:
 
     # ---------- PPT 大纲 ----------
 
+    @staticmethod
+    def _fallback_ppt_outline(topic_title: str) -> dict:
+        """PPT 大纲的固定模板兜底(D48): 保证接口永远返回可展示结构."""
+        return {
+            "title": f"{topic_title} 毕业设计答辩",
+            "pages": [
+                {"page": 1, "title": "封面", "goal": "呈现题目与个人信息",
+                 "key_points": [topic_title, "姓名 / 指导教师 / 日期"], "speaker_notes": "开场自我介绍",
+                 "recommended_visual": "校徽+标题"},
+                {"page": 2, "title": "研究背景与意义", "goal": "说明选题来源与研究价值",
+                 "key_points": ["行业现状与痛点", "研究价值"], "speaker_notes": "用例子说明痛点",
+                 "recommended_visual": "背景图"},
+                {"page": 3, "title": "系统总体架构", "goal": "讲清系统分层与组件职责",
+                 "key_points": ["前端 Vue3", "后端 FastAPI", "MySQL + Redis"], "speaker_notes": "按调用链讲一遍",
+                 "recommended_visual": "架构图"},
+                {"page": 4, "title": "核心功能实现", "goal": "展示核心业务流程的技术方案",
+                 "key_points": ["毕业流程状态机", "审核工作流", "进度跟踪"], "speaker_notes": "重点讲状态机设计",
+                 "recommended_visual": "流程图"},
+                {"page": 5, "title": "系统测试", "goal": "用数据证明功能达标",
+                 "key_points": ["功能测试用例", "测试结果"], "speaker_notes": "给出关键指标",
+                 "recommended_visual": "表格"},
+                {"page": 6, "title": "总结与展望", "goal": "收束工作并指出改进方向",
+                 "key_points": ["完成工作", "不足与改进"], "speaker_notes": "致谢",
+                 "recommended_visual": "简洁文字"},
+            ],
+        }
+
     def generate_ppt_outline(self, student_id: int, user_id: int) -> dict:
         topic = self._get_topic(student_id)
         chunks = self.rag.retrieve("系统架构 设计 实现 测试 创新", student_id, top_k=8)
@@ -433,7 +479,12 @@ class DefenseService:
         llm = LLMFactory.get()
         started = datetime.now()
         raw = llm.complete(resolve_system_prompt(self.db, "PPT_OUTLINE"), ppt_outline_prompt(topic.title, context, defense_summary))
-        data = extract_json(raw)
+        try:
+            data = extract_json(raw)
+        except ValueError:
+            # D48: 同问题生成, PPT 大纲解析失败回落固定模板
+            logger.warning("PPT 大纲返回非 JSON, 已回落固定模板: %s", raw[:200])
+            data = self._fallback_ppt_outline(topic.title)
         self.db.add(AIUsageLog(user_id=user_id, scene="PPT_OUTLINE", model=llm.name,
                                input_tokens=len(context), output_tokens=len(raw),
                                latency_ms=int((datetime.now() - started).total_seconds() * 1000)))

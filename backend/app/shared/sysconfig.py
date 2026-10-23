@@ -22,6 +22,8 @@ FIELDS: dict[str, tuple[str, str, str]] = {
     "ai_defense_enabled": ("true", "是否开启 AI 功能", "bool"),
     "ai_rate_limit_per_minute": (str(settings.ai_rate_limit_per_minute), "AI 接口每分钟调用上限", "int"),
     "max_upload_size_mb": (str(settings.max_upload_size_mb), "单文件上传大小上限(MB)", "int"),
+    # D70: 单用户每日上传总字节配额, 防止任意登录用户无限占用存储
+    "max_upload_daily_mb": ("200", "单个用户每日上传总大小上限(MB)", "int"),
     # 留空跟随环境变量 LLM_MODEL(roadmap 八十五章 AI 模型配置; Embedding 涉及向量重建, 仍走环境变量)
     "ai_llm_model": ("", "LLM 模型名覆盖(留空跟随服务器环境变量)", "str"),
 }
@@ -93,8 +95,11 @@ def update_configs(db: Session, items: dict[str, str], updater_id: int | None) -
             row.updater_id = updater_id
     db.commit()
 
+    values = _load_from_db(db)
     try:
+        # D68: 先失效再写回新值, 不留"空缓存"让下游(如 LLM 模型覆盖)静默回退默认
         redis_client.delete(CACHE_KEY)
+        redis_client.setex(CACHE_KEY, CACHE_TTL_SECONDS, json.dumps(values, ensure_ascii=False))
     except Exception:  # noqa: BLE001
         pass
-    return _load_from_db(db)
+    return values

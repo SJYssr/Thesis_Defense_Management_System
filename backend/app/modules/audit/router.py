@@ -66,8 +66,10 @@ def list_operation_logs(
         "action": row.action,
         "method": row.method,
         "path": row.path,
+        "ip": row.ip,  # 新增可选字段: 便于前端/验收核对审计来源
         "detail": row.detail,
-        "result": row.result or "SUCCESS",
+        # D23: 历史数据 result 可能为空, 统一显示 UNKNOWN 而不是伪造 SUCCESS
+        "result": row.result or "UNKNOWN",
         "created_at": row.created_at.isoformat() if row.created_at else None,
     } for row in rows], total, page, page_size)
 

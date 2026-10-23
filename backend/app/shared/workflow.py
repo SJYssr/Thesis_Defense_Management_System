@@ -1,7 +1,10 @@
 """GraduationWorkflowService: 毕业设计全流程状态机(roadmap 第一优先级).
 
 所有"某学生当前能否执行某阶段操作"的判断必须走这里,
-后端接口强校验, 不依赖前端按钮 disabled.
+后端接口强校验, 不依赖前端按钮 disabled。
+
+进度百分比不在这里写: 唯一真源是 `progress.compute()`, 本模块只做阶段编排后调 `recompute`
+(docs/refactor-plan.md §7, 缺陷 D4/D5)。
 """
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -27,6 +30,27 @@ STAGE_ORDER = [
     ProcessStage.FINAL,
     ProcessStage.MATERIAL,
 ]
+
+# 阶段推进用 dict 映射而非 list.index+1: 末尾(含 COMPLETED)返回 None, 不再 ValueError(D4)
+NEXT_STAGE: dict[ProcessStage, ProcessStage | None] = {
+    ProcessStage.SELECTION: ProcessStage.OPENING,
+    ProcessStage.OPENING: ProcessStage.MIDTERM,
+    ProcessStage.MIDTERM: ProcessStage.FINAL,
+    ProcessStage.FINAL: ProcessStage.MATERIAL,
+    ProcessStage.MATERIAL: None,
+    ProcessStage.COMPLETED: None,
+}
+
+
+def next_stage(stage: ProcessStage | str | None) -> ProcessStage | None:
+    """下一阶段; 末尾(MATERIAL/COMPLETED/未知)返回 None, 绝不抛异常."""
+    if stage is None:
+        return None
+    try:
+        key = stage if isinstance(stage, ProcessStage) else ProcessStage(stage)
+    except ValueError:
+        return None
+    return NEXT_STAGE.get(key)
 
 
 class GraduationWorkflowService:
@@ -135,37 +159,34 @@ class GraduationWorkflowService:
 
     @classmethod
     def on_selection_approved(cls, db: Session, selection: TopicSelection) -> GraduationProcess:
-        """选题通过 → 建立/推进当前学年流程实例."""
+        """选题通过 → 建立/推进当前学年流程实例(进度交由 recompute 统一计算)."""
         from app.shared.cycle import ensure_cycle
+        from app.shared.progress import ProgressService
 
         cycle = ensure_cycle(db, selection.student_id, selection.topic_id, selection.teacher_id)
         selection.cycle_id = cycle.id
         process = cls._get_or_create_process(db, cycle, selection.topic_id, selection.teacher_id)
-        if process.current_stage == ProcessStage.SELECTION.value:
-            process.current_stage = ProcessStage.OPENING.value
-            process.progress_percent = 10
         if not process.started_at:
             process.started_at = now()
+        ProgressService.recompute(db, selection.student_id, process=process, cycle_id=cycle.id)
         return process
 
     @classmethod
-    def on_stage_approved(cls, db: Session, student_id: int, stage: ProcessStage) -> GraduationProcess:
-        """开题/中期/终期/材料审核通过后推进流程: 百分比按权重累加, 阶段前移."""
+    def on_stage_approved(cls, db: Session, student_id: int, stage: ProcessStage,
+                          cycle_id: int | None = None) -> GraduationProcess:
+        """开题/中期/终期/材料审核通过后推进流程.
+
+        cycle_id 显式给出时以该学年实例为准(A3): 审核历史学年材料不得改写当前学年进度。
+        进度/阶段/完成态全部由 progress.compute() 决定, 本方法不再手写 progress_percent(D5)。
+        """
+        from app.shared.cycle import ensure_cycle
         from app.shared.progress import ProgressService
 
-        cycle = cls.get_active_cycle(db, student_id)
-        process = cls._get_or_create_process(db, cycle) if cycle else None
-        if process is None:
-            process = GraduationProcess(student_id=student_id, started_at=now())
-            db.add(process)
-            db.flush()
-        if stage == ProcessStage.MATERIAL:
-            process.current_stage = ProcessStage.COMPLETED.value
-            process.completed_at = now()
-        else:
-            next_stage = STAGE_ORDER[STAGE_ORDER.index(stage) + 1]
-            process.current_stage = next_stage.value
-        ProgressService.recompute(db, student_id, process=process)
+        cycle = db.get(GraduationCycle, cycle_id) if cycle_id is not None else cls.get_active_cycle(db, student_id)
+        if cycle is None:
+            cycle = ensure_cycle(db, student_id)
+        process = cls._get_or_create_process(db, cycle)
+        ProgressService.recompute(db, student_id, process=process, cycle_id=cycle.id)
         return process
 
     @staticmethod

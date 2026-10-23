@@ -1,4 +1,7 @@
-"""统一异常体系: 业务代码只抛业务异常, 由全局 handler 统一转成标准响应."""
+"""统一异常体系: 业务代码只抛业务异常, 由全局 handler 统一转成标准响应.
+
+D11: handler 复用 ResponseUtil.error, HTTP 状态码由业务 code 映射, 不再全部 200.
+"""
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -57,6 +60,7 @@ class FileException(BusinessException):
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(BusinessException)
     async def business_handler(request: Request, exc: BusinessException):
+        # ResponseUtil.error 内部完成 code -> HTTP 状态码映射
         return ResponseUtil.error(exc.message, exc.code)
 
     @app.exception_handler(RequestValidationError)

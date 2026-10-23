@@ -218,15 +218,21 @@ class MockLLM(BaseLLMService):
         return ctx
 
 
+# D68: 模型覆盖在 system_config 中的键(与 shared/sysconfig.FIELDS 的 ai_llm_model 一致)
+OVERRIDE_CONFIG_KEY = "ai_llm_model"
+
+
 class LLMFactory:
     _instance: BaseLLMService | None = None
     _instance_model: str | None = None
 
     @staticmethod
-    def _model_override() -> str:
-        """LLM 模型名覆盖(roadmap 八十五章): 读系统配置 Redis 缓存, 未配置/缓存未热/Redis 故障时返回空.
+    def _model_override(db=None) -> str:
+        """LLM 模型名覆盖(roadmap 八十五章/D68): 先读 Redis 缓存, 未命中直接查 SystemConfig.
 
-        AI 接口入口都会先读系统配置(AI 开关/限流), 缓存在正常请求路径上必然是热的.
+        旧实现缓存未命中就 return "", 会静默回退环境变量默认模型; 后台任务路径(不经过
+        router 的补热逻辑)因此永远拿不到管理端配的模型。单行主键读取成本可忽略, 且
+        Redis 故障时同样能读到库里的配置。
         """
         try:
             import json
@@ -237,9 +243,32 @@ class LLMFactory:
             cached = redis_client.get(CACHE_KEY)
             if cached:
                 return str(json.loads(cached).get("ai_llm_model") or "").strip()
-        except Exception:  # noqa: BLE001 — 任何读取故障都退回环境变量默认
+        except Exception:  # noqa: BLE001 — Redis 故障不阻塞, 继续直读数据库
             pass
-        return ""
+        return LLMFactory._override_from_db(db)
+
+    @staticmethod
+    def _override_from_db(db=None) -> str:
+        """直读 system_config 单行(主键查询); 库不可用时返回空串, 由调用方回退环境变量."""
+        from sqlalchemy import select
+
+        from app.models.system import SystemConfig
+
+        own_session = db is None
+        try:
+            if own_session:
+                from app.db.mysql import SessionLocal
+
+                db = SessionLocal()
+            value = db.execute(
+                select(SystemConfig.value).where(SystemConfig.key == OVERRIDE_CONFIG_KEY)
+            ).scalar_one_or_none()
+            return str(value or "").strip()
+        except Exception:  # noqa: BLE001 — 数据库不可用同样退回环境变量默认
+            return ""
+        finally:
+            if own_session and db is not None:
+                db.close()
 
     @classmethod
     def get(cls) -> BaseLLMService:
