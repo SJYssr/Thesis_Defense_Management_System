@@ -460,3 +460,60 @@ D1 cycle 归档、D2 学年切换取快照、D3 未答辩不得 completed、D4 C
 2. `sys_file` 有了归属列, 但**孤儿清理任务**还没写(需按 `business_type is null and created_at < now()-7d` 定期清理)。
 3. 归档上传仍无学生入口: `create_archive` 是 `require_admin` 且要 `body.files` 的 `file_id`, 学生只能先 `/files/upload` 再交给管理员, 交互上不通。
 
+## 20. P9: 归档自助闭环 + 孤儿文件清理(2026-10)
+
+### 20.1 缺口与根因
+
+| # | 缺口 | 根因 |
+| --- | --- | --- |
+| D76 | 学生无法自助提交毕业成果归档 | `archive/router.py` 唯一入口 `POST /archive-packages` 是 `require_admin`，且在同一事务里 submit → approve → ARCHIVED；学生侧只有只读列表 |
+| D77 | 归档包无归属，状态机归属校验被整体跳过 | `ArchivePackage` 只有 `cycle_id`，而 `state_machine._assert_permission` 的 STUDENT 分支读 `getattr(obj, "student_id", None)`，拿到 None 即视为"无归属 → 不校验"，学生甲可 submit 学生乙的 PENDING 包 |
+| D78 | 管理员无从确认学生提交的归档 | 没有 `approve` 端点；`search_packages` 也没有 `status` 过滤参数，PENDING 包在管理端混在列表里看不出来 |
+| D79 | 孤儿文件永久占用磁盘 | 迁移 0003 给了 `sys_file.business_type/business_id`，但没有任何清理机制；且 `shared/fileperm.py` 只允许上传者下载，孤儿文件连作者都不会再访问 |
+| D80 | 副作用列只改内存不落库 | `state_machine._apply_effects` 对 `archived_at / reviewed_at / publish_time` 是纯属性赋值，`_apply_status` 却走独立 UPDATE；一旦 `db.expire_all()` 或 refresh，这部分改动被丢弃并读回旧值 → 撤回后 `archived_at` 仍残留（归档率与时间轴会谎报） |
+
+### 20.2 修法
+
+**归档归属（D77，根因级）**
+- `models/defense.py:219-223` `ArchivePackage` 新增 `student_id` / `teacher_id`（`BigInteger, index=True`）。补列后状态机同一处校验自动生效，无需改 state_machine。
+- `alembic/versions/0004_archive_package_owner.py`：加两列（nullable）→ 建两索引 → **纯 SQL** `UPDATE archive_package p JOIN graduation_cycle c ON c.id = p.cycle_id SET p.student_id = c.student_id, p.teacher_id = c.teacher_id` 回填 → 再把 `student_id` 收成 `NOT NULL`。downgrade 反序 drop。
+- ORM 侧刻意保持 `int | None`：测试库按 ORM `create_all` 建表（可空），真库是 NOT NULL —— 这个偏差必须由**构造点纪律**兜住，见 20.4。
+
+**学生自助 + 学院确认（D76/D78）**
+- `GET /student/archive/eligibility`（`require_student`）：cycle 取 `shared/cycle.get_active_cycle(db, user.profile_id)`；`eligible/reason` 直接复用 `_validate_archive_eligible`（不复制判断），`reason` 取 `BusinessException.message`。
+- `POST /student/archive/packages`（`require_student`）：**只 submit → PENDING，不自动 approve**。归档一旦 ARCHIVED 就进检索库、可被授权下载，且 `progress.compute()` 的 `completed` 依赖它 —— 学生自审自过等于自己宣布毕业完成。
+- 校验顺序：本人 cycle → 归档前置条件 → **包状态** → 文件归属 → 才迁移状态。包状态放在文件归属之前，避免对一个已归档流程回显"文件#N 是否他人上传"（存在/不存在分别 403/404，本身就是探测面）。
+- `POST /archive-packages/{id}/approve`（`require_admin`）：`archive_transition(..., "approve")` → `_recompute_progress` → `OperationLog`。
+- `GET /archive-packages?status=` 下推 SQL（复用 `shared/query.paginate` 的 filters），不做内存过滤。
+
+**孤儿清理（D79）**
+- `app/tasks/file_gc.py`：唯一实现 `collect(db, retention_days=7, dry_run=True)`。候选口径 = `business_type IS NULL AND deleted_at IS NULL AND created_at < cutoff` 且未被 `ai_document / graduation_material_file / archive_file / topic_attachment` 引用（`referenced_exists()` 一个相关 EXISTS 子查询，四表走 OR）。
+- `dry_run` 三段分类列出 `too_recent / referenced / deletable`，让管理员核对将删什么；实删时同一条只以 `reason="deleted"` 出现一次。keyset 分批（`GC_BATCH_SIZE=200`）每批独立 commit，与 `risk_scan` 同范式。
+- `celery_app.py` beat 加 `daily-file-gc`（02:30，错开 01:00 的风险扫描）；`POST /admin/files/gc`（`require_admin` + `OperationLog`）供手动触发。
+
+**副作用落库（D80）**
+- `state_machine.transition` 在 `_apply_effects` 之后加 `db.flush()`。副作用的标量列必须立刻与库一致，否则任何 `expire_all`/refresh 都会把它丢掉。
+
+### 20.3 验收（四套全绿）
+
+```
+真库 alembic upgrade head      → 0004_archive_package_owner (head)；downgrade 0003 → 列 0，再 upgrade → 列 2
+真库 seed.py --force           → 成功；archive_package 行数 1，student_id IS NULL 计数 0
+全量 unittest                  → Ran 434 tests / OK (skipped=2)
+隔离库 smoke（168 → 174）      → 结果: 174 通过, 0 失败（新增第 19 节 6 条）
+前端                           → build EXIT=0 / check:contract 26 条断言 PASS / verify:401 34/34
+```
+
+越权根因回归证据：补列后 `archive_transition(学生甲 → 学生乙的 PENDING 包)` 抛 `PermissionDeniedException: 只能操作本人的业务记录`（此前静默通过）。
+
+### 20.4 由本轮暴露、已固化的两条纪律
+
+1. **迁移收紧 NOT NULL 必须同步全部构造点**。`ArchivePackage` 的三个构造点（`seed.py:362`、`archive/router.py` 管理端与学生端）最初都漏传 `student_id`，sqlite 单测全绿而真库 `seed.py` 直接 `IntegrityError (1048, "Column student_id cannot be null")`。现由 `tests/test_archive_owner_columns.py` 用 AST 扫描 `app/**` 与 `seed.py` 内所有 `ArchivePackage(` 构造，缺 `student_id=` 即红；同时断言迁移里回填语句在 `nullable=False` 之前。
+2. **状态机的副作用列必须 flush**。见 D80。
+
+### 20.5 遗留
+
+1. `eligibility.files` 目前只列"未被任何业务记录引用"的本人文件 → 材料页已审核通过的论文反而不在清单里，学生会被迫重传，归档文件 ≠ 审核文件（审计裂缝）。待改为列本人全部文件并标注来源 `source ∈ {MATERIAL, TOPIC, UNREFERENCED}`。
+2. `sys_file` 有归属列但归档上传仍无学生入口时（历史数据）的孤儿清理依赖 `business_type IS NULL`，历史行没有该值，会按"未引用且超期"被清 —— 上线前应先跑一次 `dry_run` 人工确认清单。
+3. `UPLOAD_DIR` 变更会让历史文件全部 404（seed 与 uvicorn 必须同值），根治需把存储键改成相对对象 key。
+4. 归档导出 `exportList` 前端直接当 Blob 用，未校验 responseType，非 200 时会把错误 JSON 存成 csv。

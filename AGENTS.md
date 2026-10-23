@@ -27,6 +27,9 @@
    不得在前端或某个 router 里另写扩展名清单 / 默认上限。新增上传入口必须复用
    `read_upload(file, max_upload_size_mb(db))` + `ensure_daily_quota()`，且**先校验后迁移状态**。
 
+6. **状态机的副作用列(`archived_at` / `reviewed_at` / `publish_time` 等)改完必须落库**，`transition()` 已在 `_apply_effects` 后 `db.flush()`；新增副作用不要只改内存对象——任何 `expire_all()` / refresh 都会丢弃它，归档率与时间轴会谎报。
+7. **迁移把列收紧成 NOT NULL 时，必须同步修正全部 ORM 构造点**(`seed.py`、router、测试辅助)，并为关键表加 AST 守卫测试(参见 `backend/tests/test_archive_owner_columns.py`)。原因：测试库按 ORM `create_all` 建表(可空)，单测会全绿而真库 INSERT 直接炸。
+
 ## 四套验收（提交前全绿）
 
 ```bash
