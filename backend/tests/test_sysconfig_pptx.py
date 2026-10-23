@@ -78,6 +78,19 @@ class SysConfigTest(unittest.TestCase):
         with self.assertRaises(SystemConfigError):
             update_configs(self.db, {"max_upload_size_mb": "abc"}, updater_id=1)
 
+    def test_system_name_cannot_be_blank(self):
+        """系统名称是侧栏/登录页/浏览器标题的唯一来源, 存空串等于把界面清空."""
+        for blank in ("", "   ", "\t\n"):
+            with self.assertRaises(SystemConfigError):
+                update_configs(self.db, {"system_name": blank}, updater_id=1)
+        self.assertEqual(_load_from_db(self.db)["system_name"], "毕业设计管理系统",
+                         "被拒绝的空值不能落库")
+
+    def test_system_name_is_trimmed_and_others_may_stay_empty(self):
+        values = update_configs(self.db, {"system_name": "  智慧教务  ", "school_name": ""}, updater_id=1)
+        self.assertEqual(values["system_name"], "智慧教务", "首尾空白应被裁掉, 否则标题带空位")
+        self.assertEqual(values["school_name"], "", "学校名称允许留空, 不该被必填规则误伤")
+
 
 if __name__ == "__main__":
     unittest.main()

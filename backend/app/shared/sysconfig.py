@@ -38,6 +38,10 @@ FIELDS: dict[str, tuple[str, str, str]] = {
 # 本表不再保存任何密钥: AI 凭证加密落在 ai_provider.api_key_enc, GET 只回掩码提示。
 SECRET_FIELDS: frozenset[str] = frozenset()
 
+# 这些键一旦为空就会让界面"看起来坏了"(侧栏/登录页/浏览器标题全变空白),
+# 所以按"必填"处理: 提交空串或纯空白直接拒绝, 而不是先存进去再让前端兜底。
+NON_EMPTY_FIELDS: frozenset[str] = frozenset({"system_name"})
+
 
 def mask_secret(value: str) -> str:
     """把密钥压成掩码; 空值仍返回空串, 便于前端判断"是否已配置"."""
@@ -96,11 +100,16 @@ def get_int(db: Session, key: str, default: int = 0) -> int:
 
 def update_configs(db: Session, items: dict[str, str], updater_id: int | None) -> dict[str, str]:
     """批量更新配置并失效缓存; 未知键/非法值整体拒绝."""
+    normalized: dict[str, str] = {}
     for key, value in items.items():
         if key not in FIELDS:
             raise SystemConfigError(f"未知配置项: {key}")
         vtype = FIELDS[key][2]
         text = str(value)
+        if key in NON_EMPTY_FIELDS:
+            text = text.strip()
+            if not text:
+                raise SystemConfigError(f"{FIELDS[key][1]} 不能为空")
         if vtype == "bool" and text not in ("true", "false"):
             raise SystemConfigError(f"{FIELDS[key][1]} 仅允许 true/false")
         if vtype == "int":
@@ -111,13 +120,14 @@ def update_configs(db: Session, items: dict[str, str], updater_id: int | None) -
                 raise SystemConfigError(f"{FIELDS[key][1]} 必须为正整数") from exc
         if len(text) > 500:
             raise SystemConfigError(f"{FIELDS[key][1]} 超过长度限制")
+        normalized[key] = text
 
-    for key, value in items.items():
+    for key, value in normalized.items():
         row = db.get(SystemConfig, key)
         if row is None:
-            db.add(SystemConfig(key=key, value=str(value), updater_id=updater_id))
+            db.add(SystemConfig(key=key, value=value, updater_id=updater_id))
         else:
-            row.value = str(value)
+            row.value = value
             row.updater_id = updater_id
     db.commit()
 
