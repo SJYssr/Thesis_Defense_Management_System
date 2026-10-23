@@ -107,3 +107,41 @@ export const uploadApi = {
     return request.post<unknown, ApiEnvelope<UploadResult>>('/files/upload', form, { headers: { 'Content-Type': 'multipart/form-data' } })
   },
 }
+
+/**
+ * 系统配置(P10): 管理员侧 `/admin/system-configs`。
+ *
+ * 关于 `has_keys`: 后端在返回配置列表时附带三组 AI 服务的"密钥是否已配置"
+ * (`{"llm": bool, "embedding": bool, "rerank": bool}`), 密钥本身只回掩码
+ * (`***abcd` 或空串)。两个形状都不加类型泛型 —— 后端正在把返回形态从
+ * "纯数组" 调整为 "数组/对象 + has_keys"(与 process 无关的字段变化), 泛型写死
+ * 只会让这里变成第二份错误的契约; 归一化统一走 `utils/aiService.ts`
+ * 的 `normalizeConfigValues` / `extractHasKeys`。
+ */
+export const sysConfigApi = {
+  /** GET /admin/system-configs: 密钥字段的值是掩码, 不是明文 */
+  list: () => request.get('/admin/system-configs'),
+  /**
+   * PUT /admin/system-configs: 批量更新 `{items: {key: value}}`。
+   * 后端 pydantic 限制 items 长度 1..20, 且**未知 key 整体拒绝(40001)** ——
+   * 所以调用方只能提交真正变化的字段, 不能把整张表单全量塞进来。
+   */
+  update: (items: Record<string, string>) => request.put('/admin/system-configs', { items }),
+  aiModelInfo: () => request.get('/admin/ai-model-info'),
+}
+
+/**
+ * 健康检查(P10): `/health` 与 `/health/ai`.
+ *
+ * 这两个端点**直接返回裸对象**(backend/app/main.py), 不走 ResponseUtil 信封,
+ * 所以 axios 拦截器不会改写它们, 也**不能**声明成 `ApiEnvelope<T>`(那会撒谎,
+ * 并触发 check-api-contract 的"泛型必须 ApiEnvelope"断言的反向错误)。
+ * 调用方用 `HealthSnapshot` / `AiHealthSnapshot` 自行断言类型。
+ */
+export const healthApi = {
+  /** 顶层探活: status 可能是 ok / degraded / not_configured */
+  status: () => request.get('/health'),
+  /** 五段 AI 探针: llm / embedding / rerank / vector_store / ollama */
+  ai: () => request.get('/health/ai'),
+}
+

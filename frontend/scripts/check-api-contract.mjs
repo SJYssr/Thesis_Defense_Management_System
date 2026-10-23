@@ -715,6 +715,70 @@ const SHAPE_ASSERTIONS = [
     must: [/archiveApi\.approve\(/, /row\.status === 'PENDING'/, /value="PENDING"/],
     mustNot: [/archiveApi\.create\(\s*\{\s*cycle_id: row/],
   },
+  // P10: Agent 多步问答新增了 step / citations 事件。前端若不消费它们, 界面上就是"看不到
+  // 思考过程、引用核验白做"; 若把未知事件当异常抛, 后端加一个事件就整条聊天崩掉。
+  {
+    name: 'AiChat 解析 step / citations 事件且末尾有 default 忽略未知事件',
+    file: 'views/student/AiChat.vue',
+    must: [/case 'step':/, /msg\.steps\.push\(/, /case 'citations':/, /msg\.citations = \{/, /case 'done':/, /default:/],
+    mustNot: [/未知事件[^\n]*throw new Error/],
+  },
+  // P10: 单轮路径(old 只有 meta/delta/done)不产生 step, 思考区块必须"没 step 就不渲染",
+  // 且默认折叠 —— 默认展开会把正文挤到屏幕外, 折叠状态靠 openSteps 空数组表达。
+  {
+    name: 'AiChat 思考过程默认折叠且仅在收到 step 时渲染(单轮路径无空区块)',
+    file: 'views/student/AiChat.vue',
+    must: [/<el-collapse v-if="m\.steps\.length"/, /v-model="m\.openSteps"/, /openSteps: \[\]/, /stepTitle\(/],
+    mustNot: [/<el-collapse v-model="m\.openSteps">/],
+  },
+  // P10: agent 是可选请求字段(null 用服务端默认), 前端显式发布尔值, 默认开启多步检索。
+  {
+    name: 'AiChat 请求体带 agent 开关(默认开启多步检索)',
+    file: 'views/student/AiChat.vue',
+    must: [/const agentEnabled = ref\(true\)/, /agent: agentEnabled\.value/],
+  },
+  // P10: 管理员要能在界面填第三方 OpenAI 兼容服务的 Key —— 三组键必须真的绑定到表单,
+  // 且 Key 输入是 password(明文展示等于把密钥贴到屏幕上), 掩码由 placeholder 说明。
+  {
+    name: '系统设置含 AI 服务表单(三组键齐全, api_key 用 password 且不回显明文)',
+    file: 'views/admin/SystemSettings.vue',
+    must: [
+      /ai_llm_base_url/,
+      /ai_llm_api_key/,
+      /ai_embedding_dim/,
+      /ai_rerank_model_dir/,
+      /type="password"/,
+      /show-password/,
+      /已配置\(保存后覆盖\)/,
+    ],
+    mustNot: [/console\.(log|info|debug)\([^\n]*ai_/],
+  },
+  // P10: 密钥字段后端只回掩码。把整张表单(含掩码)提交回去, 轻则被后端当"不修改"忽略,
+  // 重则把 ***abcd 写进库。保存必须只提交变化项, 且掩码/空值一律跳过。
+  {
+    name: '系统设置保存只提交变化字段(未修改/掩码/空的 api_key 不进请求体)',
+    files: ['views/admin/SystemSettings.vue', 'utils/aiService.ts'],
+    must: [
+      /collectAiConfigChanges\(aiForm, aiBaseline\.value\)/,
+      /isMaskedValue\(/,
+      /skippedSecrets/,
+      /if \(!next \|\| isMaskedValue\(next\) \|\| next === before\)/,
+      /MAX_ITEMS_PER_PUT/,
+    ],
+    mustNot: [/items\[key\] = String\(value\)/],
+  },
+  // P10: 未配置/降级不许静默 —— 页头状态带 + 逐段探针必须都在界面上。
+  {
+    name: '系统设置页头状态带与测试连接(未配置/降级必须可见)',
+    file: 'views/admin/SystemSettings.vue',
+    must: [
+      /尚未配置 AI 服务, AI 问答暂不可用/,
+      /AI 服务异常/,
+      /healthApi\.ai\(\)/,
+      /testConnection/,
+      /:loading="testing"/,
+    ],
+  },
 ]
 
 function assertionSources(assertion) {

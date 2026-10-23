@@ -201,3 +201,93 @@ export interface ArchiveSubmitPayload {
   keywords?: string
   files: { file_id: number; file_role: ArchiveFileRole }[]
 }
+
+/** ---------------------------------------------------------------- P10: AI 过程可见 + 运行时配置 */
+
+/**
+ * POST /ai/chat/stream 的 `step` 事件(Agent 多步问答)。
+ * 旧单轮路径不产生该事件, 前端必须按"没有 step 就不渲染思考区块"处理。
+ * 顺序: meta -> step(0..N) -> delta(0..N) -> citations -> done。
+ */
+export interface AiChatStep {
+  index: number
+  /** plan=规划 / tool=调用工具 / observe=观察结果 / answer=作答 / forced=强制收束 */
+  kind: 'plan' | 'tool' | 'observe' | 'answer' | 'forced' | string
+  thought: string
+  tool: string | null
+  args: Record<string, unknown> | null
+  observation: string | null
+  elapsed_ms: number
+}
+
+/** citations 事件的单条来源 */
+export interface AiCitationSource {
+  ref: string | number | null
+  document_type: string
+  section: string
+  content: string
+}
+
+/** citations 事件: checked=false 表示核验未执行, 前端不要渲染来源/重写/移除任何块 */
+export interface AiCitationsPayload {
+  sources: AiCitationSource[]
+  checked: boolean
+  /** 回答是否因引用核验不通过被重写 */
+  regenerated: boolean
+  /** 被判定无法核验的引用编号 */
+  invalid: number[]
+}
+
+/** done 事件的附加字段(degraded 由后端在降级作答时给出) */
+export interface AiChatDonePayload {
+  degraded?: boolean
+  status?: string
+  invalid_citations?: number[]
+  steps?: number
+}
+
+/** GET /health/ai 单段探针。status 取值见 backend/app/ai/health.py */
+export interface AiHealthBlock {
+  status?: 'ok' | 'degraded' | 'down' | 'not_configured' | 'disabled' | 'unknown' | string
+  detail?: string
+  provider?: string
+  /** 该段是否有可用凭据/来源(false 时 status 通常是 not_configured) */
+  configured?: boolean
+  [key: string]: unknown
+}
+
+/** GET /health/ai: 五段探针裸结构(backend/app/main.py 直接返回, 不经 ResponseUtil 信封) */
+export interface AiHealthSnapshot {
+  llm?: AiHealthBlock
+  embedding?: AiHealthBlock
+  rerank?: AiHealthBlock
+  vector_store?: AiHealthBlock
+  ollama?: AiHealthBlock
+  [key: string]: unknown
+}
+
+/** GET /health 顶层探活(裸结构): status 只在 llm 与 embedding 都 ok 时才是 ok */
+export interface HealthSnapshot {
+  status: 'ok' | 'degraded' | 'not_configured' | string
+  app?: string
+  redis?: boolean
+  llm_provider?: string
+  ai?: AiHealthSnapshot
+  [key: string]: unknown
+}
+
+/** GET /admin/system-configs 单项(密钥类字段的 value 是掩码, 形如 ***abcd 或空串) */
+export interface SysConfigItem {
+  key: string
+  value: string
+  description?: string
+  type?: 'str' | 'bool' | 'int' | string
+}
+
+/** AI 三组服务的凭据"是否已配置", 后端随配置一起下发(前端不要用掩码自己猜) */
+export interface AiHasKeys {
+  llm: boolean
+  embedding: boolean
+  rerank: boolean
+}
+
