@@ -631,6 +631,22 @@ const SHAPE_ASSERTIONS = [
     must: [/keyword/, /date_from/, /date_to/, /loader\(buildReviewParams\(query, options\)\)/],
     mustNot: [/page_size: PAGE_SIZE/, /MAX_CONCURRENCY/, /onProgress/, /new Array\(/, /Array\.from\(\{ length/],
   },
+  // 详情/表单统一弹窗展示: 五个页面曾把详情常驻在右侧 aside, 占掉列表宽度
+  {
+    name: '审核详情用弹窗(无常驻右侧 aside.detail-panel)',
+    files: [
+      'views/teacher/StageReview.vue', 'views/teacher/MaterialReview.vue',
+      'views/teacher/SelectionReview.vue', 'views/teacher/StudentProgress.vue',
+    ],
+    must: [/<el-dialog v-model="detailVisible"/, /destroy-on-close/],
+    mustNot: [/<aside class="detail-panel">/, /<el-empty v-if="!current" description="请选择左侧记录查看详情"/],
+  },
+  {
+    name: '题目新增/编辑用弹窗(无常驻 aside.topic-form-panel)',
+    file: 'views/teacher/MyTopics.vue',
+    must: [/<el-dialog v-model="formVisible"/],
+    mustNot: [/<aside class="topic-form-panel">/],
+  },
 ]
 
 function assertionSources(assertion) {

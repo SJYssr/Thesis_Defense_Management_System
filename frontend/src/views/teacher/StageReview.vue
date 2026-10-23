@@ -125,14 +125,11 @@
         </div>
       </div>
 
-      <!-- 右侧: 审核详情 -->
-      <aside class="detail-panel">
-        <div class="panel-head">
-          <h3>{{ STAGE_CN[stage] }}详情</h3>
-          <el-icon v-if="current" class="panel-close" @click="current = null"><Close /></el-icon>
-        </div>
-        <el-empty v-if="!current" description="请选择左侧记录查看详情" :image-size="70" class="panel-empty" />
-        <template v-else>
+    </div>
+
+    <!-- 详情: 弹窗展示（不再常驻右侧占位） -->
+    <el-dialog v-model="detailVisible" :title="STAGE_CN[stage] + '详情'" width="780px" append-to-body destroy-on-close class="detail-dialog" @closed="current = null">
+      <template v-if="current">
           <div class="panel-body">
             <div class="sec-title"><i class="sec-icon blue" />基本信息</div>
             <div class="info-rows">
@@ -172,14 +169,13 @@
             />
           </div>
           <div v-if="canReview" class="panel-footer">
-            <el-button @click="current = null">取消</el-button>
+            <el-button @click="detailVisible = false">取消</el-button>
             <el-button :loading="reviewing" @click="review('request_revision')">退回修改</el-button>
             <el-button type="danger" :loading="reviewing" @click="review('reject')">不通过</el-button>
             <el-button type="primary" :loading="reviewing" @click="review('approve')">通过</el-button>
           </div>
         </template>
-      </aside>
-    </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -187,7 +183,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, Select, CloseBold, Close } from '@element-plus/icons-vue'
+import { Search, Refresh, Select, CloseBold } from '@element-plus/icons-vue'
 import { reviewList } from '@/utils/reviewList'
 import { stageApi, type StageDecision } from '@/api/business'
 import ReviewHistory from '@/components/ReviewHistory.vue'
@@ -307,6 +303,7 @@ function onReset() {
 }
 
 const current = ref<any>(null)
+const detailVisible = ref(false)
 const comment = ref('')
 const reviewing = ref(false)
 const selected = ref<any[]>([])
@@ -321,6 +318,7 @@ async function openDetail(row: any) {
     statusClass: STATUS_CLASS[res.data.status] || 's-withdraw',
   }
   comment.value = ''
+  detailVisible.value = true
 }
 
 /** P1-A: 详情响应带 can_edit / is_examiner —— 编辑与审核权限由后端判定，不再用"角色是不是教师"推断 */
@@ -353,6 +351,7 @@ async function review(action: StageDecision) {
     }
     const doneCn: Record<StageDecision, string> = { approve: '已通过', request_revision: '已退回修改', reject: '已驳回' }
     ElMessage.success(doneCn[action])
+    detailVisible.value = false
     current.value = null
     await refresh()
   } catch {
@@ -449,7 +448,7 @@ onMounted(refresh)
 /* 主体两栏 */
 .review-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-items: start;
 }
@@ -620,4 +619,9 @@ onMounted(refresh)
   .pager { margin-left: 0; max-width: 100%; overflow-x: auto; }
   .panel-footer { flex-wrap: wrap; }
 }
+
+/* 详情弹窗: 内容区自管滚动, 去掉 el-dialog 默认内边距 */
+:deep(.detail-dialog .el-dialog__body) { padding: 0; }
+:deep(.detail-dialog .panel-body) { max-height: 62vh; overflow-y: auto; }
+:deep(.detail-dialog .panel-footer) { padding: 12px 16px; border-top: 1px solid #eef2f8; }
 </style>

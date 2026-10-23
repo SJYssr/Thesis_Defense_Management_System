@@ -119,12 +119,11 @@
         </div>
       </div>
 
-      <!-- 右侧: 新增/编辑题目 -->
-      <aside class="topic-form-panel">
-        <div class="panel-head">
-          <h3>{{ form.id ? '编辑题目' : '新增题目' }}</h3>
-          <el-icon v-if="form.id || dirty" class="panel-close" @click="resetForm"><Close /></el-icon>
-        </div>
+    </div>
+
+    <!-- 新增/编辑题目: 弹窗（不再常驻右侧占位） -->
+    <el-dialog v-model="formVisible" :title="form.id ? '编辑题目' : '新增题目'" width="640px"
+               append-to-body destroy-on-close @closed="resetForm">
         <div class="panel-body">
           <div class="form-item">
             <label class="form-label required">题目名称</label>
@@ -171,11 +170,10 @@
           </div>
         </div>
         <div class="panel-footer">
-          <el-button @click="resetForm">取消</el-button>
+          <el-button @click="formVisible = false">取消</el-button>
           <el-button type="primary" :loading="saving" @click="save">确定</el-button>
         </div>
-      </aside>
-    </div>
+    </el-dialog>
 
     <!-- 查看详情 -->
     <el-dialog v-model="detailVisible" :title="detail?.title" width="620px">
@@ -198,7 +196,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, Plus, VideoPlay, Delete, ArrowDown, Close } from '@element-plus/icons-vue'
+import { Search, Refresh, Plus, VideoPlay, Delete, ArrowDown } from '@element-plus/icons-vue'
 import { STAT_ICONS } from '@/components/statIcons'
 import { topicApi } from '@/api/business'
 
@@ -302,7 +300,6 @@ const emptyForm = () => ({
   difficulty: 'MEDIUM', max_students: 1, publishNow: 'draft',
 })
 const form = reactive(emptyForm())
-const dirty = computed(() => form.id !== 0 || Boolean(form.title || form.description || form.requirements || form.topic_type))
 const editingStatusCn = computed(() =>
   form.id ? (rows.value.find(r => r.id === form.id)?.status === 'PUBLISHED' ? '已发布'
     : rows.value.find(r => r.id === form.id)?.status === 'DRAFT' ? '待发布' : '已关闭') : '')
@@ -311,13 +308,14 @@ const editingStatusClass = computed(() =>
     : rows.value.find(r => r.id === form.id)?.status === 'DRAFT' ? 's-pending' : 's-closed') : '')
 
 function resetForm() { Object.assign(form, emptyForm()) }
-function openCreate() { resetForm() }
+function openCreate() { resetForm(); formVisible.value = true }
 function openEdit(row: TopicRow) {
   Object.assign(form, {
     id: row.id, title: row.title, topic_type: row.topic_type || '', description: row.description || '',
     requirements: row.requirements || '', difficulty: row.difficulty || 'MEDIUM',
     max_students: row.max_students, publishNow: 'draft',
   })
+  formVisible.value = true
 }
 async function save() {
   if (!form.title.trim() || !form.topic_type || !form.description.trim() || !form.requirements.trim()) {
@@ -337,12 +335,15 @@ async function save() {
       if (form.publishNow === 'now') await topicApi.publish(res.data.id)
       ElMessage.success(form.publishNow === 'now' ? '题目已创建并发布' : '题目草稿已创建')
     }
+    formVisible.value = false
     resetForm()
     await refresh()
   } catch {
     /* 已提示 */
   } finally { saving.value = false }
 }
+
+const formVisible = ref(false)
 
 /* ---------- 详情 ---------- */
 const detailVisible = ref(false)
@@ -461,7 +462,7 @@ onMounted(refresh)
 /* 主体两栏 */
 .topic-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-items: start;
 }
@@ -606,4 +607,9 @@ onMounted(refresh)
   .pagination-bar { flex-wrap: wrap; gap: 10px; }
   .pager { margin-left: 0; max-width: 100%; overflow-x: auto; }
 }
+
+/* 题目表单弹窗: 内容区自管滚动 */
+:deep(.el-dialog__body) { padding-top: 6px; }
+:deep(.el-dialog .panel-body) { max-height: 62vh; overflow-y: auto; }
+:deep(.el-dialog .panel-footer) { padding-top: 12px; }
 </style>

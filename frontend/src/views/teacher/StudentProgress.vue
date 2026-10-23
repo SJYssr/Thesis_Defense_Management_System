@@ -120,14 +120,11 @@
         </div>
       </div>
 
-      <!-- 右侧: 学生详细信息 -->
-      <aside class="detail-panel">
-        <div class="panel-head">
-          <h3>学生详细信息</h3>
-          <el-icon v-if="detail" class="panel-close" @click="detail = null"><Close /></el-icon>
-        </div>
-        <el-empty v-if="!detail" description="选择学生查看进度与分析" :image-size="70" class="panel-empty" />
-        <template v-else>
+    </div>
+
+    <!-- 详情: 弹窗展示（不再常驻右侧占位） -->
+    <el-dialog v-model="detailVisible" title="学生详细信息" width="780px" append-to-body destroy-on-close class="detail-dialog" @closed="detail = null">
+      <template v-if="detail">
           <div class="panel-body">
             <div class="sec-title"><i class="sec-icon blue" />基本信息</div>
             <div class="info-rows">
@@ -189,8 +186,7 @@
             </el-button>
           </div>
         </template>
-      </aside>
-    </div>
+    </el-dialog>
 
     <!-- 发送提醒弹窗 -->
     <el-dialog v-model="reminderVisible" title="发送进度提醒" width="520px">
@@ -216,7 +212,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Search, Refresh, Close, Promotion } from '@element-plus/icons-vue'
+import { Search, Refresh, Promotion } from '@element-plus/icons-vue'
 import { progressApi } from '@/api/business'
 import { aiApi } from '@/api/common'
 
@@ -304,12 +300,14 @@ function fmtDate(value?: string | null) { return (value || '—').replace('T', '
 
 /* ---------- 右侧详情 + AI 分析 ---------- */
 const detail = ref<any>(null)
+const detailVisible = ref(false)
 const analysis = ref<any>(null)
 const analysing = ref(false)
 
 async function openDetail(row: any) {
   detail.value = (await progressApi.teacherStudentDetail(row.student_id)).data
   analysis.value = null
+  detailVisible.value = true
 }
 
 async function analyse() {
@@ -411,7 +409,7 @@ onMounted(refresh)
 /* 主体两栏 */
 .review-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-items: start;
 }
@@ -627,4 +625,9 @@ onMounted(refresh)
   .pagination-bar { flex-wrap: wrap; gap: 10px; }
   .pager { margin-left: 0; max-width: 100%; overflow-x: auto; }
 }
+
+/* 详情弹窗: 内容区自管滚动, 去掉 el-dialog 默认内边距 */
+:deep(.detail-dialog .el-dialog__body) { padding: 0; }
+:deep(.detail-dialog .panel-body) { max-height: 62vh; overflow-y: auto; }
+:deep(.detail-dialog .panel-footer) { padding: 12px 16px; border-top: 1px solid #eef2f8; }
 </style>

@@ -119,14 +119,11 @@
         </div>
       </div>
 
-      <!-- 右侧: 毕业材料详情 -->
-      <aside class="detail-panel">
-        <div class="panel-head">
-          <h3>毕业材料详情</h3>
-          <el-icon v-if="current" class="panel-close" @click="current = null"><Close /></el-icon>
-        </div>
-        <el-empty v-if="!current" description="请选择左侧记录查看详情" :image-size="70" class="panel-empty" />
-        <template v-else>
+    </div>
+
+    <!-- 详情: 弹窗展示（不再常驻右侧占位） -->
+    <el-dialog v-model="detailVisible" title="毕业材料详情" width="780px" append-to-body destroy-on-close class="detail-dialog" @closed="current = null">
+      <template v-if="current">
           <div class="panel-body">
             <div class="sec-title"><i class="sec-icon blue" />基本信息</div>
             <div class="info-rows">
@@ -161,20 +158,19 @@
             </template>
           </div>
           <div v-if="current.status === 'SUBMITTED'" class="panel-footer">
-            <el-button @click="current = null">取消</el-button>
+            <el-button @click="detailVisible = false">取消</el-button>
             <el-button type="danger" :loading="reviewing" @click="review(false)">不通过</el-button>
             <el-button type="primary" :loading="reviewing" @click="review(true)">通过</el-button>
           </div>
         </template>
-      </aside>
-    </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, Select, CloseBold, Close, Download } from '@element-plus/icons-vue'
+import { Search, Refresh, Select, CloseBold, Download } from '@element-plus/icons-vue'
 import { reviewList } from '@/utils/reviewList'
 import { materialApi } from '@/api/business'
 import ReviewHistory from '@/components/ReviewHistory.vue'
@@ -246,6 +242,7 @@ function onReset() {
 }
 
 const current = ref<any>(null)
+const detailVisible = ref(false)
 const comment = ref('')
 const reviewing = ref(false)
 const selected = ref<any[]>([])
@@ -260,6 +257,7 @@ async function openDetail(row: any) {
     statusClass: STATUS_CLASS[res.data.status] || 's-withdraw',
   }
   comment.value = ''
+  detailVisible.value = true
 }
 
 function fmt(value?: string | null) { return (value || '—').replace('T', ' ').slice(0, 16) }
@@ -284,6 +282,7 @@ async function review(approve: boolean) {
     if (approve) await materialApi.approve(current.value.id, comment.value || undefined)
     else await materialApi.reject(current.value.id, comment.value || undefined)
     ElMessage.success(approve ? '已通过' : '已驳回')
+    detailVisible.value = false
     current.value = null
     await refresh()
   } catch {
@@ -379,7 +378,7 @@ onMounted(refresh)
 /* 主体两栏 */
 .review-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-items: start;
 }
@@ -559,4 +558,9 @@ onMounted(refresh)
   .pager { margin-left: 0; max-width: 100%; overflow-x: auto; }
   .panel-footer { flex-wrap: wrap; }
 }
+
+/* 详情弹窗: 内容区自管滚动, 去掉 el-dialog 默认内边距 */
+:deep(.detail-dialog .el-dialog__body) { padding: 0; }
+:deep(.detail-dialog .panel-body) { max-height: 62vh; overflow-y: auto; }
+:deep(.detail-dialog .panel-footer) { padding: 12px 16px; border-top: 1px solid #eef2f8; }
 </style>
