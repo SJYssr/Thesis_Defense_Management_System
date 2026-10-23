@@ -24,6 +24,11 @@ try:
             "task": "app.tasks.risk_scan.daily_scan",
             "schedule": crontab(hour=1, minute=0),
         },
+        # 每日 02:30 孤儿文件清理(P9-B), 错开 01:00 的逾期扫描; 实删(dry_run=False)
+        "daily-file-gc": {
+            "task": "app.tasks.file_gc.daily_gc",
+            "schedule": crontab(hour=2, minute=30),
+        },
     }
     CELERY_AVAILABLE = True
 except Exception:  # celery 未安装或 Redis 不可用

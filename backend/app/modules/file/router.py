@@ -4,21 +4,23 @@
 
 D70: 上传补齐两项治理能力
 - 单用户每日上传字节配额(配置项 max_upload_daily_mb, 默认 200MB), 超限抛 FileException(40013);
-- business_type / business_id 可选业务归属(向后兼容: 不传仍可上传), 供后续孤儿文件清理使用。
-  sys_file 表当前没有这两列(models 不在本批范围), 因此只落日志与响应体, 不落库。
+- business_type / business_id 可选业务归属(向后兼容: 不传仍可上传)。
+  这两列已落库(迁移 0003, 见 models/system.py), 供孤儿文件清理判定业务归属;
+  business_type 为空的记录才是清理候选, 非空(如 MATERIAL/ARCHIVE)一条都不碰,
+  清理实现见 app/tasks/file_gc.py, 管理员手动入口 POST /api/v1/admin/files/gc。
 """
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Form, UploadFile
+from fastapi import APIRouter, Depends, Form, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ResourceNotFoundException
-from app.core.permissions import CurrentUser, get_current_user
+from app.core.permissions import CurrentUser, get_current_user, require_admin
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
-from app.models.system import SysFile
+from app.models.system import OperationLog, SysFile
 from app.shared.fileperm import ensure_file_access
 from app.shared.storage import read_upload, storage
 from app.shared.upload_policy import (
@@ -31,9 +33,12 @@ from app.shared.upload_policy import (
 
 log = logging.getLogger("app.file")
 
-router = APIRouter(prefix="/files", tags=["File"])
+# 前缀下沉到各路由路径: 本模块要同时承载 /files/* 与 /admin/files/gc, 而 admin 端点
+# 不能挂在 /files 前缀下(那会变成 /files/admin/files/gc)。写法与 archive/task/sysconfig/
+# defense 等模块一致, 既有 URL 逐字不变(smoke_test 仍打 /files/upload-policy 等)。
+router = APIRouter(tags=["File"])
 
-@router.get("/upload-policy")
+@router.get("/files/upload-policy")
 def get_upload_policy(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     """上传策略(扩展名白名单 + 单文件上限 + 日配额), 前端据此生成 accept 与上传前校验.
 
@@ -43,7 +48,7 @@ def get_upload_policy(user: CurrentUser = Depends(get_current_user), db: Session
     return ResponseUtil.success(upload_policy(db))
 
 
-@router.post("/upload")
+@router.post("/files/upload")
 def upload_file(file: UploadFile,
                 business_type: str | None = Form(default=None, max_length=32,
                                                  description="业务归属类型(可选, 如 TOPIC/OPENING)"),
@@ -77,7 +82,7 @@ def upload_file(file: UploadFile,
     })
 
 
-@router.get("/{file_id}/download")
+@router.get("/files/{file_id}/download")
 def download_file(file_id: int, user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     record = db.get(SysFile, file_id)
     if record is None or record.deleted_at is not None:
@@ -87,3 +92,22 @@ def download_file(file_id: int, user: CurrentUser = Depends(get_current_user), d
     if not path.exists():
         raise ResourceNotFoundException("文件已丢失")
     return FileResponse(path, filename=record.original_name)
+
+
+@router.post("/admin/files/gc")
+def files_gc(retention_days: int = Query(7, ge=1, le=365, description="保留期(天): 早于该期限且无引用的孤儿文件才清理"),
+             dry_run: bool = Query(True, description="true 只统计不删(默认), false 才删记录与物理文件"),
+             user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """P9-B 孤儿文件清理(管理员手动触发), 与每日 02:30 Celery 任务共用同一实现.
+
+    单一实现: app/tasks/file_gc.collect(db, retention_days, dry_run); 本端点只负责鉴权、
+    留痕与响应包装。dry_run=true 只统计; dry_run=false 才删记录与物理文件。
+    """
+    from app.tasks.file_gc import collect
+
+    data = collect(db, retention_days=retention_days, dry_run=dry_run)
+    # 手动清理是写操作: 留一条 operation_log; 逐文件的留痕在 tasks/file_gc 里走 logger.info(避免刷表)
+    db.add(OperationLog(user_id=user.id, username=user.username, module="FILE", action="GC",
+                        detail=f"retention_days={retention_days} dry_run={dry_run} deleted={data['deleted']}"))
+    db.commit()
+    return ResponseUtil.success(data, message="孤儿文件清理试运行完成" if dry_run else "孤儿文件清理完成")
