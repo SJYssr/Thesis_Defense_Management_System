@@ -517,3 +517,83 @@ D1 cycle 归档、D2 学年切换取快照、D3 未答辩不得 completed、D4 C
 2. `sys_file` 有归属列但归档上传仍无学生入口时（历史数据）的孤儿清理依赖 `business_type IS NULL`，历史行没有该值，会按"未引用且超期"被清 —— 上线前应先跑一次 `dry_run` 人工确认清单。
 3. `UPLOAD_DIR` 变更会让历史文件全部 404（seed 与 uvicorn 必须同值），根治需把存储键改成相对对象 key。
 4. 归档导出 `exportList` 前端直接当 Blob 用，未校验 responseType，非 200 时会把错误 JSON 存成 csv。
+
+## 21. P10: AI 链路真实化(2026-10)
+
+### 21.1 缺口与根因(审计结论: 此前"AI 是假调用")
+
+| # | 缺口 | 根因 |
+| --- | --- | --- |
+| D81 | 问答/答辩追问不是真实模型输出 | `LLM_API_KEY` 为空即静默切 `MockLLM`(模板拼字符串), 无告警、无健康状态、前端无从判断 |
+| D82 | "向量检索"没有语义 | `LocalHashEmbedding`: md5 哈希桶 + 中文二元组, 相似度与语义无关, 只是把字面重合度伪装成向量 |
+| D83 | 无精排层, 关键词召回是假的 | `rag/retriever.py` keyword 分支 `select ... limit(3000)` 拉行到内存算 ngram, 不是 BM25 也没有 IDF |
+| D84 | 换模型/换供应商必须重启 | AI 配置只读 `settings`(环境变量), 前端没有任何入口; 管理员改了 .env 不重启不生效 |
+| D85 | 本地模型探测被误判不可达 | 本机系统代理 `http://127.0.0.1:12000` 被 urllib/httpx 默认读取, 探测 `127.0.0.1:11434` 返回 `HTTP Error 502`(1782ms), 真实 ollama 被判死 |
+| D86 | 小语料下 BM25 整条查询返回空 | `rank_bm25` 的 IDF 可到 0 或负, 在 3 篇文档的语料里几乎所有词项 IDF ≤ 0, 乘积被钳成 0 或负数, 排序结果全被过滤 |
+| D87 | 无向量模型时 `seed.py` 整体崩溃 | `seed.py:443` 直接 `RAGService(db).index_document(doc.id)`, 未捕获 `AIServiceUnavailable`; 演示论文索引是"锦上添花"却把种子数据流程打成硬失败(离线环境/未配 Key 是常态) |
+| D88 | smoke 把 mock 的"生效模型"当成覆盖值 | `smoke_test.py:559` 断言 `llm_model_effective == "glm-4.7-air"`, 而 mock provider 下生效模型就是 `mock` 本身 —— 断言在离线环境下必然为假 |
+
+### 21.2 修法
+
+**配置单源(D84)**
+
+- `app/ai/runtime_config.py`: 唯一裁决处 `resolve_ai_config(db=None)` → `EffectiveAIConfig`。优先级 **DB(系统设置) > 环境变量**, 空串一律回退(不是覆盖成空); 5s 进程内加锁缓存, 键含 `settings` 签名, 环境变量变了自动失效。
+- `invalidate_ai_config()` 同时 reset `LLMFactory`/`EmbeddingFactory` 单例与 `OllamaProbe` 探测缓存; `modules/sysconfig/router.py` 写入成功后调用它 —— 保存即生效, 无需重启。
+- `shared/sysconfig.py` 新增 16 个 `ai_*` 键 + `SECRET_FIELDS` + `mask_secret/mask_secrets`。**密钥只写不读**: GET 任何响应只回 `***后四位`, 配套 `has_keys` 告诉前端"是否已配置"。
+
+**健康探测(D81)**
+
+- `app/ai/health.py`(378 行): 五态 `ok / degraded / not_configured / down / disabled`; `probe_all(db)` 的 llm/embedding/rerank/ollama/vector_store 五块**全部过 `_guard`**, 任何异常都只落进 `detail` 而不外抛(健康检查自己 500 是最坏的可用性问题)。
+- `/health` 保留原有字段(兼容既有调用方), 新增 `/health/ai`。`not_configured` 时必须给出 `FIX_HINT`(配 Key 或起 ollama), 不允许只报"不可用"。
+- `embedding_needs_reindex(db)`: 比对当前 embedding 指纹与 Redis 键 `ai:embedding:fingerprint`, 换模型/换维度后提示重建知识库 —— 否则新旧向量混在一个索引里, 召回质量静默劣化。
+
+**回环直连(D85)**
+
+- `app/ai/net.py`: `is_loopback_url / direct_opener / open_url / openai_http_client`。对回环地址强制 `trust_env=False`, 绕开系统代理。实测由 `HTTP Error 502 / 1782ms` 变为 `Connection refused / 3ms` —— 否则运维只要开着一个全局代理, 本地 ollama 就永远"不可达"。
+
+**混合召回与精排(D82/D83/D86)**
+
+- `app/ai/rag/bm25.py`: `jieba.lcut_for_search` + `rank_bm25.BM25Okapi`, 进程级 LRU 缓存(键含 bind/student_id/doc_types), 指纹 `(count(id), max(id))` 变化即重建。
+- `_with_positive_idf`: 把非正 IDF 钳到 `1e-3`。这是 D86 的根因修复 —— 不能改成"过滤掉这些词项", 那会让小语料查询直接空集。
+- `app/ai/rerank/factory.py`: `OnnxCrossEncoderReranker` 延迟加载, 缺 `model.onnx`/`tokenizer.json` 时 `available=False` **不抛异常**, 降级 `NoopReranker`; `get_reranker()` 按 `(provider, model_dir)` 缓存。
+- `rag/retriever.py`: `retrieve(..., rerank=True)`, 召回宽度 `recall = max(rerank_recall, top_k)` 先宽后窄; `RetrievedChunk` 增 `rerank_score` 与 `stage ∈ {fused, reranked, fallback}`, 让"这次到底走没走精排"可观测。
+
+**多步 Agent**
+
+- `app/ai/agent/{tools,loop,trace}.py`: 6 个**只读**工具(search_knowledge / search_regulations / get_my_progress / get_my_topic / get_my_stage_status / get_rubric)。
+- 用 JSON 决策协议而不是 tool-calling: 兼容 ollama 与任意 OpenAI 兼容端点, 不绑定某家模型能力。
+- `IDENTITY_ARG_NAMES`: 拒绝 LLM 传入的 `student_id/user_id` 等身份参数, 每处一律用 `ctx.student_id` 下推 —— 模型是自己拼参数的, 它没有权限概念。
+- 上限: `agent_max_steps(6)` / `agent_max_retrieval_rounds(3)` / `agent_timeout_seconds(120)` / `MAX_CONTEXT_CHARS=12000`; 触顶产出 `kind=forced` 的收敛回答, 不是无声截断。
+- `answer_agent_stream` 事件序 `meta → step* → delta* → citations → done`; 引用越界重生成一次, 二次仍越界则剥除引用而不是编造。
+- 三个新 prompt 场景(AGENT_PLAN / AGENT_SUFFICIENCY / AGENT_CITATION_CHECK)全部 `untrusted=True`, 走既有注入防护。
+
+**种子与 smoke(D87/D88)**
+
+- `seed.py`: 演示论文索引包 `try/except AIServiceUnavailable`, 降级打印"跳过 + 如何开启"; 其它异常也只标记文档 `FAILED` 后继续。种子数据的职责是"造出可演示的数据", 不能被外部服务可用性绑架。
+- `smoke_test.py:559`: 覆盖值断言按 provider 分支 —— `mock` 时期望 `llm_model_effective == "mock"`, 真实 provider 时期望等于覆盖值。持久不变量只有一条: `ai_llm_model` 落库并回显。
+
+### 21.3 验收(四套全绿)
+
+```
+全量 unittest                                  → Ran 537 tests / OK (skipped=3)
+真库 seed.py --force(无任何 AI env)            → 打印"演示论文索引跳过", 种子数据完成
+真库 seed.py --force(mock/hash) + smoke        → 结果: 174 通过, 0 失败
+前端 build + check:contract + verify:401       → PASS / 32 条断言 / 34-34
+/health (无 Key)                               → status=not_configured, llm/embedding configured=false + FIX_HINT, rerank=down, vector_store=redis
+/health (mock/hash)                            → status=degraded, llm/embedding disabled
+```
+
+### 21.4 由本轮固化的纪律
+
+1. **AI 能力只经 `resolve_ai_config()` 与两个工厂获取**, 业务代码不得直接读 `os.environ` 或 `settings.llm_*` —— 否则"管理端改了不生效"会以最难查的方式复发。
+2. **密钥只写不读**: 任何 GET 只回掩码; PUT 的掩码与空串一律视为"不修改", 真清空必须用 `__CLEAR__`。
+3. **探测回环地址必须直连**(`trust_env=False`), 否则系统代理会把"本地服务没起来"伪装成"网关 502"。
+4. **辅助动作不许打死主流程**: 索引、通知、指纹标记这类副作用失败只降级 + 记录, 不 rollback 主事务(见 D87)。
+5. **健康检查不得抛异常**: 每块都过 `_guard`, 宁可报 `down` 也不 500。
+
+### 21.5 遗留
+
+1. 本机已按要求删除全部本地模型(ollama 两个模型 + ONNX 精排目录), 生产使用需自备: 起 `ollama` 拉 `qwen2.5:7b-instruct`/`bge-m3`, 或在系统设置里填第三方 OpenAI 兼容 Base URL + Key; 精排需把 ONNX 目录放回 `RERANK_MODEL_DIR`(缺省自动降级 Noop, 不报错)。
+2. Agent 用 JSON 决策协议而非原生 tool-calling, 换到强 tool-calling 模型时可再评估是否切换; 当前取舍是"任何 OpenAI 兼容端点都能跑"。
+3. `ai_embedding_dim` 改动只提示 `needs_reindex`, 不会自动重建; 重建入口仍是既有知识库管理页, 大批量重建缺进度反馈。
+4. smoke 的 AI 段依赖 `LLM_PROVIDER=mock EMBEDDING_PROVIDER=hash`(见 AGENTS.md 验收命令); 真实 provider 的端到端问答未纳入自动验收(需外部服务与配额)。

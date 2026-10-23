@@ -28,14 +28,23 @@
    `read_upload(file, max_upload_size_mb(db))` + `ensure_daily_quota()`，且**先校验后迁移状态**。
 
 6. **状态机的副作用列(`archived_at` / `reviewed_at` / `publish_time` 等)改完必须落库**，`transition()` 已在 `_apply_effects` 后 `db.flush()`；新增副作用不要只改内存对象——任何 `expire_all()` / refresh 都会丢弃它，归档率与时间轴会谎报。
-7. **迁移把列收紧成 NOT NULL 时，必须同步修正全部 ORM 构造点**(`seed.py`、router、测试辅助)，并为关键表加 AST 守卫测试(参见 `backend/tests/test_archive_owner_columns.py`)。原因：测试库按 ORM `create_all` 建表(可空)，单测会全绿而真库 INSERT 直接炸。
+7. **AI 能力只经 `app/ai/runtime_config.resolve_ai_config()` + `LLMFactory` / `EmbeddingFactory` / `get_reranker()` 获取**：
+   业务代码不得直接读 `settings.llm_*` 或 `os.environ`；改配置写库后必须调 `invalidate_ai_config()`，
+   否则"管理端改了不生效"会以最难查的方式复发。密钥**只写不读**：GET 只回掩码，真清空用 `__CLEAR__`。
+8. **探测回环地址必须直连**（`app/ai/net.py`，`trust_env=False`）——系统代理会把"本地服务没起来"
+   伪装成网关 502；**辅助动作**（索引、通知、指纹标记）失败只降级 + 记录，不 rollback 主事务
+   （`seed.py` 曾因演示论文索引失败把整个种子数据流程打死）。
+9. **迁移把列收紧成 NOT NULL 时，必须同步修正全部 ORM 构造点**(`seed.py`、router、测试辅助)，并为关键表加 AST 守卫测试(参见 `backend/tests/test_archive_owner_columns.py`)。原因：测试库按 ORM `create_all` 建表(可空)，单测会全绿而真库 INSERT 直接炸。
 
 ## 四套验收（提交前全绿）
 
 ```bash
 cd backend && .venv/bin/python -m unittest discover -s tests          # 全量单元测试
-cd backend && .venv/bin/python seed.py --force \
+# smoke 用**显式**测试替身跑: 本机默认没有模型也没有 Key, 不显式指定会走 50301"未配置"分支。
+# mock/hash 只影响生成质量与向量语义, 不影响接口契约; APP_ENV=prod 时启动即报错(防误上生产)。
+# 要跑真实模型: LLM_PROVIDER=auto LLM_API_KEY=... EMBEDDING_PROVIDER=auto EMBEDDING_API_KEY=...
+cd backend && LLM_PROVIDER=mock EMBEDDING_PROVIDER=hash .venv/bin/python seed.py --force \
   && docker exec graduation-redis redis-cli -n 0 FLUSHDB \
-  && .venv/bin/python smoke_test.py                                   # 真库端到端(smoke 非幂等, 必须紧接 seed)
+  && LLM_PROVIDER=mock EMBEDDING_PROVIDER=hash .venv/bin/python smoke_test.py   # 真库端到端(非幂等, 必须紧接 seed)
 cd frontend && npm run build && npm run check:contract && npm run verify:401
 ```
