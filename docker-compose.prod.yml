@@ -52,15 +52,9 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       UPLOAD_DIR: /data/uploads
-      LLM_PROVIDER: ${LLM_PROVIDER:-auto}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-glm-4-flash}
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-auto}
-      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://open.bigmodel.cn/api/paas/v4}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-3}
-      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      # AI 供应商(地址/密钥/模型)只在管理端「系统设置 → AI 服务」维护, 落 ai_provider 表;
+      # 后端已不读任何 LLM_*/EMBEDDING_*/OLLAMA_* 环境变量, 在这里写只会误导运维。
+      # 首次部署后到管理端添加供应商并绑定 chat/embedding/rerank 三个能力位即可。
       CELERY_ENABLED: "true"
       TZ: Asia/Shanghai
       # 建表只走 Alembic: 不再用 AUTO_CREATE_TABLES, 迁移在下面 command 里先跑
