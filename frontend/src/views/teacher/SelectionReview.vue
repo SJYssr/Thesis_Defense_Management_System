@@ -69,7 +69,7 @@
             </div>
           </div>
 
-          <el-table v-loading="loading" :data="items" class="sel-table" empty-text="暂无符合条件的选题申请" @selection-change="onSelectionChange">
+          <el-table v-loading="loading" :data="items" class="sel-table" :element-loading-text="loadingText" empty-text="暂无符合条件的选题申请" @selection-change="onSelectionChange">
             <el-table-column type="selection" width="40" />
             <el-table-column prop="index" label="序号" width="48" align="center" />
             <el-table-column label="学生姓名" width="90" align="center">
@@ -188,6 +188,7 @@ const CROSS_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.5 13.1-1
 const items = ref<any[]>([])
 const total = ref(0)
 const loading = ref(false)
+const loadingText = ref('加载中…')
 const query = reactive({ page: 1, page_size: 10, status: '', keyword: '', studentNo: '', topic: '', dates: [] as string[] })
 
 const counts = reactive<Record<string, number | null>>({ all: null, approved: null, pending: null, rejected: null })
@@ -210,6 +211,7 @@ const STATUS_CLASS: Record<string, string> = { PENDING: 's-pending', APPROVED: '
 async function load() {
   loading.value = true
   try {
+    loadingText.value = '加载中…'
     const result = await reviewList(listLoader, query)
     items.value = result.items.map((row: any) => ({
       ...row,

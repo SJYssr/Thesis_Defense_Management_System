@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { clearAuthStorage, getAccessToken, isTokenExpired, readStoredUser, roleHome } from '@/utils/token'
+import { dropSession, hasRefreshToken, refreshAccessToken } from '@/api/session'
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('@/views/login/LoginView.vue'), meta: { public: true } },
@@ -70,27 +72,60 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to) => {
-  const token = localStorage.getItem('access_token')
+interface StoredUser {
+  role?: string
+  [key: string]: unknown
+}
+
+function loginRoute(fullPath: string) {
+  const redirect = fullPath && fullPath !== '/' ? { redirect: fullPath } : {}
+  return { path: '/login', query: redirect }
+}
+
+router.beforeEach(async (to) => {
+  const token = getAccessToken()
+
+  // 登录页等公开路由: 已登录且 token 未过期则不重复展示登录页
   if (to.meta.public) {
+    const stored = readStoredUser<StoredUser>()
+    if (token && stored?.role && !isTokenExpired(token)) return { path: roleHome(stored.role) }
     return true
   }
-  if (!token) {
-    return { path: '/login' }
-  }
-  const user = JSON.parse(localStorage.getItem('user_info') || 'null')
-  const roles = (to.meta.roles as string[]) || []
-  if (roles.length && user && !roles.includes(user.role)) {
-    ElMessage.error('没有权限访问该页面')
-    const map: Record<string, string> = { ADMIN: '/admin/home', TEACHER: '/teacher/home', STUDENT: '/student/home' }
-    return { path: map[user.role] || '/login' }
-  }
-  if (to.path === '/' || to.path === '/login') {
-    if (user) {
-      const map: Record<string, string> = { ADMIN: '/admin/home', TEACHER: '/teacher/home', STUDENT: '/student/home' }
-      return { path: map[user.role] || '/login' }
+
+  // ===== 1) exp 校验(不验签，只判过期) + 静默续期 =====
+  if (!token || isTokenExpired(token)) {
+    if (!hasRefreshToken()) {
+      clearAuthStorage()
+      return loginRoute(to.fullPath)
+    }
+    try {
+      // 与 api/request.ts 共用同一个 refresh 单例，不会重复刷新
+      await refreshAccessToken()
+    } catch {
+      dropSession()
+      return loginRoute(to.fullPath)
+    }
+    if (isTokenExpired(getAccessToken())) {
+      dropSession()
+      return loginRoute(to.fullPath)
     }
   }
+
+  // ===== 2) 用户信息缺失(本地存储被清) → 视为未登录 =====
+  const user = readStoredUser<StoredUser>()
+  if (!user?.role) {
+    clearAuthStorage()
+    return loginRoute(to.fullPath)
+  }
+
+  // ===== 3) 角色越权: 重定向到自己首页，而不是白屏 =====
+  const roles = (to.meta.roles as string[] | undefined) || []
+  if (roles.length > 0 && !roles.includes(user.role)) {
+    ElMessage.error('无权限访问该页面')
+    return { path: roleHome(user.role) }
+  }
+
+  if (to.path === '/') return { path: roleHome(user.role) }
   return true
 })
 

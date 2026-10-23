@@ -1,20 +1,43 @@
 export interface ReviewQuery { page: number; page_size: number; status: string; keyword: string; studentNo: string; topic: string; dates: string[] }
-export async function reviewList(loader: (params: Record<string, unknown>) => Promise<any>, query: ReviewQuery) {
-  const params = { status: query.status || undefined, page: query.page, page_size: query.page_size }
-  if (!query.keyword && !query.studentNo && !query.topic && !query.dates?.length) return (await loader(params)).data
-  // These APIs expose status and pagination; search every page so filters never omit later records.
-  const first = (await loader({ ...params, page: 1, page_size: 100 })).data
-  const rows = [...first.items]
-  for (let page = 2; rows.length < first.total; page++) {
-    const next = (await loader({ ...params, page, page_size: 100 })).data.items
-    if (!next.length) break
-    rows.push(...next)
+
+export interface ReviewListOptions {
+  /**
+   * 该列表端点是否支持 date_from/date_to。
+   * 阶段列表(/teacher|admin/{stage})只有 keyword, 没有日期参数; 置 false 时日期维度既不下推、
+   * 也不在前端静默过滤 —— 由页面显式禁用日期控件并给出"暂不支持按时间筛选"的提示。
+   */
+  supportsDateRange?: boolean
+}
+
+/**
+ * 把页面上的三个输入框 + 时间区间映射成后端参数。
+ * 后端 keyword 是 OR 匹配(学生姓名/学号/题目名称等多字段), 所以 studentNo / topic 合并进 keyword,
+ * 不再分开传 —— 分页与 total 全部交由后端计算, 前端不再拉全量。
+ */
+export function buildReviewParams(query: ReviewQuery, options: ReviewListOptions = {}) {
+  const keyword = [query.keyword, query.studentNo, query.topic]
+    .map((v) => (v || '').trim())
+    .filter(Boolean)
+    .join(' ')
+  const params: Record<string, unknown> = {
+    status: query.status || undefined,
+    page: query.page,
+    page_size: query.page_size,
+    keyword: keyword || undefined,
   }
-  const filtered = rows.filter((row: any) => {
-    const name = `${row.student_name || ''} ${row.student_no || ''}`
-    const topic = row.topic_title || row.content?.title || ''
-    const date = (row.submitted_at || row.created_at || '').slice(0, 10)
-    return (!query.keyword || name.includes(query.keyword.trim())) && (!query.studentNo || (row.student_no || '').includes(query.studentNo.trim())) && (!query.topic || topic.includes(query.topic.trim())) && (!query.dates?.length || (date >= query.dates[0] && date <= query.dates[1]))
-  })
-  return { items: filtered.slice((query.page - 1) * query.page_size, query.page * query.page_size), total: filtered.length }
+  if (options.supportsDateRange !== false && query.dates?.length === 2) {
+    params.date_from = query.dates[0] || undefined
+    params.date_to = query.dates[1] || undefined
+  }
+  return params
+}
+
+/** 单请求下推过滤: 一次调用即可, total 是后端过滤后的命中数。 */
+export async function reviewList(
+  loader: (params: Record<string, unknown>) => Promise<any>,
+  query: ReviewQuery,
+  options: ReviewListOptions = {},
+) {
+  const data = (await loader(buildReviewParams(query, options))).data
+  return { items: data?.items ?? [], total: data?.total ?? 0 }
 }

@@ -7,10 +7,14 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 
 import App from './App.vue'
 import router from './router'
+import { useUserStore } from './stores/user'
 import './styles/index.css'
 
 const app = createApp(App)
-app.use(createPinia())
+const pinia = createPinia()
+app.use(pinia)
+// 先注册 profile 同步回调，再挂 router：路由守卫里就可能触发 refresh
+useUserStore(pinia).bindProfileSync()
 app.use(router)
 app.use(ElementPlus, { locale: zhCn })
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {

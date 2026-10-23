@@ -23,8 +23,8 @@ async function load() {
   const res = await materialApi.mine()
   view.value = res.data
   // 论文索引完成后刷新文档状态
-  const docs = await aiApi.listDocuments()
-  aiDocs.value = docs.data
+  const docs = await aiApi.listDocuments(1, 100)
+  aiDocs.value = docs.data.items
 }
 
 const aiDocs = ref<any[]>([])
@@ -32,7 +32,11 @@ const aiDocs = ref<any[]>([])
 async function handleUpload(file: File, materialType: string) {
   uploading.value = true
   try {
-    await materialApi.uploadFile(file, materialType)
+    // P7-A: 上传支持 business_type/business_id 业务挂载; 配额用尽(40013)与单文件超限(40010)由请求层分别提示
+    await materialApi.uploadFile(file, materialType, {
+      business_type: 'MATERIAL',
+      business_id: view.value?.id as number | undefined,
+    })
     ElMessage.success('上传成功')
     await load()
     startPolling()

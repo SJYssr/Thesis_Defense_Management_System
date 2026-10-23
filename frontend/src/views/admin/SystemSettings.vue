@@ -12,11 +12,13 @@ const form = reactive({
   ai_defense_enabled: true,
   ai_rate_limit_per_minute: 10,
   max_upload_size_mb: 50,
+  /** P7-A 新增配置项(max_upload_daily_mb, 默认 200, 整数, 已进后端 sysconfig FIELDS) */
+  max_upload_daily_mb: 200,
   ai_llm_model: '',
 })
 
 const BOOL_KEYS = ['ai_defense_enabled']
-const INT_KEYS = ['ai_rate_limit_per_minute', 'max_upload_size_mb']
+const INT_KEYS = ['ai_rate_limit_per_minute', 'max_upload_size_mb', 'max_upload_daily_mb']
 
 const modelInfo = ref<{
   llm_provider: string
@@ -135,6 +137,11 @@ onMounted(load)
             <el-input-number v-model="form.max_upload_size_mb" :min="1" :max="2048" />
             <span class="unit">MB / 单文件</span>
             <div class="field-hint">对论文、材料等所有上传文件生效</div>
+          </el-form-item>
+          <el-form-item label="每日上传上限">
+            <el-input-number v-model="form.max_upload_daily_mb" :min="1" :max="102400" />
+            <span class="unit">MB / 每人每日</span>
+            <div class="field-hint">按人按自然日累计；用尽后上传返回 40013（与单文件超限 40010 是不同错误）</div>
           </el-form-item>
         </el-form>
       </section>

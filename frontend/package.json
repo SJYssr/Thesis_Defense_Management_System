@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:contract": "node scripts/check-api-contract.mjs",
+    "verify:401": "node scripts/verify-401-refresh.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
+import { SESSION_EXPIRED_MESSAGE, authorizedFetch } from '@/api/sse'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -13,8 +14,6 @@ const messages = ref<Message[]>([])
 const input = ref('')
 const sending = ref(false)
 const listRef = ref<HTMLElement>()
-
-const TOKEN = localStorage.getItem('access_token') || ''
 
 async function send() {
   const q = input.value.trim()
@@ -32,9 +31,10 @@ async function send() {
   scrollToBottom()
 
   try {
-    const resp = await fetch('/api/v1/ai/chat/stream', {
+    // 流式接口走不了 axios 拦截器，用 authorizedFetch 复用同一套 token 过期/401 恢复策略
+    const resp = await authorizedFetch('/api/v1/ai/chat/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: q, history }),
     })
     if (!resp.ok || !resp.body) {
@@ -76,7 +76,11 @@ async function send() {
     }
     assistantMsg.streaming = false
   } catch (e: any) {
-    assistantMsg.content += `\n\n> ⚠️ 请求失败: ${e.message}`
+    // 会话失效时 session 侧已弹提示并跳转 /login，这里只把状态体现在气泡里
+    assistantMsg.content +=
+      e?.message === SESSION_EXPIRED_MESSAGE
+        ? `\n\n> ⚠️ ${SESSION_EXPIRED_MESSAGE}`
+        : `\n\n> ⚠️ 请求失败: ${e.message}`
     assistantMsg.streaming = false
   } finally {
     sending.value = false

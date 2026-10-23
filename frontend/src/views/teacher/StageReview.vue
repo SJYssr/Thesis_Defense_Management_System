@@ -47,11 +47,14 @@
           <div class="filter-row">
             <div class="filter-item">
               <span class="filter-label">提交时间</span>
+              <!-- 阶段列表端点(/teacher/{stage})只有 keyword, 没有 date_from/date_to:
+                   日期维度无法下推, 这里直接禁用控件并显式提示, 不做静默的前端过滤 -->
               <el-date-picker
                 v-model="query.dates" type="daterange" range-separator="至"
                 start-placeholder="开始日期" end-placeholder="结束日期"
-                value-format="YYYY-MM-DD" class="filter-date"
+                value-format="YYYY-MM-DD" class="filter-date" disabled
               />
+              <span class="date-unsupported">阶段列表暂不支持按时间筛选</span>
             </div>
             <div class="filter-actions">
               <el-button type="primary" @click="onSearch"><el-icon><Search /></el-icon>&nbsp;查询</el-button>
@@ -69,7 +72,7 @@
             </div>
           </div>
 
-          <el-table v-loading="loading" :data="items" class="stage-table" empty-text="暂无符合条件的提交记录" @selection-change="onSelectionChange">
+          <el-table v-loading="loading" :data="items" class="stage-table" :element-loading-text="loadingText" empty-text="暂无符合条件的提交记录" @selection-change="onSelectionChange">
             <el-table-column type="selection" width="40" />
             <el-table-column prop="index" label="序号" width="48" align="center" />
             <el-table-column label="学生姓名" width="90" align="center">
@@ -150,13 +153,19 @@
             <ReviewHistory :records="current?.review_history || []" />
 
             <template v-if="canReview">
-              <div v-if="stage === 'final'" class="score-block">
-                <span class="score-label">终期评分（0-100）</span>
-                <el-input-number v-model="score" :min="0" :max="100" />
-              </div>
-              <div class="sec-title"><i class="sec-icon green" />指导意见（驳回时必填）</div>
+              <!-- P1-A: 材料/阶段审核不再写 FinalDefense.score，正式成绩唯一真源是 DefenseResult.score -->
+              <el-alert
+                v-if="stage === 'final'"
+                class="state-alert" type="info" :closable="false"
+                title="材料审核不再单独评分：正式成绩以答辩成绩（DefenseResult.score）为准"
+              />
+              <div class="sec-title"><i class="sec-icon green" />指导意见（退回修改 / 不通过时必填）</div>
               <el-input v-model="comment" type="textarea" :rows="4" maxlength="500" show-word-limit placeholder="请输入审核意见" />
             </template>
+            <el-alert
+              v-else-if="isExaminer" class="state-alert" type="warning" :closable="false"
+              title="当前以评阅专家身份查看（只读）：材料审核无权操作，评分请在「评阅与答辩」中提交"
+            />
             <el-alert
               v-else class="state-alert" type="info" :closable="false"
               :title="current.status === 'APPROVED' ? '该材料已审核通过' : '该材料不在待审核状态'"
@@ -164,8 +173,9 @@
           </div>
           <div v-if="canReview" class="panel-footer">
             <el-button @click="current = null">取消</el-button>
-            <el-button type="danger" :loading="reviewing" @click="review(false)">不通过</el-button>
-            <el-button type="primary" :loading="reviewing" @click="review(true)">通过</el-button>
+            <el-button :loading="reviewing" @click="review('request_revision')">退回修改</el-button>
+            <el-button type="danger" :loading="reviewing" @click="review('reject')">不通过</el-button>
+            <el-button type="primary" :loading="reviewing" @click="review('approve')">通过</el-button>
           </div>
         </template>
       </aside>
@@ -179,7 +189,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, Select, CloseBold, Close } from '@element-plus/icons-vue'
 import { reviewList } from '@/utils/reviewList'
-import { stageApi } from '@/api/business'
+import { stageApi, type StageDecision } from '@/api/business'
 import ReviewHistory from '@/components/ReviewHistory.vue'
 
 const route = useRoute()
@@ -236,6 +246,7 @@ const CROSS_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.5 13.1-1
 const items = ref<any[]>([])
 const total = ref(0)
 const loading = ref(false)
+const loadingText = ref('加载中…')
 const query = reactive({ page: 1, page_size: 10, status: '', keyword: '', studentNo: '', topic: '', dates: [] as string[] })
 
 const counts = reactive<Record<string, number | null>>({ all: null, approved: null, pending: null, resubmit: null })
@@ -266,7 +277,9 @@ const STATUS_CLASS: Record<string, string> = {
 async function load() {
   loading.value = true
   try {
-    const result = await reviewList(listLoader, query)
+    loadingText.value = '加载中…'
+    // 阶段列表后端只有 keyword 参数: 日期维度不可下推, 已由筛选区的禁用日期控件显式标注
+    const result = await reviewList(listLoader, query, { supportsDateRange: false })
     items.value = result.items.map((row: any) => ({
       ...row,
       statusCn: STATUS_CN[row.status] || row.status,
@@ -295,7 +308,6 @@ function onReset() {
 
 const current = ref<any>(null)
 const comment = ref('')
-const score = ref<number | undefined>(undefined)
 const reviewing = ref(false)
 const selected = ref<any[]>([])
 
@@ -309,26 +321,38 @@ async function openDetail(row: any) {
     statusClass: STATUS_CLASS[res.data.status] || 's-withdraw',
   }
   comment.value = ''
-  score.value = undefined
 }
 
-const canReview = computed(() => current.value?.status === 'SUBMITTED')
+/** P1-A: 详情响应带 can_edit / is_examiner —— 编辑与审核权限由后端判定，不再用"角色是不是教师"推断 */
+const canEdit = computed(() => current.value?.can_edit !== false)
+const isExaminer = computed(() => current.value?.is_examiner === true)
+const canReview = computed(() => current.value?.status === 'SUBMITTED' && canEdit.value)
 
 function fmt(value?: string | null) { return (value || '—').replace('T', ' ').slice(0, 16) }
 
-async function review(approve: boolean) {
-  if (!approve && !comment.value.trim()) { ElMessage.warning('请填写审核意见'); return }
+/**
+ * P1-A: 审核语义拆成三值，显式传 decision:
+ *   approve 通过 / request_revision 退回修改 / reject 直接不通过
+ */
+async function review(action: StageDecision) {
+  const text = comment.value.trim() || undefined
+  if (action !== 'approve' && !text) {
+    ElMessage.warning(action === 'request_revision' ? '请填写退回修改的意见' : '请填写不通过的意见')
+    return
+  }
   reviewing.value = true
   try {
+    const id = current.value.id
     if (isAdmin.value) {
-      if (approve) await stageApi.adminApprove(stage.value, current.value.id, comment.value || undefined)
-      else await stageApi.adminReject(stage.value, current.value.id, comment.value || undefined)
-    } else if (approve) {
-      await stageApi.approve(stage.value, current.value.id, comment.value || undefined, score.value)
+      if (action === 'approve') await stageApi.adminApprove(stage.value, id, text)
+      else await stageApi.adminReject(stage.value, id, text, action)
+    } else if (action === 'approve') {
+      await stageApi.approve(stage.value, id, text)
     } else {
-      await stageApi.reject(stage.value, current.value.id, comment.value || undefined)
+      await stageApi.reject(stage.value, id, text, action)
     }
-    ElMessage.success(approve ? '已通过' : '已驳回')
+    const doneCn: Record<StageDecision, string> = { approve: '已通过', request_revision: '已退回修改', reject: '已驳回' }
+    ElMessage.success(doneCn[action])
     current.value = null
     await refresh()
   } catch {
@@ -447,6 +471,15 @@ onMounted(refresh)
 .filter-input.narrow { width: 140px; }
 .filter-select { width: 140px; }
 .filter-date { width: 250px; }
+.date-unsupported {
+  font-size: 11.5px;
+  color: #b07b2c;
+  background: #fdf5e8;
+  border: 1px solid #f4e3c4;
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
 .filter-actions { margin-left: auto; display: flex; gap: 8px; }
 .reset-btn { border: 1px solid #dcdfe6; color: #5a6b80; }
 

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/request'
+import type { ApiEnvelope, PageResult } from '@/types/api'
 
 interface Schedule {
   id: number
@@ -23,6 +24,9 @@ const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
 const editingId = ref<number | null>(null)
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
 
 const form = reactive({
   academic_year: '',
@@ -45,8 +49,13 @@ function emptyWindows() {
 async function load() {
   loading.value = true
   try {
-    const res = await request.get('/admin/academic-schedules')
-    rows.value = res.data
+    // P7-A: GET /admin/academic-schedules 已改为分页对象 {items,page,page_size,total}
+    const res = await request.get<unknown, ApiEnvelope<PageResult<Schedule>>>('/admin/academic-schedules', {
+      params: { page: page.value, page_size: pageSize.value },
+    })
+    const payload = res?.data
+    rows.value = payload?.items ?? []
+    total.value = payload?.total ?? rows.value.length
   } finally {
     loading.value = false
   }
@@ -135,6 +144,7 @@ function windowText(row: Schedule, key: string) {
   return `${fmt(start)} ~ ${fmt(end)}`
 }
 
+watch([page, pageSize], () => { load() })
 onMounted(load)
 </script>
 
@@ -167,6 +177,12 @@ onMounted(load)
       </el-table-column>
     </el-table>
 
+    <div class="pagination-bar">
+      <span>共 {{ total }} 个学年配置</span>
+      <el-pagination v-model:current-page="page" v-model:page-size="pageSize" :total="total"
+        :page-sizes="[10, 20, 50]" layout="sizes, prev, pager, next" />
+    </div>
+
     <el-dialog v-model="dialogVisible" :title="editingId === null ? '新建学年配置' : `编辑学年 ${form.academic_year}`"
       width="640px" destroy-on-close>
       <el-form label-width="150px" label-position="left">
@@ -194,6 +210,7 @@ onMounted(load)
 </template>
 
 <style scoped>
+.pagination-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 12px; font-size: 12px; color: #8a97ad; }
 .hint { color: #718096; font-size: 13px; margin: 6px 0 0; }
 .field-hint { width: 100%; color: #9aa2b0; font-size: 12px; line-height: 1.6; margin-top: 4px; }
 @media (max-width: 900px) {

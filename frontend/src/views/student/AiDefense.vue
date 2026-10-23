@@ -13,9 +13,9 @@ const docReady = ref(false)
 const docs = ref<any[]>([])
 
 async function checkDocs() {
-  const res = await aiApi.listDocuments()
-  docs.value = res.data
-  docReady.value = res.data.some((d: any) => d.index_status === 'SUCCESS')
+  const page = await aiApi.listDocuments(1, 100)
+  docs.value = page.data.items
+  docReady.value = page.data.items.some((d) => d.index_status === 'SUCCESS')
 }
 
 // ---------- 问题生成 ----------

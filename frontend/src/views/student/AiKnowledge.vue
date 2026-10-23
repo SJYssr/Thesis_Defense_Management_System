@@ -23,7 +23,8 @@ function fmtSize(size: number | null | undefined) {
 }
 
 async function load() {
-  docs.value = (await aiApi.listDocuments()).data
+  // 后端已分页(page/size ≤ 100)，知识库页需要全量做统计与刷新判断
+  docs.value = (await aiApi.listDocuments(1, 100)).data.items
   if (!config.value) config.value = (await aiApi.ragConfig()).data
 }
 async function index(id?: number) {

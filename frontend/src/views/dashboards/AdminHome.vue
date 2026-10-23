@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { STAT_ICONS } from '@/components/statIcons'
 import { dashboardApi } from '@/api/common'
+import { scopeLabel, scopeLabelWithYear } from '@/utils/dashboardScope'
+import type { DashboardScopeMeta, DashboardStats, PassCountRow } from '@/types/api'
 
 const router = useRouter()
 
@@ -42,7 +44,20 @@ interface Submission { name: string; content: string; time: string; status: stri
 const cards = reactive({ student_count: 0, teacher_count: 0, topic_count: 0,
   selected_count: 0, completed_count: 0, pending_count: 0 })
 const stageDistribution = ref<NamedValue[]>([])
+/** 阶段通过率(P7-B): 优先用 stats.pass_counts 的 {name,value,total} 自算, 缺数据时回退 analytics.pass_rates */
+const passCounts = ref<PassCountRow[]>([])
 const passRates = ref<NamedValue[]>([])
+/** GET /dashboard/stats 汇总(P7-B 起返回, 之前算而未用; P8 起口径由 statsMeta 声明) */
+const yearTotals = reactive({ student_total: 0, selected_total: 0 })
+/** P8: dashboard 响应的口径声明, 卡片角标与图表标题的「当前学年/全部学年」全部读它 */
+const analyticsMeta = ref<DashboardScopeMeta>({})
+const statsMeta = ref<DashboardScopeMeta>({})
+/** 图表口径同样读 scope_map(stats 接口), 后端把字段放开/收窄时文案自动跟随 */
+const chartScope = computed(() => ({
+  stage: scopeLabel(statsMeta.value, 'stage_distribution'),
+  pass: scopeLabel(statsMeta.value, 'pass_counts'),
+  selected: scopeLabelWithYear(statsMeta.value, 'selected_total'),
+}))
 const announcements = ref<{ tag: string; title: string; date: string }[]>([])
 const todos = ref<Todo[]>([])
 const submissions = ref<Submission[]>([])
@@ -53,15 +68,25 @@ const dotColors: Record<string, string> = {
   终期审核: '#8b5cf6', 毕业材料: '#ef4444',
 }
 function pct(value: number, total: number) { return total ? Math.round(value / total * 100) : 0 }
+/**
+ * P8: 口径标注不再写死 —— /dashboard/analytics 的 scope_map 逐字段声明「当前学年 / 全部学年」,
+ * 卡片角标由它决定(completed_count=current_year, student_count/teacher_count/topic_count=all_years)。
+ */
 const statCards = computed(() => [
-  { label: '学生总数', value: cards.student_count, icon: 'users', color: '#2563eb', bg: '#d7f0fe' },
-  { label: '教师总数', value: cards.teacher_count, icon: 'person', color: '#22c55e', bg: '#ddfef0' },
-  { label: '题目总数', value: cards.topic_count, icon: 'doc', color: '#8b5cf6', bg: '#edeafd' },
+  { label: '学生总数', value: cards.student_count, icon: 'users', color: '#2563eb', bg: '#d7f0fe',
+    scope: scopeLabel(analyticsMeta.value, 'cards.student_count') },
+  { label: '教师总数', value: cards.teacher_count, icon: 'person', color: '#22c55e', bg: '#ddfef0',
+    scope: scopeLabel(analyticsMeta.value, 'cards.teacher_count') },
+  { label: '题目总数', value: cards.topic_count, icon: 'doc', color: '#8b5cf6', bg: '#edeafd',
+    scope: scopeLabel(analyticsMeta.value, 'cards.topic_count') },
   { label: '已选题人数', value: cards.selected_count, icon: 'case', color: '#f59e0b', bg: '#fef5ea',
-    ring: pct(cards.selected_count, cards.student_count), ringColor: '#f59e0b' },
-  { label: '材料审核完成', value: cards.completed_count, icon: 'cap', color: '#ef4444', bg: '#fee7ed',
-    ring: pct(cards.completed_count, cards.student_count), ringColor: '#ef4444' },
-  { label: '待审核事项', value: cards.pending_count, icon: 'bars', color: '#3b82f6', bg: '#dcf9fe' },
+    ring: pct(cards.selected_count, cards.student_count), ringColor: '#f59e0b',
+    scope: scopeLabel(analyticsMeta.value, 'cards.selected_count') },
+  { label: '已完成', value: cards.completed_count, icon: 'cap', color: '#ef4444', bg: '#fee7ed',
+    ring: pct(cards.completed_count, cards.student_count), ringColor: '#ef4444',
+    scope: scopeLabel(analyticsMeta.value, 'cards.completed_count') },
+  { label: '待审核事项', value: cards.pending_count, icon: 'bars', color: '#3b82f6', bg: '#dcf9fe',
+    scope: scopeLabel(analyticsMeta.value, 'cards.pending_count') },
 ])
 const barRef = ref<HTMLElement>()
 const lineRef = ref<HTMLElement>()
@@ -83,11 +108,24 @@ function renderCharts() {
     series: [{ type: 'bar', barMaxWidth: 26, data: values.map((value, i) => ({ value,
       itemStyle: { color: palette[i % palette.length], borderRadius: [4, 4, 0, 0] } })) }],
   })
+  // P7-B: pass_counts 每行是 {name,value,total}, 后端不再直接给百分比, 这里用 value/total 自算
+  const rateSource = passCounts.value.length
+    ? passCounts.value.map(row => ({
+      name: row.name,
+      value: row.total ? Math.round(row.value / row.total * 1000) / 10 : 0,
+      raw: `${row.value}/${row.total}`,
+    }))
+    : passRates.value.map(row => ({ name: row.name, value: row.value, raw: '' }))
   makeChart(lineRef.value)?.setOption({
-    grid: { left: 45, right: 18, top: 35, bottom: 38 }, tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: passRates.value.map(item => item.name) },
+    grid: { left: 45, right: 18, top: 35, bottom: 38 }, tooltip: { trigger: 'axis',
+      formatter: (params: any) => {
+        const item = Array.isArray(params) ? params[0] : params
+        const raw = rateSource[item?.dataIndex ?? 0]?.raw
+        return `${item?.name ?? ''}<br/>通过率 ${item?.value ?? 0}%${raw ? ` (${raw})` : ''}`
+      } },
+    xAxis: { type: 'category', data: rateSource.map(item => item.name) },
     yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
-    series: [{ type: 'line', smooth: true, data: passRates.value.map(item => item.value),
+    series: [{ type: 'line', smooth: true, data: rateSource.map(item => item.value),
       itemStyle: { color: '#3b82f6' }, label: { show: true, position: 'top', formatter: '{c}%' } }],
   })
   makeChart(pieRef.value)?.setOption({
@@ -131,7 +169,16 @@ onMounted(async () => {
   ])
   Object.assign(cards, analytics.data.cards)
   passRates.value = analytics.data.pass_rates
-  stageDistribution.value = distribution.data.stage_distribution
+  analyticsMeta.value = (analytics.data || {}) as DashboardScopeMeta
+  statsMeta.value = (distribution.data || {}) as DashboardScopeMeta
+  const statsData = (distribution.data || {}) as DashboardStats
+  passCounts.value = statsData.pass_counts ?? []
+  stageDistribution.value = statsData.stage_distribution ?? []
+  // student_total / selected_total 是 P7-B 才返回的字段, 本地缺失时回退 analytics 同名口径
+  yearTotals.student_total = statsData.student_total ?? cards.student_count
+  yearTotals.selected_total = statsData.selected_total ?? cards.selected_count
+  if (statsData.student_total != null) cards.student_count = statsData.student_total
+  if (statsData.selected_total != null) cards.selected_count = statsData.selected_total
   announcements.value = home.data.announcements.map((item: any) => ({
     tag: item.priority || 'NORMAL', title: item.title, date: item.publish_time?.slice(0, 10) || '',
   }))
@@ -241,7 +288,7 @@ onUnmounted(() => {
           </div>
           <div class="stat-info">
             <div class="value">{{ c.value }}</div>
-            <div class="label">{{ c.label }}</div>
+            <div class="label">{{ c.label }}<span class="scope-tag">{{ c.scope }}</span></div>
           </div>
           <div v-if="c.ring !== undefined" class="ring" :style="{ '--pct': c.ring, '--ring-color': c.ringColor }">
             <span>{{ c.ring }}%</span>
@@ -256,7 +303,7 @@ onUnmounted(() => {
         <div class="page-card chart-card">
           <div class="card-head">
             <div class="card-title"><i />各阶段学生人数统计</div>
-            <span class="batch-select">全部学年</span>
+            <span class="batch-select">{{ chartScope.stage }}</span>
           </div>
           <div ref="barRef" class="chart-box" />
         </div>
@@ -265,7 +312,7 @@ onUnmounted(() => {
         <div class="page-card chart-card">
           <div class="card-head">
             <div class="card-title"><i />各阶段通过率</div>
-            <span class="batch-select">全部学年</span>
+            <span class="batch-select">{{ chartScope.selected }} · 已选题 {{ yearTotals.selected_total }}/{{ yearTotals.student_total }}</span>
           </div>
           <div ref="lineRef" class="chart-box" />
         </div>
@@ -274,7 +321,7 @@ onUnmounted(() => {
         <div class="page-card chart-card">
           <div class="card-head">
             <div class="card-title"><i />学生进度分布</div>
-            <span class="batch-select">全部学年</span>
+            <span class="batch-select">{{ chartScope.stage }}</span>
           </div>
           <div ref="pieRef" class="chart-box" />
         </div>
@@ -528,6 +575,16 @@ onUnmounted(() => {
   font-size: 12.5px;
   color: #8a97ad;
   margin-top: 2px;
+}
+
+/* P8: 口径角标(当前学年/全部学年), 由 scope_map 决定 */
+.stat-info .scope-tag {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  color: #6b7a90;
+  background: #eef2f8;
 }
 
 .stat-info .trend {

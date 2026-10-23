@@ -47,6 +47,16 @@
           </div>
         </div>
 
+        <el-alert
+          v-if="mustChangePassword"
+          type="warning"
+          :closable="false"
+          show-icon
+          style="margin: 0 0 14px"
+          title="当前账号仍在使用初始密码"
+          description="为保障账号安全，请立即修改密码后再使用系统功能。"
+        />
+
         <el-form label-position="left" label-width="96px" class="pwd-form">
           <el-form-item required>
             <template #label>原密码</template>
@@ -123,6 +133,8 @@ const router = useRouter()
 const userStore = useUserStore()
 
 const tab = computed(() => (route.query.tab === 'info' ? 'info' : 'password'))
+/** P1-B: must_change_password 来自 /auth/me(profile)，只提示不强制拦截 */
+const mustChangePassword = computed(() => userStore.mustChangePassword)
 
 const ROLE_CN: Record<string, string> = { ADMIN: '系统管理员', TEACHER: '教师', STUDENT: '学生' }
 const roleCn = computed(() => ROLE_CN[userStore.role] || userStore.role || '系统管理员')

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { authApi } from '@/api/auth'
+import { roleHome } from '@/utils/token'
 import { useUserStore } from '@/stores/user'
 import { loadPublicConfig, systemName } from '@/stores/app'
 import { MEDIA } from '@/config/media'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
 const loading = ref(false)
 const form = reactive({ username: '', password: '' })
@@ -72,9 +74,20 @@ async function handleLogin() {
       localStorage.removeItem('remember_username')
     }
     userStore.setSession(res.data)
+
+    // P1-B: 首次登录/初始密码 → 明确提示并引导到改密页(不做强制拦截)
+    if (res.data.user.must_change_password) {
+      ElMessage.warning('当前账号仍在使用初始密码，请先修改密码')
+      router.push({ path: '/profile', query: { tab: 'password', from: 'login' } })
+      return
+    }
+
     ElMessage.success(`欢迎回来, ${res.data.user.real_name}`)
-    const map: Record<string, string> = { ADMIN: '/admin/home', TEACHER: '/teacher/home', STUDENT: '/student/home' }
-    router.push(map[res.data.user.role] || '/login')
+    // 被 401 拦下来登录时保留回跳地址(仅同角色前缀才回跳，避免越权)
+    const home = roleHome(res.data.user.role)
+    const redirect = route.query.redirect
+    const target = typeof redirect === 'string' && redirect.startsWith(home) ? redirect : home
+    router.push(target)
   } catch {
     /* 错误提示由拦截器统一处理 */
   } finally {

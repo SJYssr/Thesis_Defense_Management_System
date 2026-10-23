@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { progressApi } from '@/api/business'
 import { materialApi } from '@/api/business'
 import { STAT_ICONS } from '@/components/statIcons'
+import type { OverdueScanResult } from '@/types/api'
 
 interface Option { id: number; name: string; college_id?: number }
 interface ProgressRow { student_id: number; student_name: string; student_no: string; college_name: string | null; major_name: string | null; topic_title: string | null; teacher_name: string | null; current_stage: string; current_stage_cn: string; progress_percent: number; risk_level: string; risk_reason: string | null; updated_at: string | null; academic_year: string | null }
@@ -86,11 +87,30 @@ async function load() {
   finally { loading.value = false }
 }
 async function loadSummary() {
+  // P7-B: 不传 academic_year 时后端按当前学年(academic_year_for)统计, 不再全学年累计
   const res = await progressApi.adminSummary(query.year || undefined)
   summary.value = res.data
   await nextTick(); drawCharts()
 }
 async function search() { applied.value = { ...query }; page.value = 1; await Promise.all([load(), loadSummary()]) }
+
+/** P7-B: 逾期扫描; celery 入队路径 scanned=0, 不能对用户说「扫描 0 条」 */
+const scanning = ref(false)
+async function runOverdueScan() {
+  await ElMessageBox.confirm('将扫描当前学年的全部毕业流程，把逾期节点标记为滞后并生成提醒任务。', '逾期扫描',
+    { confirmButtonText: '开始扫描', cancelButtonText: '取消', type: 'warning' })
+  scanning.value = true
+  try {
+    const res = await progressApi.overdueScan()
+    const data = (res.data || {}) as OverdueScanResult
+    if (data.mode === 'celery') {
+      ElMessage.success(`已提交后台扫描${data.queued ? '（任务已入队）' : ''}，完成后分布会自动更新`)
+    } else {
+      ElMessage.success(`扫描完成：处理 ${data.scanned ?? 0} 条流程，分 ${data.batches ?? 0} 批`)
+    }
+    await Promise.all([load(), loadSummary()])
+  } finally { scanning.value = false }
+}
 async function reset() { Object.assign(query, { year: filters.value.years[0] || '', collegeId: undefined, majorId: undefined,
   teacherId: undefined, student: '', status: '' }); await search() }
 async function chooseTab(value: string) { query.status = value; await search() }
@@ -145,15 +165,15 @@ onBeforeUnmount(() => { window.removeEventListener('resize', drawCharts); charts
       <section class="chart-card"><h3>近 7 天流程更新</h3><div ref="trendChartRef" class="chart-box" /></section>
     </div>
     <div class="filter-card"><div class="filter-grid">
-      <label>学年<el-select v-model="query.year" clearable placeholder="全部学年"><el-option v-for="year in filters.years" :key="year" :label="year" :value="year" /></el-select></label>
+      <label>学年<el-select v-model="query.year" clearable placeholder="当前学年"><el-option v-for="year in filters.years" :key="year" :label="year" :value="year" /></el-select></label>
       <label>学院<el-select v-model="query.collegeId" clearable placeholder="全部学院"><el-option v-for="c in filters.colleges" :key="c.id" :label="c.name" :value="c.id" /></el-select></label>
       <label>专业<el-select v-model="query.majorId" clearable placeholder="全部专业"><el-option v-for="m in majorOptions" :key="m.id" :label="m.name" :value="m.id" /></el-select></label>
       <label>进度状态<el-select v-model="query.status" clearable placeholder="全部状态"><el-option v-for="tab in tabs.slice(1)" :key="tab.value" :label="tab.label" :value="tab.value" /></el-select></label>
       <label>学生姓名 / 学号<el-input v-model="query.student" clearable placeholder="输入姓名或学号" /></label>
       <label>指导教师<el-select v-model="query.teacherId" clearable placeholder="全部教师"><el-option v-for="t in filters.teachers" :key="t.id" :label="t.name" :value="t.id" /></el-select></label>
     </div><div class="filter-actions"><el-button type="primary" @click="search">查询</el-button><el-button @click="reset">重置</el-button></div></div>
-    <div class="table-card"><div class="tab-bar"><div class="tabs"><button v-for="tab in tabs" :key="tab.label" class="tab" :class="{ active: applied.status === tab.value }" @click="chooseTab(tab.value)">{{ tab.label }}（{{ tab.count }}）</button></div><div class="tab-actions"><el-button @click="exportCsv">导出数据</el-button><el-button @click="openRemind(selected.map(row => row.student_id))">批量提醒</el-button></div></div>
-      <p class="scope-note">{{ query.year || '全部学年' }} · 已建立流程 {{ summary.process_total }} 条，未开始 {{ summary.not_started }} 人。未开始的学生尚无流程记录。</p>
+    <div class="table-card"><div class="tab-bar"><div class="tabs"><button v-for="tab in tabs" :key="tab.label" class="tab" :class="{ active: applied.status === tab.value }" @click="chooseTab(tab.value)">{{ tab.label }}（{{ tab.count }}）</button></div><div class="tab-actions"><el-button :loading="scanning" @click="runOverdueScan">逾期扫描</el-button><el-button @click="exportCsv">导出数据</el-button><el-button @click="openRemind(selected.map(row => row.student_id))">批量提醒</el-button></div></div>
+      <p class="scope-note">{{ query.year || '当前学年' }} · 已建立流程 {{ summary.process_total }} 条，未开始 {{ summary.not_started }} 人。未开始的学生尚无流程记录。</p>
       <el-table v-loading="loading" :data="rows" class="pg-table" empty-text="暂无符合条件的流程记录" @selection-change="(value: ProgressRow[]) => selected = value">
         <el-table-column type="selection" width="42" /><el-table-column type="index" label="序号" width="55" :index="(i: number) => (page - 1) * pageSize + i + 1" />
         <el-table-column prop="student_name" label="学生姓名" min-width="90" /><el-table-column prop="student_no" label="学号" min-width="105" /><el-table-column prop="college_name" label="学院" min-width="105" /><el-table-column prop="major_name" label="专业" min-width="125" />

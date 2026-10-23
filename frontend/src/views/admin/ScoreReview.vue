@@ -49,6 +49,17 @@ async function doPreview(row: any) {
   preview.value = res.data
 }
 
+async function calculate(row: any) {
+  const resultId = row.result.id
+  const res = await reviewApi.calculate(resultId)
+  const score = res.data?.score
+  ElMessage.success(`已复算: ${score ?? '—'} 分 ${res.data?.decision === 'PASS' ? '通过' : res.data?.decision === 'FAIL' ? '不通过' : ''}`.trim())
+  await loadResults()
+  // 复算会改写分数与结论明细: 立刻按同一 result 重拉预览(复用 doPreview), 不再要求用户再点一次"复算预览"
+  const fresh = rows.value.find((r: any) => r.result?.id === resultId) || row
+  await doPreview(fresh)
+}
+
 async function publish(row: any) {
   await reviewApi.publish(row.result.id)
   ElMessage.success('正式结论已发布并通知学生')
@@ -56,7 +67,7 @@ async function publish(row: any) {
 }
 
 async function withdraw(row: any) {
-  const { value } = await ElMessageBox.prompt('撤回原因(学生端将显示复核中)', '撤回发布', { inputPattern: /.+/, inputErrorMessage: '必填' })
+  const { value } = await ElMessageBox.prompt('撤回原因(学生端将显示复核中, 至少 2 个字)', '撤回发布', { inputPattern: /[\s\S]{2,}/, inputErrorMessage: '至少 2 个字' })
   await reviewApi.withdraw(row.result.id, value)
   ElMessage.success('已撤回')
   loadResults()
@@ -137,7 +148,8 @@ onMounted(() => { loadSessions(); loadRubrics() })
             <el-table-column label="操作" width="300" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" text type="primary" @click="doPreview(row)">复算预览</el-button>
-                <el-button v-if="row.result && row.result.status !== 'PUBLISHED'" size="small" type="success" @click="publish(row)">发布</el-button>
+                <el-button v-if="row.result?.status === 'PENDING'" size="small" text type="warning" @click="calculate(row)">复算结论</el-button>
+                <el-button v-if="row.result && ['READY', 'UNDER_REVIEW'].includes(row.result.status)" size="small" type="success" @click="publish(row)">发布</el-button>
                 <el-button v-if="row.result?.status === 'PUBLISHED'" size="small" type="warning" @click="withdraw(row)">撤回</el-button>
                 <el-button v-if="row.result && ['PUBLISHED', 'UNDER_REVIEW'].includes(row.result.status)" size="small" text type="danger" @click="reopen(row)">复核重开</el-button>
               </template>

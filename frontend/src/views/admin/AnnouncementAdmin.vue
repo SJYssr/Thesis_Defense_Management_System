@@ -9,7 +9,7 @@
         <div class="stat-info">
           <div class="stat-label">{{ c.label }}</div>
           <div class="stat-num">{{ c.value }}</div>
-          <div class="stat-trend"><span class="trend-prefix">较去年</span> <span :style="{ color: c.trendColor }">{{ c.trend }} {{ c.arrow }}</span></div>
+          <div class="stat-trend"><span class="trend-prefix">{{ c.hint }}</span></div>
         </div>
         <div v-if="c.ring !== undefined" class="stat-ring" :class="{ big: c.ringBig }" :style="{ '--pct': c.ring, '--ring-color': c.ringColor }">
           <span>{{ c.ring }}%</span>
@@ -17,41 +17,21 @@
       </div>
     </div>
 
-    <!-- 筛选区 -->
+    <!-- 筛选区: 后端 /admin/announcements 只有 page / page_size / status 三个参数 -->
     <div class="filter-card">
       <div class="filter-row">
-        <div class="filter-item grow">
-          <span class="filter-label">公告标题</span>
-          <el-input v-model="query.keyword" placeholder="请输入公告标题" clearable class="filter-input" />
-        </div>
-        <div class="filter-item">
-          <span class="filter-label">公告类型</span>
-          <el-select v-model="query.type" class="filter-select" placeholder="全部类型">
-            <el-option label="全部类型" value="" />
-            <el-option label="系统通知" value="系统通知" />
-            <el-option label="教学安排" value="教学安排" />
-            <el-option label="评优评奖" value="评优评奖" />
-          </el-select>
-        </div>
         <div class="filter-item">
           <span class="filter-label">发布状态</span>
           <el-select v-model="query.status" class="filter-select" placeholder="全部状态">
             <el-option label="全部状态" value="" />
-            <el-option label="已发布" value="已发布" />
-            <el-option label="草稿" value="草稿" />
-            <el-option label="已下线" value="已下线" />
+            <el-option label="已发布" value="PUBLISHED" />
+            <el-option label="草稿" value="DRAFT" />
+            <el-option label="已下线" value="OFFLINE" />
           </el-select>
-        </div>
-        <div class="filter-item">
-          <span class="filter-label">发布时间</span>
-          <el-date-picker
-            v-model="query.dateRange" type="daterange" range-separator="至"
-            start-placeholder="开始日期" end-placeholder="结束日期"
-            value-format="YYYY-MM-DD" class="filter-date"
-          />
         </div>
         <el-button type="primary" @click="onSearch"><el-icon><Search /></el-icon>&nbsp;查询</el-button>
         <el-button class="reset-btn" @click="onReset"><el-icon><Refresh /></el-icon>&nbsp;重置</el-button>
+        <span class="filter-hint">后端公告列表只支持按状态筛选(参数 page/page_size/status), 标题检索与发布时间区间未提供, 故不设这两个输入框</span>
       </div>
     </div>
 
@@ -68,11 +48,11 @@
           </div>
           <div class="list-actions">
             <el-button type="primary" @click="onCreate"><el-icon><Plus /></el-icon>&nbsp;新增公告</el-button>
-            <el-button class="ghost-btn" @click="onBatchDelete"><el-icon><Delete /></el-icon>&nbsp;批量删除</el-button>
+            <el-button class="ghost-btn" :disabled="!selected.length" @click="onBatchOffline"><el-icon><Delete /></el-icon>&nbsp;批量下线</el-button>
           </div>
         </div>
 
-        <el-table :data="pagedRows" class="ann-table" @selection-change="onSelectionChange">
+        <el-table v-loading="loading" :data="rows" class="ann-table" @selection-change="onSelectionChange">
           <el-table-column type="selection" width="38" />
           <el-table-column prop="index" label="序号" width="44" />
           <el-table-column prop="title" label="公告标题" min-width="170" show-overflow-tooltip>
@@ -80,26 +60,32 @@
               <span class="row-title">{{ row.title }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="公告类型" width="82" align="center">
+          <el-table-column label="优先级" width="72" align="center">
             <template #default="{ row }">
-              <span class="type-pill" :class="row.typeClass">{{ row.type }}</span>
+              <span class="status-tag" :class="row.priorityClass">{{ row.priorityCn }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="publisher" label="发布人" width="72" align="center" />
-          <el-table-column prop="publishTime" label="发布时间" width="118" />
-          <el-table-column prop="expireTime" label="有效期至" width="96" />
-          <el-table-column prop="views" label="浏览次数" width="76" align="center" />
-          <el-table-column label="状态" width="70" align="center">
+          <el-table-column label="发布人" width="86" align="center">
+            <template #default="{ row }">{{ row.publisher_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="发布时间" width="124">
+            <template #default="{ row }">{{ fmtTime(row.publish_time) }}</template>
+          </el-table-column>
+          <el-table-column label="有效期至" width="100">
+            <template #default="{ row }">{{ fmtDate(row.expire_time) }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="72" align="center">
             <template #default="{ row }">
-              <span class="status-tag" :class="row.statusClass">{{ row.status }}</span>
+              <span class="status-tag" :class="row.statusClass">{{ row.statusCn }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="126" align="center">
+          <el-table-column label="操作" width="150" align="center">
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="onView(row)">查看</el-button>
               <el-button link type="primary" size="small" @click="onEdit(row)">编辑</el-button>
-              <el-button v-if="row.status === '已发布' || row.forceOffline" link type="danger" size="small" @click="onOffline(row)">下线</el-button>
-              <el-button v-else link type="primary" size="small" @click="onPublish(row)">发布</el-button>
+              <el-button v-if="row.status === 'DRAFT'" link type="primary" size="small" @click="onPublish(row)">发布</el-button>
+              <el-button v-if="row.status === 'OFFLINE'" link type="success" size="small" @click="onRelist(row)">重新上线</el-button>
+              <el-button v-if="row.status === 'PUBLISHED'" link type="danger" size="small" @click="onOffline(row)">下线</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -107,13 +93,13 @@
         <div class="pagination-bar">
           <span class="page-total">共 {{ total }} 条数据</span>
           <div class="pager-group">
-            <el-select v-model="pageSize" size="small" class="page-size">
+            <el-select v-model="pageSize" size="small" class="page-size" @change="onPageSizeChange">
               <el-option label="10条/页" :value="10" />
               <el-option label="20条/页" :value="20" />
             </el-select>
             <el-pagination
               v-model:current-page="page" :page-size="pageSize" :total="total"
-              background layout="prev, pager, next, jumper" class="pager"
+              background layout="prev, pager, next, jumper" class="pager" @current-change="load"
             />
           </div>
         </div>
@@ -123,22 +109,29 @@
       <div class="detail-card">
         <div class="list-title">
           <svg class="doc-icon" viewBox="0 0 24 24" fill="currentColor" v-html="DOC_ICON" />
-          <span>公告详情</span>
+          <span>{{ editingId ? '编辑公告' : '新增公告' }}</span>
         </div>
         <el-form label-position="left" label-width="82px" class="detail-form">
           <el-form-item required>
             <template #label>公告标题</template>
-            <el-input v-model="form.title" placeholder="请输入公告标题" maxlength="100">
-              <template #suffix><span class="counter">{{ form.title.length }}/100</span></template>
+            <el-input v-model="form.title" placeholder="请输入公告标题" maxlength="255">
+              <template #suffix><span class="counter">{{ form.title.length }}/255</span></template>
             </el-input>
           </el-form-item>
           <el-form-item required>
-            <template #label>公告类型</template>
-            <el-select v-model="form.type" placeholder="请选择公告类型" style="width: 100%">
-              <el-option label="系统通知" value="系统通知" />
-              <el-option label="教学安排" value="教学安排" />
-              <el-option label="评优评奖" value="评优评奖" />
+            <template #label>优先级</template>
+            <el-select v-model="form.priority" placeholder="请选择优先级" style="width: 100%">
+              <el-option label="普通" value="NORMAL" />
+              <el-option label="重要" value="IMPORTANT" />
+              <el-option label="紧急" value="URGENT" />
             </el-select>
+          </el-form-item>
+          <el-form-item>
+            <template #label>保存状态</template>
+            <el-radio-group v-model="form.status">
+              <el-radio value="DRAFT" :disabled="draftDisabled">草稿（DRAFT）</el-radio>
+              <el-radio value="PUBLISHED">立即发布（PUBLISHED）</el-radio>
+            </el-radio-group>
           </el-form-item>
           <el-form-item required>
             <template #label>公告内容</template>
@@ -162,32 +155,26 @@
               <div class="editor-counter">{{ form.content.length }}/5000</div>
             </div>
           </el-form-item>
-          <el-form-item required>
-            <template #label>发布时间</template>
-            <el-date-picker
-              v-model="form.publishTime" type="datetime" format="YYYY-MM-DD HH:mm"
-              value-format="YYYY-MM-DD HH:mm" placeholder="请选择日期时间" style="width: 100%"
-            />
-          </el-form-item>
           <el-form-item>
             <template #label>有效期至</template>
             <el-date-picker
               v-model="form.expireTime" type="date" format="YYYY-MM-DD"
-              value-format="YYYY-MM-DD" placeholder="请选择日期" style="width: 100%"
+              value-format="YYYY-MM-DD" placeholder="留空表示长期有效" style="width: 100%"
             />
           </el-form-item>
-          <el-form-item required>
-            <template #label>发布范围</template>
-            <el-checkbox-group v-model="form.scope">
-              <el-checkbox label="全体学生" />
-              <el-checkbox label="全体教师" />
-              <el-checkbox label="全体管理员" />
-            </el-checkbox-group>
+          <el-form-item v-if="editingId">
+            <template #label>发布时间</template>
+            <span class="readonly-value">{{ fmtTime(editingPublishTime) }}（由后端状态机写入, 不在此处编辑）</span>
           </el-form-item>
         </el-form>
+        <div class="form-hint">
+          已发布 / 已下线的公告不能退回草稿（后端 40003）: 要撤下用列表里的「下线」, 下线后可用「重新上线」恢复。
+        </div>
         <div class="detail-footer">
           <el-button class="ghost-btn" @click="onCancel">取消</el-button>
-          <el-button type="primary" @click="onSubmit">立即发布</el-button>
+          <el-button type="primary" :disabled="form.status === 'DRAFT' && draftDisabled" @click="onSubmit(form.status)">
+            {{ submitLabel }}
+          </el-button>
         </div>
       </div>
     </div>
@@ -195,216 +182,253 @@
     <!-- 查看弹窗 -->
     <el-dialog v-model="viewVisible" :title="viewing?.title" width="560px">
       <el-descriptions :column="2" border>
-        <el-descriptions-item label="公告类型">{{ viewing?.type }}</el-descriptions-item>
-        <el-descriptions-item label="发布人">{{ viewing?.publisher }}</el-descriptions-item>
-        <el-descriptions-item label="发布时间">{{ viewing?.publishTime }}</el-descriptions-item>
-        <el-descriptions-item label="有效期至">{{ viewing?.expireTime }}</el-descriptions-item>
-        <el-descriptions-item label="浏览次数">{{ viewing?.views }}</el-descriptions-item>
-        <el-descriptions-item label="状态">{{ viewing?.status }}</el-descriptions-item>
+        <el-descriptions-item label="优先级">{{ viewing?.priorityCn }}</el-descriptions-item>
+        <el-descriptions-item label="状态">{{ viewing?.statusCn }}</el-descriptions-item>
+        <el-descriptions-item label="发布人">{{ viewing?.publisher_name || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="发布时间">{{ fmtTime(viewing?.publish_time) }}</el-descriptions-item>
+        <el-descriptions-item label="有效期至">{{ fmtDate(viewing?.expire_time) }}</el-descriptions-item>
       </el-descriptions>
-      <p class="view-content">各学院、各位指导教师及2024届毕业生：请按学校毕业设计工作安排认真推进各阶段任务，具体要求见附件。</p>
+      <p class="view-content">{{ viewing?.content }}</p>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+/**
+ * 公告管理: 已接线后端 /admin/announcements(GET/POST/PUT/DELETE)。
+ * 契约要点:
+ *  - 列表参数只有 page / page_size / status(DRAFT|PUBLISHED|OFFLINE), 返回 {items,total};
+ *  - POST/PUT 接受 status: 'DRAFT' | 'PUBLISHED'(缺省 PUBLISHED);
+ *  - PUT 不允许把已发布改回草稿(40003), DELETE = 下线(transition offline), 不是物理删除;
+ *  - 后端公告模型只有 title/content/priority/expire_time/status/publisher_name/publish_time,
+ *    所以页面不展示 type(公告类型) / views(阅读量) / scope(发布范围) 这些后端不存在的字段。
+ */
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { announcementApi, type AnnouncementPayload } from '@/api/common'
 
 const DOC_ICON = '<path d="M7 2h7l5 5v15H7V2zm7 1.5V8h4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9.5 12h6M9.5 15.5h6M9.5 19h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'
 const SEND_ICON = '<path d="M2.5 20.5 21.5 12 2.5 3.5v6.5L16 12 2.5 14v6.5z"/>'
 const CLOCK_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm.9-12.9h-1.8v5.2l4.4 2.6.9-1.5-3.5-2.1V7.1z"/>'
 const CROSS_ICON = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm3.5 13.1-1.4 1.4L12 14.4l-2.1 2.1-1.4-1.4 2.1-2.1-2.1-2.1 1.4-1.4 2.1 2.1 2.1-2.1 1.4 1.4-2.1 2.1 2.1 2.1z"/>'
 
-/* 趋势色遵循设计稿：涨为红、跌为绿，"较去年"前缀灰 */
-const statCards = [
-  { label: '公告总数', value: 24, icon: DOC_ICON, tileBg: '#d7f0fe', iconColor: '#2563eb', trend: '+20%', trendColor: '#ef4444', arrow: '↑' },
-  { label: '已发布', value: 20, icon: SEND_ICON, tileBg: '#ddfef0', iconColor: '#22c55e', ring: 83, ringColor: '#22c55e', ringBig: true, trend: '+15%', trendColor: '#ef4444', arrow: '↑' },
-  { label: '草稿', value: 2, icon: CLOCK_ICON, tileBg: '#fef5ea', iconColor: '#f59e0b', ring: 8, ringColor: '#f59e0b', trend: '-33%', trendColor: '#22c55e', arrow: '↓' },
-  { label: '已下线', value: 2, icon: CROSS_ICON, tileBg: '#fee7ed', iconColor: '#ef4444', ring: 8, ringColor: '#ef4444', trend: '-33%', trendColor: '#22c55e', arrow: '↓' },
-]
-
-const TYPE_CLASS: Record<string, string> = {
-  系统通知: 'tp-system',
-  教学安排: 'tp-teach',
-  评优评奖: 'tp-award',
-}
+const STATUS_CN: Record<string, string> = { DRAFT: '草稿', PUBLISHED: '已发布', OFFLINE: '已下线' }
+const STATUS_CLASS: Record<string, string> = { DRAFT: 's-draft', PUBLISHED: 's-published', OFFLINE: 's-offline' }
+const PRIORITY_CN: Record<string, string> = { NORMAL: '普通', IMPORTANT: '重要', URGENT: '紧急' }
+const PRIORITY_CLASS: Record<string, string> = { NORMAL: 'p-normal', IMPORTANT: 'p-important', URGENT: 'p-urgent' }
 
 interface AnnRow {
-  forceOffline?: boolean
+  id: number
   title: string
-  type: string
-  publisher: string
-  publishTime: string
-  expireTime: string
-  views: number
+  content: string
+  priority: string
   status: string
+  publisher_name: string | null
+  publish_time: string | null
+  expire_time: string | null
+  index?: number
+  statusCn?: string
+  statusClass?: string
+  priorityCn?: string
+  priorityClass?: string
 }
 
-const RAW_ROWS: AnnRow[] = [
-  { title: '关于2024届毕业设计工作安排的通知', type: '系统通知', publisher: '管理员', publishTime: '2024-03-01 14:30', expireTime: '2024-06-30', views: 326, status: '已发布' },
-  { title: '毕业设计中期检查安排', type: '教学安排', publisher: '管理员', publishTime: '2024-02-20 10:15', expireTime: '2024-05-31', views: 248, status: '已发布' },
-  { title: '关于答辩论文格式要求的说明', type: '教学安排', publisher: '管理员', publishTime: '2024-02-15 09:20', expireTime: '2024-04-30', views: 189, status: '已发布' },
-  { title: '毕业设计优秀作品评选通知', type: '评优评奖', publisher: '管理员', publishTime: '2024-01-28 16:40', expireTime: '2024-05-20', views: 312, status: '已发布' },
-  { title: '系统维护通知', type: '系统通知', publisher: '管理员', publishTime: '2024-01-20 11:00', expireTime: '2024-01-25', views: 156, status: '已下线' },
-  { title: '关于延期开题报告提交的通知', type: '教学安排', publisher: '管理员', publishTime: '2024-05-10 08:30', expireTime: '2024-06-10', views: 98, status: '草稿' },
-  { title: '毕业答辩工作流程说明', type: '教学安排', publisher: '管理员', publishTime: '2024-05-05 10:25', expireTime: '2024-06-30', views: 210, status: '已发布' },
-  { title: '优秀指导教师评选通知', type: '评优评奖', publisher: '管理员', publishTime: '2024-04-28 15:10', expireTime: '2024-06-15', views: 176, status: '已发布' },
-  { title: '关于毕业材料提交的补充说明', type: '教学安排', publisher: '管理员', publishTime: '2024-04-15 09:50', expireTime: '2024-06-20', views: 134, status: '已发布' },
-  { title: '清明节放假安排通知', type: '系统通知', publisher: '管理员', publishTime: '2024-04-03 14:20', expireTime: '2024-04-07', views: 265, status: '已下线', forceOffline: true },
-]
-
-const rows = ref<AnnRow[]>([...RAW_ROWS])
-const total = 24
+const rows = ref<AnnRow[]>([])
+const total = ref(0)
 const page = ref(1)
 const pageSize = ref(10)
+const loading = ref(false)
 const selected = ref<AnnRow[]>([])
 
-const query = reactive({
-  keyword: '',
-  type: '',
-  status: '',
-  dateRange: null as [string, string] | null,
+const query = reactive({ status: '' })
+const counts = reactive({ all: 0, published: 0, draft: 0, offline: 0 })
+
+const fmtTime = (v?: string | null) => (v ? v.replace('T', ' ').slice(0, 16) : '—')
+const fmtDate = (v?: string | null) => (v ? v.slice(0, 10) : '—')
+
+/* 统计卡全部来自后端计数(不再写死"较去年 +20%"这类假趋势) */
+const statCards = computed(() => {
+  const base = counts.all || 0
+  const pct = (n: number) => (base ? Math.round((n / base) * 100) : 0)
+  return [
+    { label: '公告总数', value: base, hint: '全部状态合计', icon: DOC_ICON, tileBg: '#d7f0fe', iconColor: '#2563eb' },
+    { label: '已发布', value: counts.published, hint: `占比 ${pct(counts.published)}%`, icon: SEND_ICON, tileBg: '#ddfef0', iconColor: '#22c55e', ring: pct(counts.published), ringColor: '#22c55e', ringBig: true },
+    { label: '草稿', value: counts.draft, hint: `占比 ${pct(counts.draft)}%`, icon: CLOCK_ICON, tileBg: '#fef5ea', iconColor: '#f59e0b', ring: pct(counts.draft), ringColor: '#f59e0b' },
+    { label: '已下线', value: counts.offline, hint: `占比 ${pct(counts.offline)}%`, icon: CROSS_ICON, tileBg: '#fee7ed', iconColor: '#ef4444', ring: pct(counts.offline), ringColor: '#ef4444' },
+  ]
 })
 
-const filtered = computed(() => {
-  return rows.value.filter((r) => {
-    if (query.keyword && !r.title.includes(query.keyword)) return false
-    if (query.type && r.type !== query.type) return false
-    if (query.status && r.status !== query.status) return false
-    if (query.dateRange && query.dateRange[0] && r.publishTime.slice(0, 10) < query.dateRange[0]) return false
-    if (query.dateRange && query.dateRange[1] && r.publishTime.slice(0, 10) > query.dateRange[1]) return false
+async function load() {
+  loading.value = true
+  try {
+    const res = await announcementApi.adminList({
+      page: page.value, page_size: pageSize.value, status: query.status || undefined,
+    })
+    const data: any = res.data ?? {}
+    const start = (page.value - 1) * pageSize.value
+    rows.value = ((data.items ?? []) as AnnRow[]).map((r, i) => ({
+      ...r,
+      index: start + i + 1,
+      statusCn: STATUS_CN[r.status] || r.status,
+      statusClass: STATUS_CLASS[r.status] || 's-offline',
+      priorityCn: PRIORITY_CN[r.priority] || r.priority,
+      priorityClass: PRIORITY_CLASS[r.priority] || 'p-normal',
+    }))
+    total.value = data.total ?? 0
+  } finally { loading.value = false }
+}
+
+async function loadCounts() {
+  const statuses = ['', 'PUBLISHED', 'DRAFT', 'OFFLINE']
+  const results = await Promise.all(statuses.map((s) =>
+    announcementApi.adminList({ page: 1, page_size: 1, status: s || undefined })))
+  counts.all = (results[0].data as any)?.total ?? 0
+  counts.published = (results[1].data as any)?.total ?? 0
+  counts.draft = (results[2].data as any)?.total ?? 0
+  counts.offline = (results[3].data as any)?.total ?? 0
+}
+
+async function refresh() { await Promise.all([load(), loadCounts()]) }
+
+function onSearch() { page.value = 1; load() }
+function onReset() { query.status = ''; page.value = 1; load() }
+function onPageSizeChange() { page.value = 1; load() }
+function onSelectionChange(sel: AnnRow[]) { selected.value = sel }
+
+async function confirmAction(message: string, title: string, type: 'warning' | 'info' = 'warning') {
+  try {
+    await ElMessageBox.confirm(message, title, { type, confirmButtonText: '确定', cancelButtonText: '取消' })
     return true
-  })
-})
+  } catch { return false }
+}
 
-const pagedRows = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  const slice = filtered.value.slice(start, start + pageSize.value)
-  return slice.map((r, i) => ({
-    ...r,
-    index: start + i + 1,
-    typeClass: TYPE_CLASS[r.type] || 'tp-system',
-    statusClass: r.status === '已发布' ? 's-published' : r.status === '草稿' ? 's-draft' : 's-offline',
-  }))
-})
+/** payload 统一构造: PUT 是全量更新(title/content 必填), 只改字段状态时也要带上正文 */
+function payload(status: 'DRAFT' | 'PUBLISHED', row?: AnnRow): AnnouncementPayload {
+  const source = row
+    ? { title: row.title, content: row.content, priority: row.priority, expireTime: fmtDate(row.expire_time) === '—' ? '' : fmtDate(row.expire_time) }
+    : { title: form.title, content: form.content, priority: form.priority, expireTime: form.expireTime }
+  return {
+    title: source.title.trim(),
+    content: source.content.trim(),
+    priority: source.priority as AnnouncementPayload['priority'],
+    // expire_time 后端是 datetime: 传日期就落在当天 00:00, 这里补成当日 23:59:59 表示"有效到当天结束"
+    expire_time: source.expireTime ? `${source.expireTime}T23:59:59` : null,
+    status,
+  }
+}
 
+async function onPublish(row: AnnRow) {
+  if (!(await confirmAction(`确定发布「${row.title}」吗？发布后学生端立即可见。`, '发布确认', 'info'))) return
+  await announcementApi.update(row.id, payload('PUBLISHED', row))
+  ElMessage.success('公告已发布')
+  await refresh()
+}
+
+async function onRelist(row: AnnRow) {
+  if (!(await confirmAction(`确定重新上线「${row.title}」吗？上线后学生端可再次看到。`, '上线确认', 'info'))) return
+  await announcementApi.update(row.id, payload('PUBLISHED', row))
+  ElMessage.success('公告已重新上线')
+  await refresh()
+}
+
+async function onOffline(row: AnnRow) {
+  if (!(await confirmAction(`确定下线「${row.title}」吗？下线后不再对学生可见，可重新上线。`, '下线确认'))) return
+  // DELETE 的语义是 transition(offline), 不是物理删除
+  await announcementApi.remove(row.id)
+  ElMessage.success('公告已下线')
+  await refresh()
+}
+
+async function onBatchOffline() {
+  if (!selected.value.length) return
+  const targets = selected.value.filter((r) => r.status !== 'OFFLINE')
+  if (!targets.length) { ElMessage.warning('选中的公告都已下线'); return }
+  if (!(await confirmAction(`确定下线选中的 ${targets.length} 条公告吗？下线后不再对学生可见，可重新上线。`, '批量下线'))) return
+  for (const r of targets) await announcementApi.remove(r.id)
+  ElMessage.success(`已下线 ${targets.length} 条公告`)
+  await refresh()
+}
+
+/* ---------- 右侧表单 ---------- */
 const form = reactive({
   title: '',
-  type: '',
   content: '',
-  publishTime: '2024-05-20 14:30',
+  priority: 'NORMAL' as 'NORMAL' | 'IMPORTANT' | 'URGENT',
   expireTime: '',
-  scope: ['全体学生'] as string[],
+  /** 草稿开关(DRAFT/PUBLISHED 单选): 后端 POST/PUT 接受这两个值, 缺省 PUBLISHED */
+  status: 'PUBLISHED' as 'DRAFT' | 'PUBLISHED',
 })
+const editingId = ref<number | null>(null)
+const editingStatus = ref('')
+const editingPublishTime = ref<string | null>(null)
 
-function onSearch() {
-  page.value = 1
+/** 只有新建或编辑草稿时才能存草稿: 已发布→草稿 后端返回 40003, 已下线→草稿 同样不在状态机转移表里 */
+const draftDisabled = computed(() => !!editingId.value && editingStatus.value !== 'DRAFT')
+
+/** 底部主按钮文案跟随草稿开关; 已发布/已下线只能存回发布态(40003) */
+const submitLabel = computed(() => (form.status === 'DRAFT'
+  ? '保存为草稿'
+  : editingStatus.value === 'PUBLISHED' ? '保存' : '保存并发布'))
+
+function resetForm() {
+  form.title = ''
+  form.content = ''
+  form.priority = 'NORMAL'
+  form.expireTime = ''
+  form.status = 'PUBLISHED'
+  editingId.value = null
+  editingStatus.value = ''
+  editingPublishTime.value = null
 }
 
-function onReset() {
-  query.keyword = ''
-  query.type = ''
-  query.status = ''
-  query.dateRange = null
-  page.value = 1
+function onCreate() {
+  resetForm()
+  ElMessage.info('请在右侧填写新公告')
 }
 
-function onSelectionChange(sel: AnnRow[]) {
-  selected.value = sel
+function onEdit(row: AnnRow) {
+  form.title = row.title
+  form.content = row.content
+  form.priority = (row.priority === 'IMPORTANT' || row.priority === 'URGENT' ? row.priority : 'NORMAL')
+  form.expireTime = fmtDate(row.expire_time) === '—' ? '' : fmtDate(row.expire_time)
+  // 已发布/已下线只能保存为发布态(→草稿会 40003); 草稿默认停在草稿
+  form.status = row.status === 'DRAFT' ? 'DRAFT' : 'PUBLISHED'
+  editingId.value = row.id
+  editingStatus.value = row.status
+  editingPublishTime.value = row.publish_time
+  ElMessage.success('已载入公告，请在右侧编辑')
 }
 
+function onCancel() { resetForm() }
+
+async function onSubmit(status: 'DRAFT' | 'PUBLISHED') {
+  if (form.title.trim().length < 2) { ElMessage.warning('公告标题至少 2 个字'); return }
+  if (form.content.trim().length < 2) { ElMessage.warning('公告内容至少 2 个字'); return }
+  if (editingId.value && status === 'DRAFT' && editingStatus.value !== 'DRAFT') {
+    ElMessage.warning('已发布/已下线的公告不能退回草稿，请改用「下线」')
+    return
+  }
+  const body = payload(status)
+  if (editingId.value) {
+    await announcementApi.update(editingId.value, body)
+    ElMessage.success(status === 'DRAFT' ? '草稿已保存' : '公告已更新')
+  } else {
+    await announcementApi.create(body)
+    ElMessage.success(status === 'DRAFT' ? '草稿已保存' : '公告已发布')
+  }
+  resetForm()
+  await refresh()
+}
+
+/* 查看弹窗 */
 const viewVisible = ref(false)
 const viewing = ref<AnnRow | null>(null)
-
 function onView(row: AnnRow) {
   viewing.value = row
   viewVisible.value = true
 }
 
-function onEdit(row: AnnRow) {
-  form.title = row.title
-  form.type = row.type
-  form.content = ''
-  form.publishTime = row.publishTime
-  form.expireTime = row.expireTime
-  ElMessage.success('已载入公告，请在右侧编辑')
-}
-
-function onCreate() {
-  form.title = ''
-  form.type = ''
-  form.content = ''
-  form.publishTime = '2024-05-20 14:30'
-  form.expireTime = ''
-  form.scope = ['全体学生']
-  ElMessage.info('请在右侧填写新公告')
-}
-
-function onPublish(row: AnnRow) {
-  ElMessageBox.confirm(`确定发布「${row.title}」吗？`, '发布确认', { type: 'info' })
-    .then(() => {
-      row.status = '已发布'
-      ElMessage.success('公告已发布')
-    })
-    .catch(() => {})
-}
-
-function onOffline(row: AnnRow) {
-  ElMessageBox.confirm(`确定下线「${row.title}」吗？`, '下线确认', { type: 'warning' })
-    .then(() => {
-      row.status = '已下线'
-      ElMessage.success('公告已下线')
-    })
-    .catch(() => {})
-}
-
-function onBatchDelete() {
-  if (!selected.value.length) {
-    ElMessage.warning('请先勾选要删除的公告')
-    return
-  }
-  ElMessageBox.confirm(`确定删除选中的 ${selected.value.length} 条公告吗？`, '批量删除', { type: 'warning' })
-    .then(() => {
-      const del = new Set(selected.value)
-      rows.value = rows.value.filter((r) => !del.has(r))
-      ElMessage.success('批量删除成功')
-    })
-    .catch(() => {})
-}
-
-function onCancel() {
-  form.title = ''
-  form.type = ''
-  form.content = ''
-  form.expireTime = ''
-}
-
-function onSubmit() {
-  if (!form.title.trim()) {
-    ElMessage.warning('请输入公告标题')
-    return
-  }
-  if (!form.type) {
-    ElMessage.warning('请选择公告类型')
-    return
-  }
-  if (!form.content.trim()) {
-    ElMessage.warning('请输入公告内容')
-    return
-  }
-  rows.value.unshift({
-    title: form.title,
-    type: form.type,
-    publisher: '管理员',
-    publishTime: form.publishTime || '2024-05-20 14:30',
-    expireTime: form.expireTime || '2024-06-30',
-    views: 0,
-    status: '已发布',
-  })
-  ElMessage.success('公告发布成功')
-  onCancel()
-}
+onMounted(() => { load(); loadCounts() })
 </script>
 
 <style scoped>
@@ -491,6 +515,7 @@ function onSubmit() {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 .filter-item {
   display: flex;
@@ -506,6 +531,10 @@ function onSubmit() {
 .filter-input { width: 190px; }
 .filter-select { width: 118px; }
 .filter-date { width: 240px; }
+.filter-hint {
+  font-size: 11.5px;
+  color: #8a97ad;
+}
 .reset-btn { border: 1px solid #dcdfe6; color: #2c3e5d; }
 
 /* 两栏 */
@@ -557,19 +586,7 @@ function onSubmit() {
 .ann-table :deep(.el-button + .el-button) { margin-left: 6px; }
 .row-title { color: #1f2d3d; font-weight: 500; }
 
-/* 类型药丸 */
-.type-pill {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 18px;
-}
-.tp-system { color: #1878fd; background: #e3effe; }
-.tp-teach { color: #27ae60; background: #e4f7ec; }
-.tp-award { color: #e67e22; background: #fdf1e3; }
-
-/* 状态药丸 */
+/* 状态 / 优先级药丸 */
 .status-tag {
   display: inline-block;
   padding: 2px 10px;
@@ -580,6 +597,9 @@ function onSubmit() {
 .s-published { color: #27ae60; background: #e4f7ec; }
 .s-draft { color: #e67e22; background: #fdf1e3; }
 .s-offline { color: #8a97ad; background: #eef1f5; }
+.p-normal { color: #5a6b80; background: #eef2f8; }
+.p-important { color: #1878fd; background: #e3effe; }
+.p-urgent { color: #ef4444; background: #fee7ed; }
 
 /* 分页 */
 .pagination-bar {
@@ -628,6 +648,21 @@ function onSubmit() {
 .counter {
   font-size: 11px;
   color: #97a3b4;
+}
+.readonly-value {
+  font-size: 12px;
+  color: #6b7b90;
+  line-height: 1.6;
+}
+.form-hint {
+  font-size: 11.5px;
+  color: #b07b2c;
+  background: #fdf5e8;
+  border: 1px solid #f4e3c4;
+  border-radius: 6px;
+  padding: 6px 8px;
+  line-height: 1.6;
+  margin-bottom: 8px;
 }
 .editor {
   width: 100%;
@@ -680,5 +715,6 @@ function onSubmit() {
   background: #f8fafc;
   border-radius: 6px;
   padding: 12px;
+  white-space: pre-wrap;
 }
 </style>

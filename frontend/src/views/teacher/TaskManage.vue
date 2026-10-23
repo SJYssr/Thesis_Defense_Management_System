@@ -2,9 +2,10 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { taskApi } from '@/api/defense'
+import type { StageTask, StageTaskAction, StageTaskVersion } from '@/types/api'
 
-const tasks = ref<any[]>([])
-const versions = ref<any[]>([])
+const tasks = ref<StageTask[]>([])
+const versions = ref<StageTaskVersion[]>([])
 const versionsVisible = ref(false)
 const query = reactive({ academic_year: '2025-2026', stage: '', status: '' })
 const dialogVisible = ref(false)
@@ -37,31 +38,58 @@ function openEdit(t: any) {
 }
 
 async function save() {
-  const payload = {
+  const base = {
     academic_year: form.academic_year, stage: form.stage, title: form.title, description: form.description,
     requirements: form.requirements.split(/[、,，]/).map((s: string) => s.trim()).filter(Boolean),
     opens_at: form.opens_at || null, due_at: form.due_at || null,
-    late_policy: form.late_policy, status: form.status,
+    late_policy: form.late_policy,
     college_id: form.college_id, major_id: form.major_id, class_id: form.class_id,
   }
   if (editing.value) {
-    await taskApi.update(editing.value.id, payload)
+    // P7-A(D59): PUT /stage-tasks/{id} 不再接受 status, 状态流转一律走 publish/close
+    await taskApi.update(editing.value.id, base)
     ElMessage.success('任务已更新并留痕')
   } else {
-    await taskApi.create(payload)
-    ElMessage.success('任务已创建')
+    // P7-A: POST 的 status 缺省已由 PUBLISHED 改为 DRAFT, 必须显式传, 否则「直接发布」会静默变草稿
+    await taskApi.create({ ...base, status: form.status })
+    ElMessage.success(form.status === 'PUBLISHED' ? '任务已创建并发布' : '任务已保存为草稿')
   }
   dialogVisible.value = false
   load()
 }
 
-async function showVersions(t: any) {
-  const res = await taskApi.versions(t.id)
-  versions.value = res.data || []
+/** 按钮渲染唯一依据: 后端 allowed_actions(DRAFT→publish, PUBLISHED→close, CLOSED→[]) */
+function canDo(row: StageTask, action: StageTaskAction) {
+  return Array.isArray(row.allowed_actions) && row.allowed_actions.includes(action)
+}
+
+const STATUS_LABEL: Record<string, string> = { DRAFT: '草稿', PUBLISHED: '已发布', CLOSED: '已关闭' }
+function statusLabel(status: string) { return STATUS_LABEL[status] || status }
+
+async function publishTask(row: StageTask) {
+  await ElMessageBox.confirm(`发布后学生端立即可见「${row.title}」并开始计时。`, '发布阶段任务',
+    { confirmButtonText: '发布', cancelButtonText: '取消', type: 'warning' })
+  await taskApi.publish(row.id)
+  ElMessage.success('任务已发布')
+  await load()
+}
+
+async function closeTask(row: StageTask) {
+  await ElMessageBox.confirm(`关闭后「${row.title}」不再接收学生提交(已提交内容保留)。`, '关闭阶段任务',
+    { confirmButtonText: '关闭', cancelButtonText: '取消', type: 'warning' })
+  await taskApi.close(row.id)
+  ElMessage.success('任务已关闭')
+  await load()
+}
+
+async function showVersions(t: StageTask) {
+  // P7-A: 该接口已返回 { items, page, page_size, total }, 不能再当数组用
+  const res = await taskApi.versions(t.id, { page: 1, page_size: 20 })
+  versions.value = res.data?.items ?? []
   versionsVisible.value = true
 }
 
-async function remind(t: any) {
+async function remind(t: StageTask) {
   await ElMessageBox.prompt('提醒内容', '提醒学生', { inputValue: `请于截止时间前完成「${t.title}」` })
 }
 
@@ -112,10 +140,18 @@ onMounted(load)
             <el-tag size="small" :type="row.late_policy === 'ALLOW' ? 'success' : 'danger'">{{ row.late_policy === 'ALLOW' ? '允许' : '禁止' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="90" />
-        <el-table-column label="操作" width="210" fixed="right">
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.status === 'PUBLISHED' ? 'success' : row.status === 'CLOSED' ? 'info' : 'warning'">
+              {{ statusLabel(row.status) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="300" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="canDo(row, 'publish')" size="small" text type="success" @click="publishTask(row)">发布</el-button>
+            <el-button v-if="canDo(row, 'close')" size="small" text type="danger" @click="closeTask(row)">关闭</el-button>
             <el-button size="small" text @click="showVersions(row)">修改历史</el-button>
             <el-button size="small" text type="warning" @click="remind(row)">提醒学生</el-button>
           </template>

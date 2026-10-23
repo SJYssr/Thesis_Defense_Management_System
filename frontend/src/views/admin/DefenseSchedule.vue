@@ -73,6 +73,22 @@ async function publish(s?: any) {
   } catch { /* 冲突信息已由拦截器提示 */ }
 }
 
+async function startSession(s?: any) {
+  const target = s || detail.value
+  await ElMessageBox.confirm(`确认开始「${target.title || '场次#' + target.id}」? 开始后会通知全部学生与评委。`, '开始答辩', { type: 'warning' })
+  await defenseApi.start(target.id)
+  ElMessage.success('答辩已开始')
+  refreshDetailAndList(target.id)
+}
+
+async function finishSession(s?: any) {
+  const target = s || detail.value
+  await ElMessageBox.confirm('确认结束该场次? 结束后不可再开始, 之后可汇总评分。', '结束答辩', { type: 'warning' })
+  await defenseApi.finish(target.id)
+  ElMessage.success('答辩已结束')
+  refreshDetailAndList(target.id)
+}
+
 async function cancelSession(s: any) {
   const { value } = await ElMessageBox.prompt('取消原因', '取消场次', { inputPattern: /.+/, inputErrorMessage: '必填' })
   await defenseApi.cancel(s.id, value)
@@ -185,6 +201,8 @@ onMounted(() => { load(); loadStats() })
           </div>
           <el-button size="small" text type="primary" @click.stop="validate(s)">校验</el-button>
           <el-button v-if="['DRAFT', 'READY'].includes(s.status)" size="small" type="primary" @click.stop="publish(s)">发布</el-button>
+          <el-button v-if="s.status === 'PUBLISHED'" size="small" type="success" @click.stop="startSession(s)">开始</el-button>
+          <el-button v-if="['PUBLISHED', 'IN_PROGRESS'].includes(s.status)" size="small" @click.stop="finishSession(s)">结束</el-button>
         </div>
       </div>
     </div>
@@ -243,6 +261,8 @@ onMounted(() => { load(); loadStats() })
           <el-button @click="assignStudents">排入学生</el-button>
           <el-button v-if="detail.status === 'PUBLISHED'" type="warning" @click="reschedule">改期</el-button>
           <el-button v-if="['DRAFT', 'READY'].includes(detail.status)" type="primary" @click="publish()">发布场次</el-button>
+          <el-button v-if="detail.status === 'PUBLISHED'" type="success" @click="startSession()">开始答辩</el-button>
+          <el-button v-if="['PUBLISHED', 'IN_PROGRESS'].includes(detail.status)" @click="finishSession()">结束答辩</el-button>
           <el-button v-if="!['CANCELLED', 'FINISHED'].includes(detail.status)" type="danger" plain @click="cancelSession(detail)">取消场次</el-button>
         </div>
       </template>

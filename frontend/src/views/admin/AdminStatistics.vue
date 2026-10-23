@@ -1,7 +1,8 @@
 <template>
   <div class="stats-page">
     <!-- 筛选区 -->
-    <div class="filter-bar"><strong>数据统计</strong><span class="filter-label">全部学年 · 实时业务数据</span></div>
+    <!-- P8: 一个页面里混着两种口径(见各卡头角标), 页面级不再声明单一学年 -->
+    <div class="filter-bar"><strong>数据统计</strong><span class="filter-label">实时业务数据 · 角标区分当前学年 / 全部学年</span></div>
 
     <!-- 统计卡 -->
     <div class="stat-cards">
@@ -11,7 +12,7 @@
         </div>
         <div class="stat-info">
           <div class="stat-num">{{ c.value }}</div>
-          <div class="stat-label">{{ c.label }}</div>
+          <div class="stat-label">{{ c.label }}<span v-if="c.scope" class="scope-tag">{{ c.scope }}</span></div>
 
         </div>
         <div v-if="c.ring !== undefined" class="stat-ring" :style="{ '--pct': c.ring, '--ring-color': c.ringColor }">
@@ -26,7 +27,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />各学院学生人数统计</div>
-            <span class="head-select">全部学年</span>
+            <span class="head-select">{{ scopeTags.colleges }}</span>
           </div>
           <div ref="collegeChartRef" class="chart-box" />
         </div>
@@ -35,7 +36,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />各阶段通过率统计</div>
-            <span class="head-select">全部学年</span>
+            <span class="head-select">{{ scopeTags.passRates }}</span>
           </div>
           <div class="chart-body">
             <div class="stage-legend">
@@ -51,7 +52,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />题目类型分布</div>
-            <span class="head-select">全部学年</span>
+            <span class="head-select">{{ scopeTags.topicTypes }}</span>
           </div>
           <div class="donut-wrap">
             <div class="donut-chart">
@@ -78,7 +79,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />各专业选题情况</div>
-            <span class="head-select">全部学年</span>
+            <span class="head-select">{{ scopeTags.majors }}</span>
           </div>
           <div class="major-table">
             <div class="mt-head">
@@ -95,7 +96,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />各月提交情况趋势</div>
-            <span class="head-select">全部学年</span>
+            <span class="head-select">{{ scopeTags.months }}</span>
           </div>
           <div ref="monthChartRef" class="chart-box" />
         </div>
@@ -104,7 +105,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i />答辩结果统计</div>
-            <span class="head-select">全部学年</span>
+            <span class="head-select">{{ scopeTags.defense }}</span>
           </div>
           <div class="donut-wrap">
             <div class="donut-chart">
@@ -132,6 +133,8 @@ import { onMounted, onBeforeUnmount, nextTick, computed, reactive, ref } from 'v
 import * as echarts from 'echarts'
 import { STAT_ICONS } from '@/components/statIcons'
 import { dashboardApi } from '@/api/common'
+import { scopeLabel, scopeLabelWithYear } from '@/utils/dashboardScope'
+import type { DashboardScopeMeta, DashboardStats, PassCountRow } from '@/types/api'
 
 interface NamedValue { name: string; value: number }
 interface Analytics {
@@ -146,6 +149,8 @@ interface Analytics {
   defense_results: NamedValue[]
   defense_total: number
 }
+/** P8: analytics 响应的口径声明(scope/academic_year/scope_map) */
+const analyticsMeta = ref<DashboardScopeMeta>({})
 const stats = reactive<Analytics>({
   cards: { student_count: 0, teacher_count: 0, topic_count: 0, selected_count: 0,
            completed_count: 0, pending_count: 0 },
@@ -153,17 +158,47 @@ const stats = reactive<Analytics>({
   defense_results: [], defense_total: 0,
 })
 const palette = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#13c2c2']
+/**
+ * P8: 卡片口径不写死 —— /dashboard/analytics 的 scope_map 逐字段声明 current_year / all_years
+ * (completed_count/selected_count 是当前学年, student_count/teacher_count/topic_count/pending_count 是全部学年)。
+ */
 const statCards = computed(() => [
-  { label: '学生总数', value: stats.cards.student_count, icon: STAT_ICONS.users, color: '#2563eb', bg: '#d7f0fe' },
-  { label: '教师总数', value: stats.cards.teacher_count, icon: STAT_ICONS.person, color: '#22c55e', bg: '#ddfef0' },
-  { label: '题目总数', value: stats.cards.topic_count, icon: STAT_ICONS.doc, color: '#8b5cf6', bg: '#edeafd' },
+  { label: '学生总数', value: stats.cards.student_count, icon: STAT_ICONS.users, color: '#2563eb', bg: '#d7f0fe',
+    scope: scopeLabel(analyticsMeta.value, 'cards.student_count') },
+  { label: '教师总数', value: stats.cards.teacher_count, icon: STAT_ICONS.person, color: '#22c55e', bg: '#ddfef0',
+    scope: scopeLabel(analyticsMeta.value, 'cards.teacher_count') },
+  { label: '题目总数', value: stats.cards.topic_count, icon: STAT_ICONS.doc, color: '#8b5cf6', bg: '#edeafd',
+    scope: scopeLabel(analyticsMeta.value, 'cards.topic_count') },
   { label: '已选题人数', value: stats.cards.selected_count, icon: STAT_ICONS.case, color: '#f59e0b', bg: '#fef5ea',
-    ring: pct(stats.cards.selected_count, stats.cards.student_count), ringColor: '#f59e0b' },
-  { label: '材料审核完成', value: stats.cards.completed_count, icon: STAT_ICONS.cap, color: '#ef4444', bg: '#fee7ed',
-    ring: pct(stats.cards.completed_count, stats.cards.student_count), ringColor: '#ef4444' },
-  { label: '待审核事项', value: stats.cards.pending_count, icon: STAT_ICONS.bars, color: '#3b82f6', bg: '#dcf9fe' },
+    ring: pct(stats.cards.selected_count, stats.cards.student_count), ringColor: '#f59e0b',
+    scope: scopeLabelWithYear(analyticsMeta.value, 'cards.selected_count') },
+  { label: '已完成', value: stats.cards.completed_count, icon: STAT_ICONS.cap, color: '#ef4444', bg: '#fee7ed',
+    ring: pct(stats.cards.completed_count, stats.cards.student_count), ringColor: '#ef4444',
+    scope: scopeLabel(analyticsMeta.value, 'cards.completed_count') },
+  { label: '待审核事项', value: stats.cards.pending_count, icon: STAT_ICONS.bars, color: '#3b82f6', bg: '#dcf9fe',
+    scope: scopeLabel(analyticsMeta.value, 'cards.pending_count') },
 ])
-const stagePass = computed(() => stats.pass_rates.map((s, i) => ({ ...s, color: palette[i % palette.length] })))
+
+/** P8: 六张图表的卡头角标同样读 scope_map, 后端放开/收窄字段时文案自动跟随 */
+const scopeTags = computed(() => ({
+  colleges: scopeLabel(analyticsMeta.value, 'colleges'),
+  passRates: scopeLabel(analyticsMeta.value, 'pass_rates'),
+  topicTypes: scopeLabel(analyticsMeta.value, 'topic_types'),
+  majors: scopeLabel(analyticsMeta.value, 'majors'),
+  months: scopeLabel(analyticsMeta.value, 'month_series'),
+  defense: scopeLabel(analyticsMeta.value, 'defense_results'),
+}))
+/** P7-B: stats.pass_counts 每行 {name,value,total}, 通过率必须自己算; 无数据时回退 analytics.pass_rates(百分比) */
+const passCounts = ref<PassCountRow[]>([])
+const passRows = computed(() => (passCounts.value.length
+  ? passCounts.value.map(row => ({
+    name: row.name,
+    value: row.total ? Math.round(row.value / row.total * 1000) / 10 : 0,
+    approved: row.value,
+    total: row.total,
+  }))
+  : stats.pass_rates.map(row => ({ name: row.name, value: row.value, approved: 0, total: 0 }))))
+const stagePass = computed(() => passRows.value.map((s, i) => ({ ...s, color: palette[i % palette.length] })))
 const topicTypes = computed(() => stats.topic_types.map((s, i) => ({ ...s, color: palette[i % palette.length] })))
 const defenseResults = computed(() => stats.defense_results.map((s, i) => ({ ...s, color: palette[i % palette.length] })))
 const majorRows = computed(() => stats.majors)
@@ -190,10 +225,16 @@ function initCharts() {
       itemStyle: { color: palette[i % palette.length], borderRadius: [4, 4, 0, 0] } })) }],
   })
   chartOn(passChartRef.value)?.setOption({
-    grid: { left: 42, right: 15, top: 30, bottom: 30 }, tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: stats.pass_rates.map(s => s.name) },
+    grid: { left: 42, right: 15, top: 30, bottom: 30 }, tooltip: { trigger: 'axis',
+      formatter: (params: any) => {
+        const item = Array.isArray(params) ? params[0] : params
+        const row = passRows.value[item?.dataIndex ?? 0]
+        const detail = row && row.total ? ` (${row.approved}/${row.total})` : ''
+        return `${item?.name ?? ''}<br/>通过率 ${item?.value ?? 0}%${detail}`
+      } },
+    xAxis: { type: 'category', data: passRows.value.map(s => s.name) },
     yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
-    series: [{ type: 'line', smooth: true, data: stats.pass_rates.map(s => s.value),
+    series: [{ type: 'line', smooth: true, data: passRows.value.map(s => s.value),
       itemStyle: { color: '#3b82f6' }, label: { show: true, position: 'top', formatter: '{c}%' } }],
   })
   chartOn(typeChartRef.value)?.setOption({
@@ -217,8 +258,10 @@ function initCharts() {
 }
 function resizeCharts() { charts.forEach(chart => chart.resize()) }
 onMounted(async () => {
-  const response = await dashboardApi.analytics()
+  const [response, distribution] = await Promise.all([dashboardApi.analytics(), dashboardApi.stats()])
   Object.assign(stats, response.data)
+  analyticsMeta.value = (response.data || {}) as DashboardScopeMeta
+  passCounts.value = (distribution.data as DashboardStats)?.pass_counts ?? []
   await nextTick()
   initCharts()
   window.addEventListener('resize', resizeCharts)
@@ -310,6 +353,16 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
   color: #8a97ad;
   margin-top: 2px;
+}
+
+/* P8: 口径角标(当前学年/全部学年), 由 scope_map 决定 */
+.scope-tag {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  color: #6b7a90;
+  background: #eef2f8;
 }
 .stat-trend {
   font-size: 11.5px;
