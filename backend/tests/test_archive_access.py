@@ -95,7 +95,8 @@ def seed(db: Session) -> dict:
 
 
 def make_package(db: Session, *, status: str = "ARCHIVED") -> ArchivePackage:
-    pkg = ArchivePackage(id=1, cycle_id=1, result_id=1, title="毕业设计成果", abstract="摘要内容",
+    pkg = ArchivePackage(id=1, cycle_id=1, student_id=1, teacher_id=1, result_id=1,
+                         title="毕业设计成果", abstract="摘要内容",
                          keywords="关键词", status=status, archived_at=datetime(2026, 6, 1), created_by=5)
     db.add(pkg)
     db.flush()
@@ -316,7 +317,7 @@ def seed_thirty(db: Session) -> None:
                                teacher_id=1, status="ACTIVE"))
     db.flush()
     for i in range(1, 31):
-        db.add(ArchivePackage(id=i, cycle_id=i, title=f"成果{i:02d}", abstract=f"摘要{i:02d}",
+        db.add(ArchivePackage(id=i, cycle_id=i, student_id=i, teacher_id=1, title=f"成果{i:02d}", abstract=f"摘要{i:02d}",
                               keywords=f"关键词{i:02d}", status="ARCHIVED",
                               archived_at=datetime(2026, 6, 1), created_by=5))
     db.flush()

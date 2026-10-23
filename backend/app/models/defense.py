@@ -216,6 +216,11 @@ class ArchivePackage(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     cycle_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("graduation_cycle.id"), unique=True, index=True)
+    # P9-A: 归档包归属列。此前无 student_id, 状态机对 STUDENT 的归属校验拿到 None 直接放行(D 越权:
+    # 学生 A 可 submit 学生 B 的 PENDING 归档包)。迁移 0004 回填后 DB 侧置 NOT NULL;
+    # ORM 侧保持可空以容纳历史构造点(seed.py 与管理端一次性提交路径仍在迁移前签名上构造)。
+    student_id: Mapped[int | None] = mapped_column(BigInteger, index=True, comment="归属学生 student_profile.id")
+    teacher_id: Mapped[int | None] = mapped_column(BigInteger, index=True, comment="归属导师 teacher_profile.id")
     result_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("defense_result.id"), comment="正式结论")
     title: Mapped[str | None] = mapped_column(String(255), comment="成果题名")
     abstract: Mapped[str | None] = mapped_column(Text, comment="摘要(公开范围含 METADATA 时可见)")

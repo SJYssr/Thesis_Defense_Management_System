@@ -11,6 +11,7 @@ import io
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse, StreamingResponse
@@ -22,7 +23,13 @@ from app.core.exceptions import BusinessException, PermissionDeniedException, Re
 from app.core.permissions import CurrentUser, get_current_user, require_admin, require_student
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
-from app.models.business import GraduationCycle, GraduationMaterial, GraduationTopic
+from app.models.ai import AIDocument
+from app.models.business import (
+    GraduationCycle,
+    GraduationMaterial,
+    GraduationMaterialFile,
+    GraduationTopic,
+)
 from app.models.defense import (
     ArchiveConsent,
     ArchiveDownloadLog,
@@ -34,9 +41,10 @@ from app.models.defense import (
     DefenseSession,
 )
 from app.models.enums import ArchiveStatus, ConsentVisibility, ResultStatus
-from app.models.system import OperationLog, SysFile
+from app.models.system import OperationLog, SysFile, TopicAttachment
 from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
 from app.shared import state_machine as sm
+from app.shared.cycle import get_active_cycle
 from app.shared.query import paginate
 from app.shared.storage import storage
 
@@ -117,6 +125,10 @@ def _archive_view(db: Session, pkg: ArchivePackage, cycle: GraduationCycle,
     )
 
 
+# 归档状态中文名唯一真源: 检索/详情/学生自助入口共用, 不允许各接口各写一份
+PACKAGE_STATUS_CN = {"PENDING": "待归档", "ARCHIVED": "已归档", "REVOKED": "已撤回"}
+
+
 def _package_item(db: Session, pkg: ArchivePackage, viewer: CurrentUser | None = None) -> dict:
     """归档卡片/详情公共构造器.
 
@@ -128,7 +140,7 @@ def _package_item(db: Session, pkg: ArchivePackage, viewer: CurrentUser | None =
     item = {
         "id": pkg.id, "cycle_id": pkg.cycle_id, "academic_year": cycle.academic_year,
         "status": pkg.status,
-        "status_cn": {"PENDING": "待归档", "ARCHIVED": "已归档", "REVOKED": "已撤回"}.get(pkg.status, pkg.status),
+        "status_cn": PACKAGE_STATUS_CN.get(pkg.status, pkg.status),
         "archived_at": pkg.archived_at.isoformat() if pkg.archived_at else None,
         "topic_title": db.execute(
             select(GraduationTopic.title).where(GraduationTopic.id == cycle.topic_id)
@@ -232,7 +244,9 @@ def create_archive(body: ArchiveCreate, user: CurrentUser = Depends(require_admi
         # REVOKED → 复用同一条记录重新提交(文件快照整体替换)
         db.execute(delete(ArchiveFile).where(ArchiveFile.package_id == pkg.id))
     else:
-        pkg = ArchivePackage(cycle_id=body.cycle_id, status=ArchiveStatus.PENDING.value, created_by=user.id)
+        pkg = ArchivePackage(cycle_id=body.cycle_id, student_id=cycle.student_id,
+                             teacher_id=cycle.teacher_id, status=ArchiveStatus.PENDING.value,
+                             created_by=user.id)
         db.add(pkg)
         db.flush()
 
@@ -241,6 +255,9 @@ def create_archive(body: ArchiveCreate, user: CurrentUser = Depends(require_admi
     pkg.abstract = body.abstract
     pkg.keywords = body.keywords
     pkg.created_by = pkg.created_by or user.id
+    # P9-A: 管理端代办路径同样写归属, 否则迁移 0004 的 NOT NULL 会拒绝插入
+    pkg.student_id = pkg.student_id or cycle.student_id
+    pkg.teacher_id = pkg.teacher_id or cycle.teacher_id
     archive_transition(db, pkg, "submit", user)  # REVOKED → PENDING(新建对象则保持 PENDING)
 
     for f in body.files:
@@ -258,6 +275,159 @@ def create_archive(body: ArchiveCreate, user: CurrentUser = Depends(require_admi
                         detail=f"归档流程#{body.cycle_id}, 文件数{len(body.files)}"))
     db.commit()
     return ResponseUtil.success(_package_item(db, pkg, viewer=user), message="归档完成")
+
+
+# ---------- P9-A 学生自助提交归档 ----------
+# 归档不再由管理员一次性 submit+approve 代办: 学生提交 → PENDING, 学院确认 → ARCHIVED。
+# 状态写入口仍是 state_machine.transition(ARCHIVE), 本段只负责业务字段、归属与文件校验。
+
+_STUDENT_FILE_LIMIT = 50
+
+
+class StudentArchiveFile(BaseModel):
+    file_id: int
+    file_role: str = Field(default="OTHER", max_length=32)
+
+
+class StudentArchiveSubmit(BaseModel):
+    title: str | None = Field(default=None, max_length=255)
+    abstract: str | None = None
+    keywords: str | None = Field(default=None, max_length=500)
+    files: list[StudentArchiveFile] = Field(min_length=1, description='[{"file_id":1,"file_role":"THESIS"}]')
+
+
+def _unreferenced_condition():
+    """"未被任何业务记录引用"的 SysFile 条件: 逐业务表取反相关 EXISTS。
+
+    用 EXISTS 取反而不是 NOT IN: ai_document.file_id 可空, 子查询一旦出现 NULL,
+    NOT IN 会让整条谓词恒为假(文件列表恒空) —— NOT IN 的经典陷阱。
+    """
+    referenced = [
+        select(model.id).where(model.file_id == SysFile.id).exists()
+        for model in (ArchiveFile, GraduationMaterialFile, TopicAttachment, AIDocument)
+    ]
+    return ~or_(*referenced)
+
+
+def _own_unreferenced_files(db: Session, user: CurrentUser) -> list[SysFile]:
+    """本人上传且尚未被任何业务记录引用的文件(可按 id desc 取前 _STUDENT_FILE_LIMIT 条)."""
+    stmt = (
+        select(SysFile)
+        .where(SysFile.uploader_id == user.id, SysFile.deleted_at.is_(None), _unreferenced_condition())
+        .order_by(SysFile.id.desc())
+        .limit(_STUDENT_FILE_LIMIT)
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+@router.get("/student/archive/eligibility")
+def student_archive_eligibility(user: CurrentUser = Depends(require_student),
+                               db: Session = Depends(get_db)):
+    """学生自助归档入口状态: 能否提交 + 当前归档包 + 可用于归档的本人文件。
+
+    归档前置条件复用 _validate_archive_eligible(不复制判断), 它抛出的中文业务提示直接作为
+    reason 回给学生; cycle 口径复用 shared/cycle.get_active_cycle, 不另立"当前学年"判断。
+    """
+    cycle = get_active_cycle(db, user.profile_id) if user.profile_id is not None else None
+    eligible = False
+    reason: str | None = None
+    pkg: ArchivePackage | None = None
+    if cycle is None:
+        reason = "当前没有进行中的毕业流程实例"
+    else:
+        pkg = db.execute(
+            select(ArchivePackage).where(ArchivePackage.cycle_id == cycle.id)
+        ).scalars().first()
+        try:
+            _validate_archive_eligible(db, cycle.id)
+            eligible = True
+        except BusinessException as exc:
+            reason = exc.message
+    files = _own_unreferenced_files(db, user)
+    return ResponseUtil.success({
+        "eligible": eligible,
+        "reason": reason,
+        "cycle_id": cycle.id if cycle is not None else None,
+        "academic_year": cycle.academic_year if cycle is not None else None,
+        "package_id": pkg.id if pkg is not None else None,
+        "package_status": pkg.status if pkg is not None else None,
+        "package_status_cn": PACKAGE_STATUS_CN.get(pkg.status) if pkg is not None else None,
+        "files": [{
+            "file_id": f.id,
+            "original_name": f.original_name,
+            "size": f.size,
+            "extension": f.extension,
+            "uploaded_at": f.created_at.isoformat() if f.created_at else None,
+        } for f in files],
+    })
+
+
+@router.post("/student/archive/packages")
+def submit_archive_package(body: StudentArchiveSubmit, user: CurrentUser = Depends(require_student),
+                           db: Session = Depends(get_db)):
+    """学生提交归档: 只 submit(→PENDING), 不自动 approve; 学院确认后才是 ARCHIVED。
+
+    幂等口径沿用 create_archive: 按 cycle_id 取既有记录 with_for_update(), 按状态决定
+    复用还是明确报错 —— 撤回后重新提交复用同一条(cycle_id 唯一), 不允许留下两条。
+    校验顺序: 归属/前置条件/包状态/文件归属全部先过, 最后才迁移状态(先校验后迁移)。
+    包状态先于文件归属, 避免对一个已归档流程回显他人文件是否存在。
+    """
+    if user.profile_id is None:
+        raise PermissionDeniedException("当前账号没有学生档案, 无法提交归档")
+    cycle = get_active_cycle(db, user.profile_id)
+    if cycle is None:
+        raise BusinessException("当前没有进行中的毕业流程实例, 无法提交归档")
+    if cycle.student_id != user.profile_id:
+        raise PermissionDeniedException("只能提交本人的归档")
+    cycle, result = _validate_archive_eligible(db, cycle.id)
+
+    pkg = db.execute(
+        select(ArchivePackage).where(ArchivePackage.cycle_id == cycle.id).with_for_update()
+    ).scalars().first()
+    if pkg is not None:
+        if pkg.status == ArchiveStatus.ARCHIVED.value:
+            raise BusinessException("该流程已完成归档")
+        if pkg.status == ArchiveStatus.PENDING.value:
+            raise BusinessException("归档申请审核中, 请勿重复提交")
+        if pkg.status != ArchiveStatus.REVOKED.value:  # 未知状态不猜, 交给数据修复
+            raise BusinessException(f"归档包状态异常({pkg.status}), 无法重新提交")
+        # REVOKED → 复用同一条记录, 文件快照整体替换
+        db.execute(delete(ArchiveFile).where(ArchiveFile.package_id == pkg.id))
+
+    resolved: list[tuple[SysFile, str]] = []
+    for item in body.files:
+        sf = db.get(SysFile, item.file_id)
+        if sf is None or sf.deleted_at is not None:
+            raise ResourceNotFoundException(f"文件#{item.file_id}不存在")
+        if sf.uploader_id != user.id:
+            raise PermissionDeniedException(f"文件#{item.file_id}不是本人上传, 不能用于归档")
+        resolved.append((sf, item.file_role or "OTHER"))
+
+    if pkg is None:
+        # 新建推迟到文件校验之后: 否则校验失败会在 session 里留下一个空 PENDING 包
+        pkg = ArchivePackage(cycle_id=cycle.id, student_id=user.profile_id,
+                             teacher_id=cycle.teacher_id, status=ArchiveStatus.PENDING.value,
+                             created_by=user.id)
+        db.add(pkg)
+        db.flush()
+
+    pkg.result_id = result.id
+    pkg.title = body.title
+    pkg.abstract = body.abstract
+    pkg.keywords = body.keywords
+    # P9-A: 写归属, 状态机的 STUDENT 归属校验由此生效(此前无列可用)
+    pkg.student_id = user.profile_id
+    pkg.teacher_id = cycle.teacher_id
+    pkg.created_by = pkg.created_by or user.id
+    archive_transition(db, pkg, "submit", user)  # 只到 PENDING, 不 approve
+
+    for sf, role in resolved:
+        db.add(ArchiveFile(package_id=pkg.id, file_id=sf.id, file_role=role,
+                           version=1, sha256=sf.sha256))
+    db.add(OperationLog(user_id=user.id, username=user.username, module="ARCHIVE", action="SUBMIT_PACKAGE",
+                        detail=f"归档流程#{cycle.id}, 文件数{len(resolved)}"))
+    db.commit()
+    return ResponseUtil.success(_package_item(db, pkg, viewer=user), message="归档申请已提交, 等待学院确认")
 
 
 def _keyword_condition(keyword: str, identity_visible):
@@ -282,6 +452,7 @@ def _keyword_condition(keyword: str, identity_visible):
 @router.get("/archive-packages")
 def search_packages(academic_year: str | None = None, college_id: int | None = None, major_id: int | None = None,
                     teacher_id: int | None = None, keyword: str | None = None,
+                    status: Literal["PENDING", "ARCHIVED", "REVOKED"] | None = None,
                     page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                     user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     """检索归档: 权限过滤 + 条件筛选全部在 SQL 层完成, 之后才分页(docs §1.2/§5, D33).
@@ -332,6 +503,9 @@ def search_packages(academic_year: str | None = None, college_id: int | None = N
         ))
     if teacher_id:
         conds.append(GraduationCycle.teacher_id == teacher_id)
+    if status:
+        # 下推 SQL: total 与 items 同口径, 不在内存里筛状态
+        conds.append(ArchivePackage.status == status)
 
     text = (keyword or "").strip()
     if text:
@@ -475,6 +649,29 @@ def revoke_package(package_id: int, user: CurrentUser = Depends(require_admin), 
     _recompute_progress(db, pkg.cycle_id)
     db.commit()
     return ResponseUtil.success(message="归档已撤回, 公开授权同步失效")
+
+
+class ArchiveApprove(BaseModel):
+    comment: str | None = Field(default=None, max_length=1000, description="确认意见(纯文本)")
+
+
+@router.post("/archive-packages/{package_id}/approve")
+def approve_package(package_id: int, body: ArchiveApprove | None = None,
+                    user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """学院确认归档: PENDING → ARCHIVED(学生自助提交后的唯一生效动作).
+
+    非法源状态交给状态机抛 40003(不在这里另写 if); 归档是"是否毕业"的判定输入之一,
+    确认后必须重算进度, 否则 GraduationProcess.completed_at 不会落值(D74)。
+    """
+    pkg = db.get(ArchivePackage, package_id)
+    if pkg is None:
+        raise ResourceNotFoundException("归档包不存在")
+    archive_transition(db, pkg, "approve", user, comment=body.comment if body else None)
+    _recompute_progress(db, pkg.cycle_id)
+    db.add(OperationLog(user_id=user.id, username=user.username, module="ARCHIVE", action="APPROVE_PACKAGE",
+                        detail=f"确认归档包#{package_id}"))
+    db.commit()
+    return ResponseUtil.success(_package_item(db, pkg, viewer=user), message="归档已确认")
 
 
 @router.get("/archive-packages/export/list")

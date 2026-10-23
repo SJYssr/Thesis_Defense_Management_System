@@ -359,7 +359,8 @@ def seed(force: bool = False):
         db.add(GraduationProcess(student_id=s1.id, cycle_id=cycle1.id, topic_id=topics[0].id, teacher_id=teachers[0].id,
                                  current_stage="COMPLETED", progress_percent=100, risk_level="NORMAL",
                                  started_at=now - timedelta(days=100), completed_at=now - timedelta(hours=1)))
-        pkg = ArchivePackage(cycle_id=cycle1.id, result_id=result1.id,
+        pkg = ArchivePackage(cycle_id=cycle1.id, student_id=s1.id, teacher_id=teachers[0].id,
+                             result_id=result1.id,
                              title="基于LangChain与RAG的智能毕业设计管理系统设计与实现",
                              abstract="将RAG检索增强生成技术融入毕业设计管理流程, 实现AI模拟答辩、进度风险分析等智能能力。",
                              keywords="RAG;LangChain;FastAPI;Vue3",

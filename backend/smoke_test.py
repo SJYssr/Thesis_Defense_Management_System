@@ -637,6 +637,43 @@ r = client.post(f"{BASE}/files/upload", headers=auth(s1),
 check("可渲染类型(.svg)被拒 40010", r.status_code == 400 and r.json()["code"] == 40010,
       f"{r.status_code} {r.text[:150]}")
 
+print("== 19. 归档自助闭环与孤儿文件清理(P9) ==")
+# 迁移 0004 后 archive_package.student_id 为 NOT NULL: 真库上任何构造点漏传都会在此暴露
+r = client.get(f"{BASE}/student/archive/eligibility", headers=auth(s1))
+elig = r.json().get("data") or {}
+check("学生归档资格可查询(含文件清单)",
+      r.json()["code"] == 0 and "eligible" in elig and isinstance(elig.get("files"), list),
+      r.text[:200])
+
+# seed 里 20230001 的流程已归档(ARCHIVED), 再次提交必须被拒而不是产生第二条记录
+r = client.post(f"{BASE}/student/archive/packages", headers=auth(s1),
+                json={"files": [{"file_id": 1, "file_role": "THESIS"}]})
+check("已完成归档的流程不可重复提交",
+      r.status_code == 400 and "已完成归档" in (r.json().get("message") or ""),
+      f"{r.status_code} {r.text[:150]}")
+
+# 学院确认只能管理员执行: 学生直接调 approve 必须 403(越权根因是归档包此前无归属列)
+r = client.post(f"{BASE}/archive-packages/1/approve", headers=auth(s1), json={"comment": "自己批自己"})
+check("学生不可自行确认归档 403", r.status_code == 403 and r.json()["code"] == 40300,
+      f"{r.status_code} {r.text[:150]}")
+
+r = client.get(f"{BASE}/archive-packages", headers=auth(admin), params={"status": "PENDING", "page": 1, "page_size": 5})
+pending = r.json().get("data") or {}
+check("归档列表支持 status 下推且 total 与 items 一致",
+      r.json()["code"] == 0 and isinstance(pending.get("items"), list)
+      and pending.get("total") == len(pending.get("items") or []),
+      r.text[:200])
+
+# 孤儿清理: dry_run 只报数不删, 且能列出可删清单
+r = client.post(f"{BASE}/admin/files/gc", headers=auth(admin), params={"retention_days": 7, "dry_run": True})
+gc = r.json().get("data") or {}
+check("孤儿文件清理 dry_run 返回规模与可删清单",
+      r.json()["code"] == 0 and gc.get("dry_run") is True and "deletable" in gc
+      and isinstance(gc.get("items"), list),
+      r.text[:200])
+r = client.post(f"{BASE}/admin/files/gc", headers=auth(s1), params={"dry_run": True})
+check("学生不可调用孤儿清理 403", r.status_code == 403 and r.json()["code"] == 40300,
+      f"{r.status_code} {r.text[:150]}")
 # D13: 登出后旧 access token 立即失效(token_version + 1 + jti 黑名单)
 r = client.post(f"{BASE}/auth/logout", headers=auth(s1))
 check("D13 登出成功", r.json()["code"] == 0, r.text[:150])

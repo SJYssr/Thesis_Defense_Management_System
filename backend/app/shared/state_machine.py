@@ -318,6 +318,10 @@ def transition(db: Session, entity: str, obj: Any, action: str, actor: Any, *,
 
     _apply_status(db, obj, rule, current)
     _apply_effects(db, rule, obj, actor, text or None, current)
+    # 副作用的标量列(archived_at/reviewed_at/publish_time)只改了内存对象, 而 _apply_status 走的是
+    # 独立的 UPDATE。若不 flush, 任何 expire/refresh(例如 db.expire_all 后再读)都会把这部分
+    # 改动丢掉并读回旧值 —— 撤回后 archived_at 仍残留就是这条裂缝的表现。
+    db.flush()
     return obj
 
 
