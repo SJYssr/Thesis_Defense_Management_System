@@ -98,7 +98,9 @@ class ThesisVersionTest(unittest.TestCase):
                           return_value=(f"stored_{name}", f"2026/06/{name}")), \
              patch.object(vector_store, "delete_chunks",
                           side_effect=lambda ids: self.deleted_chunks.append(list(ids))):
-            return upload_material_file(file=None, material_type="THESIS", user=STUDENT, db=self.db)
+            # 直接调用(不经 FastAPI)时 Form 默认值仍是 Form 对象, 依赖项必须显式给值
+            return upload_material_file(file=None, material_type="THESIS", business_type=None,
+                                        business_id=None, user=STUDENT, db=self.db)
 
     def _docs(self):
         return self.db.execute(select(AIDocument).where(AIDocument.document_type == "THESIS")).scalars().all()
@@ -183,7 +185,8 @@ class ThesisVersionTest(unittest.TestCase):
         with patch.object(material_router, "read_upload",
                           return_value=(b"zip", "源码.zip", "application/zip", 2048, "b" * 64)), \
              patch.object(material_router.storage, "save", return_value=("stored.zip", "2026/06/源码.zip")):
-            upload_material_file(file=None, material_type="SOURCE_CODE", user=STUDENT, db=self.db)
+            upload_material_file(file=None, material_type="SOURCE_CODE", business_type=None,
+                             business_id=None, user=STUDENT, db=self.db)
         self.db.expire_all()
         docs = self._docs()
         self.assertEqual(len(docs), 1)

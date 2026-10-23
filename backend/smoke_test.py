@@ -615,6 +615,28 @@ r = client.get(f"{BASE}/admin/operation-logs", headers=auth(admin), params={"mod
 check("D23 审计结果字段非空", r.json()["code"] == 0
       and all(i["result"] for i in r.json()["data"]["items"]), r.text[:200])
 
+print("== 18. 上传策略单一来源(P-upload) ==")
+r = client.get(f"{BASE}/files/upload-policy", headers=auth(s1))
+policy = r.json().get("data") or {}
+check("上传策略返回扩展名白名单与大小上限",
+      r.json()["code"] == 0 and bool(policy.get("allowed_extensions")) and policy.get("max_upload_size_mb", 0) > 0,
+      r.text[:150])
+check("演示视频格式(.mp4)在后端白名单内", ".mp4" in policy.get("allowed_extensions", []),
+      str(policy.get("allowed_extensions"))[:200])
+
+r = client.post(f"{BASE}/files/upload", headers=auth(s1),
+                files={"file": ("demo.mp4", b"\x00\x00\x00\x18ftypmp42" + b"0" * 512, "video/mp4")},
+                data={"business_type": "SMOKE", "business_id": "1"})
+uploaded = r.json().get("data") or {}
+check("媒体文件可上传并回写业务归属",
+      r.json()["code"] == 0 and uploaded.get("business_type") == "SMOKE" and uploaded.get("business_id") == 1,
+      r.text[:200])
+
+r = client.post(f"{BASE}/files/upload", headers=auth(s1),
+                files={"file": ("evil.svg", b"<svg onload=alert(1)></svg>", "image/svg+xml")})
+check("可渲染类型(.svg)被拒 40010", r.status_code == 400 and r.json()["code"] == 40010,
+      f"{r.status_code} {r.text[:150]}")
+
 # D13: 登出后旧 access token 立即失效(token_version + 1 + jti 黑名单)
 r = client.post(f"{BASE}/auth/logout", headers=auth(s1))
 check("D13 登出成功", r.json()["code"] == 0, r.text[:150])

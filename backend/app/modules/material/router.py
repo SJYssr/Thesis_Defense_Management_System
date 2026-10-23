@@ -6,7 +6,7 @@ import json
 from datetime import date, datetime as dt, time, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, UploadFile
+from fastapi import APIRouter, Depends, Form, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
@@ -30,6 +30,7 @@ from app.shared.events import push_notification
 from app.shared.progress import ProgressService
 from app.shared.query import paginate, time_range_conditions
 from app.shared.storage import read_upload, storage
+from app.shared.upload_policy import ensure_daily_quota, max_upload_size_mb, normalize_business
 from app.shared.workflow import GraduationWorkflowService
 
 router = APIRouter(prefix="/student/material", tags=["Material-Student"])
@@ -200,7 +201,12 @@ def my_material(user: CurrentUser = Depends(require_student), db: Session = Depe
 
 
 @router.post("/files")
-def upload_material_file(file: UploadFile, material_type: str = Query(..., description="THESIS/DESIGN/SOURCE_CODE/MANUAL/VIDEO/OTHER"),
+def upload_material_file(file: UploadFile,
+                         material_type: str = Query(..., description="THESIS/DESIGN/SOURCE_CODE/MANUAL/VIDEO/OTHER"),
+                         business_type: str | None = Form(default=None, max_length=32,
+                                                          description="业务归属类型(可选, 前端传 MATERIAL)"),
+                         business_id: int | None = Form(default=None, ge=1,
+                                                        description="业务归属主键(可选, 材料记录 id)"),
                          user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     try:
         MaterialType(material_type)
@@ -210,15 +216,24 @@ def upload_material_file(file: UploadFile, material_type: str = Query(..., descr
     m = _get_or_create(db, user.profile_id)
     if m.status not in ("NOT_SUBMITTED", "DRAFT", "REJECTED", "RESUBMIT_REQUIRED"):
         raise BusinessException("当前状态不允许修改材料")
+    # 先做"只读校验"(读流 + 大小 + 配额), 再做有副作用的状态迁移与落盘:
+    # 配额不足时不该留下已迁移的状态, 否则同一事务回滚语义依赖调用方的 get_db 实现
+    content, original_name, mime, size, sha256 = read_upload(file, max_upload_size_mb(db))
+    ensure_daily_quota(db, user.id, size)
+
     if m.status == "NOT_SUBMITTED":
         # 首次落草稿走 MATERIAL 转移表(save: {NOT_SUBMITTED,DRAFT,REJECTED,RESUBMIT_REQUIRED}→DRAFT)
         sm.transition(db, sm.MATERIAL, m, "save", user)
 
-    content, original_name, mime, size, sha256 = read_upload(file)
     stored_name, storage_path = storage.save(content, original_name)
+    business_type, business_id = normalize_business(business_type, business_id or m.id)
     f = SysFile(original_name=original_name, stored_name=stored_name,
                 extension=original_name.rsplit(".", 1)[-1].lower() if "." in original_name else None,
-                mime_type=mime, size=size, storage_path=storage_path, sha256=sha256, uploader_id=user.id)
+                mime_type=mime, size=size, storage_type="LOCAL", storage_path=storage_path,
+                sha256=sha256, uploader_id=user.id,
+                business_type=business_type, business_id=business_id,
+                # 与日配额统计同一时钟(见 shared/upload_policy.used_today)
+                created_at=dt.now())
     db.add(f)
     db.flush()
     db.add(GraduationMaterialFile(material_id=m.id, file_id=f.id, material_type=material_type))

@@ -20,6 +20,9 @@ class SysFile(Base, TimestampMixin):
     storage_path: Mapped[str] = mapped_column(String(512), comment="相对路径 2026/09/uuid.docx")
     sha256: Mapped[str | None] = mapped_column(String(64))
     uploader_id: Mapped[int | None] = mapped_column(BigInteger, comment="上传人 sys_user.id")
+    # D70: 业务归属, 供孤儿文件清理(上传后从未被任何业务记录引用的文件)
+    business_type: Mapped[str | None] = mapped_column(String(32), index=True, comment="业务归属类型, 如 MATERIAL/ARCHIVE")
+    business_id: Mapped[int | None] = mapped_column(BigInteger, index=True, comment="业务归属主键")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 

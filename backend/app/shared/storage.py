@@ -16,7 +16,36 @@ from fastapi import UploadFile
 from app.core.config import settings
 from app.core.exceptions import FileException
 
-ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".txt", ".md", ".zip", ".rar", ".png", ".jpg", ".jpeg"}
+# 上传白名单按用途分组: 后端校验与前端 accept 展示共用同一份(GET /files/upload-policy),
+# 避免出现"前端 accept 里有 .mp4, 后端白名单没有"这类上传必失败的错配。
+DOCUMENT_EXTENSIONS = frozenset({".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".txt", ".md"})
+ARCHIVE_EXTENSIONS = frozenset({".zip", ".rar", ".7z", ".tar", ".gz"})
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+MEDIA_EXTENSIONS = frozenset({".mp4", ".mov", ".avi", ".wmv", ".flv", ".m4v", ".mp3", ".wav", ".aac"})
+
+# 故意不含: svg(可内联执行脚本) / html / js / exe / sh / bat 等可执行或可渲染类型
+ALLOWED_EXTENSIONS = DOCUMENT_EXTENSIONS | ARCHIVE_EXTENSIONS | IMAGE_EXTENSIONS | MEDIA_EXTENSIONS
+
+
+def is_allowed_extension(name: str) -> bool:
+    """按扩展名判定是否可上传(大小写不敏感, 无扩展名一律拒绝)."""
+    return pathlib_suffix(name) in ALLOWED_EXTENSIONS
+
+
+def pathlib_suffix(name: str) -> str:
+    return Path(str(name or "")).suffix.lower()
+
+
+def allowed_extensions_text() -> str:
+    return " ".join(sorted(ALLOWED_EXTENSIONS))
+
+
+def reject_unsupported(name: str) -> None:
+    """扩展名不在白名单时抛 FileException, 提示里带上允许的类型."""
+    ext = pathlib_suffix(name)
+    if ext not in ALLOWED_EXTENSIONS:
+        raise FileException(f"不支持的文件类型: {ext or '(无扩展名)'}, 允许: {allowed_extensions_text()}")
+
 
 # D17: 分块大小 1MiB
 READ_CHUNK_SIZE = 1024 * 1024
@@ -35,9 +64,8 @@ class LocalStorage(StorageService):
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def save(self, file_bytes: bytes, original_name: str) -> tuple[str, str]:
-        ext = Path(original_name).suffix.lower()
-        if ext and ext not in ALLOWED_EXTENSIONS:
-            raise FileException(f"不支持的文件类型: {ext}")
+        reject_unsupported(original_name)
+        ext = pathlib_suffix(original_name)
         stored_name = f"{uuid.uuid4().hex}{ext}"
         now = datetime.now()
         rel_dir = f"{now.year}/{now.month:02d}"
@@ -68,9 +96,7 @@ def read_upload(file: UploadFile, max_upload_mb: int | None = None) -> tuple[byt
     max_bytes = limit_mb * 1024 * 1024
 
     original_name = file.filename or "unnamed"
-    ext = Path(original_name).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise FileException(f"不支持的文件类型: {ext}")
+    reject_unsupported(original_name)
 
     chunks: list[bytes] = []
     total = 0
