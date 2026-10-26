@@ -50,13 +50,15 @@ print("== 2. 题目与选题 ==")
 r = client.get(f"{BASE}/topics", headers=auth(s6), params={"page_size": 10})
 topics = r.json()["data"]["items"]
 check("题目中心列表", r.json()["code"] == 0 and len(topics) >= 3)
+selection_topic = next(t for t in topics if t["max_students"] == 1 and t["approved_count"] == 0)
+other_topic = next(t for t in topics if t["id"] != selection_topic["id"])
 
 r = client.post(f"{BASE}/student/selections", headers=auth(s6),
-                json={"topic_id": topics[3]["id"], "reason": "我对推荐算法方向有浓厚兴趣并完成了相关课程设计。"})
+                json={"topic_id": selection_topic["id"], "reason": "我对推荐算法方向有浓厚兴趣并完成了相关课程设计。"})
 check("学生6申请选题", r.json()["code"] == 0, r.text)
 
 r = client.post(f"{BASE}/student/selections", headers=auth(s6),
-                json={"topic_id": topics[2]["id"], "reason": "再次申请另一个题目测试并发约束。" * 2})
+                json={"topic_id": other_topic["id"], "reason": "再次申请另一个题目测试并发约束。" * 2})
 check("重复选题被拒(场景: 选题审核中再选题)", r.json()["code"] == 40001, r.text)
 
 # teacher02 的待审列表不应出现 teacher01 题目的选题(对象级隔离)
@@ -98,7 +100,7 @@ print("== 5. 审核流程推进 ==")
 r = client.get(f"{BASE}/teacher/selections?status=PENDING", headers=auth(t1))
 pending = r.json()["data"]["items"]
 sel6 = next((p for p in pending if p["student_no"] == "20230006"), None)
-if sel6 is None:  # 学生6申请的是 topics[3] → teacher02 的题, 教师1看不到; 换 teacher02 审核
+if sel6 is None:  # 按实际归属切换审核教师, 不依赖题目列表的排序
     r = client.get(f"{BASE}/teacher/selections?status=PENDING", headers=auth(t2))
     sel6 = next((p for p in r.json()["data"]["items"] if p["student_no"] == "20230006"), None)
     approver = t2
@@ -110,7 +112,7 @@ check("选题审核通过", r.json()["code"] == 0, r.text)
 
 # 名额限制: 该题 max_students=1, 学生5 再申请应被名额挡住
 r = client.post(f"{BASE}/student/selections", headers=auth(login("20230005", "123456")),
-                json={"topic_id": topics[3]["id"], "reason": "测试名额已满的题目。" * 3})
+                json={"topic_id": selection_topic["id"], "reason": "测试名额已满的题目。" * 3})
 check("名额已满被拒", r.json()["code"] != 0, r.text)
 
 r = client.get(f"{BASE}/student/progress", headers=auth(s6))

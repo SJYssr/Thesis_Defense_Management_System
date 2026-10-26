@@ -36,7 +36,7 @@
 
     <!-- 题目卡片 -->
     <div v-loading="loading" class="topic-grid">
-      <article v-for="t in visibleItems" :key="t.id" class="topic-card">
+      <article v-for="t in items" :key="t.id" class="topic-card">
         <h3 class="tc-title" @click="openDetail(t)">{{ t.title }}</h3>
         <p class="tc-meta">指导教师：{{ t.teacher_name || '—' }}<span class="tc-dot" />类型：{{ t.topic_type || '毕业设计' }}</p>
         <div class="tc-tags">
@@ -51,7 +51,7 @@
         </div>
       </article>
     </div>
-    <el-empty v-if="!loading && !visibleItems.length" description="暂无可选题目" />
+    <el-empty v-if="!loading && !items.length" description="暂无可选题目" />
 
     <div class="pagination-bar">
       <span class="page-total">共 {{ total }} 个题目</span>
@@ -107,8 +107,6 @@ const query = reactive({ page: 1, page_size: 12, keyword: '', difficulty: '', ma
 
 const typeOptions = computed(() =>
   [...new Set(['软件开发', '算法研究', '应用研究', '硬件设计', ...items.value.map(t => t.topic_type || '').filter(Boolean)])])
-const visibleItems = computed(() =>
-  topicType.value ? items.value.filter(t => (t.topic_type || '') === topicType.value) : items.value)
 
 async function load() {
   loading.value = true
@@ -118,6 +116,7 @@ async function load() {
       keyword: query.keyword || undefined,
       difficulty: query.difficulty || undefined,
       major_id: query.major_id || undefined,
+      topic_type: topicType.value || undefined,
     })
     items.value = res.data.items
     total.value = res.data.total

@@ -91,6 +91,23 @@ class TopicLifecycleTest(unittest.TestCase):
         self.assertEqual(data["items"][0]["id"], topic_id)
         self.assertIsNotNone(data["items"][0]["publish_time"])
 
+    def test_type_and_teacher_keyword_filter_before_pagination(self):
+        for i in range(25):
+            self.db.add(GraduationTopic(
+                teacher_id=1 if i == 0 else 2, title=f"分页题目{i}",
+                topic_type="算法研究" if i == 0 else "软件开发",
+                status="PUBLISHED", publish_time=datetime.now()))
+        self.db.commit()
+        for params in ({"topic_type": "算法研究"}, {"keyword": "教师1"},
+                       {"topic_type": "算法研究", "keyword": "教师1"}):
+            data = json.loads(list_topics(page=1, page_size=5, user=student(), db=self.db, **params).body)["data"]
+            self.assertEqual(data["total"], 1)
+            self.assertEqual(data["items"][0]["title"], "分页题目0")
+        data = json.loads(list_topics(page=1, page_size=5, topic_type="算法研究", keyword="教师2",
+                                    user=student(), db=self.db).body)["data"]
+        self.assertEqual(data["total"], 0)
+        self.assertEqual(data["items"], [])
+
     def test_invalid_source_state_raises_40003(self):
         topic_id = self._create_topic(teacher(1, 1))
         # DRAFT 不能直接关闭

@@ -72,18 +72,24 @@ def _topic_item(db: Session, t: GraduationTopic, with_counts: bool = True) -> di
 @router.get("")
 def list_topics(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                 keyword: str | None = None, major_id: int | None = None, difficulty: str | None = None,
+                topic_type: str | None = None,
                 user: CurrentUser = Depends(require_student),
                 db: Session = Depends(get_db)):
     conds = [GraduationTopic.deleted_at.is_(None), GraduationTopic.status == "PUBLISHED"]
-    if keyword:
-        conds.append(or_(GraduationTopic.title.contains(keyword), GraduationTopic.description.contains(keyword)))
+    if topic_type:
+        conds.append(GraduationTopic.topic_type == topic_type)
     if major_id:
         conds.append(GraduationTopic.major_id == major_id)
     if difficulty:
         conds.append(GraduationTopic.difficulty == difficulty)
     # 统一分页(shared/query): 过滤在 SQL 层, total 与 items 同口径
-    rows, total = paginate(db, select(GraduationTopic).order_by(GraduationTopic.publish_time.desc()),
-                           page=page, size=page_size, filters=conds)
+    stmt = (select(GraduationTopic)
+            .outerjoin(TeacherProfile, TeacherProfile.id == GraduationTopic.teacher_id)
+            .outerjoin(SysUser, SysUser.id == TeacherProfile.user_id)
+            .order_by(GraduationTopic.publish_time.desc(), GraduationTopic.id.desc()))
+    rows, total = paginate(db, stmt, page=page, size=page_size, filters=conds,
+                           keyword=keyword,
+                           keyword_fields=(GraduationTopic.title, GraduationTopic.description, SysUser.real_name))
     return ResponseUtil.page([_topic_item(db, t) for t in rows], total, page, page_size)
 
 
