@@ -166,12 +166,13 @@ def my_sessions(user: CurrentUser = Depends(get_current_user), db: Session = Dep
             select(DefenseAssignment, DefenseSession, GraduationCycle)
             .join(DefenseSession, DefenseSession.id == DefenseAssignment.session_id)
             .join(GraduationCycle, GraduationCycle.id == DefenseAssignment.cycle_id)
-            .where(GraduationCycle.student_id == user.profile_id)
+            .where(GraduationCycle.student_id == user.profile_id,
+                   DefenseSession.status != SessionStatus.DRAFT.value)
             .order_by(DefenseSession.starts_at.desc())
         ).all()
         items = []
         for a, s, cycle in rows:
-            item = session_item(db, s, with_members=True)
+            item = session_item(db, s, with_members=True, student_id=user.profile_id)
             item["assignment"] = assignment_item(db, a, cycle)
             result = db.execute(select(DefenseResult).where(DefenseResult.assignment_id == a.id)).scalar_one_or_none()
             if result and result.status == ResultStatus.PUBLISHED.value:
@@ -206,6 +207,8 @@ def get_session(session_id: int, user: CurrentUser = Depends(get_current_user), 
         raise ResourceNotFoundException("场次不存在")
     if user.role == "ADMIN":
         return ResponseUtil.success(session_item(db, s))
+    if user.role == "STUDENT" and s.status == SessionStatus.DRAFT.value:
+        raise ResourceNotFoundException("场次尚未发布")
     # 学生/教师仅可见与自己相关的场次
     if user.role == "TEACHER":
         linked = db.execute(select(DefenseExaminer.id).where(
@@ -218,7 +221,8 @@ def get_session(session_id: int, user: CurrentUser = Depends(get_current_user), 
         ).scalar_one_or_none()
     if linked is None:
         raise PermissionDeniedException("无权查看该场次")
-    return ResponseUtil.success(session_item(db, s))
+    return ResponseUtil.success(session_item(
+        db, s, student_id=user.profile_id if user.role == "STUDENT" else None))
 
 
 @router.post("/defense-sessions/{session_id}/validate")

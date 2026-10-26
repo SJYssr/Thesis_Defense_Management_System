@@ -356,7 +356,8 @@ def compute_result(db: Session, assignment: DefenseAssignment, rubric: ReviewRub
 
 # ============ 场次序列化 ============
 
-def session_item(db: Session, s: DefenseSession, with_members: bool = True) -> dict:
+def session_item(db: Session, s: DefenseSession, with_members: bool = True,
+                 student_id: int | None = None) -> dict:
     examiners = db.execute(
         select(DefenseExaminer, SysUser)
         .join(TeacherProfile, TeacherProfile.id == DefenseExaminer.teacher_id)
@@ -366,7 +367,8 @@ def session_item(db: Session, s: DefenseSession, with_members: bool = True) -> d
     assignments = db.execute(
         select(DefenseAssignment, GraduationCycle)
         .join(GraduationCycle, GraduationCycle.id == DefenseAssignment.cycle_id)
-        .where(DefenseAssignment.session_id == s.id)
+        .where(DefenseAssignment.session_id == s.id,
+               *([GraduationCycle.student_id == student_id] if student_id is not None else []))
     ).all()
     changes = db.execute(
         select(DefenseScheduleChange).where(DefenseScheduleChange.session_id == s.id).order_by(DefenseScheduleChange.id.desc())
