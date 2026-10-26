@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import BigInteger, Integer, create_engine, func, select, update
 from sqlalchemy.orm import Session
@@ -92,6 +92,7 @@ class ThesisVersionTest(unittest.TestCase):
         self.engine.dispose()
 
     def _upload(self, name="论文.pdf", size=1024):
+        self.background = BackgroundTasks()
         with patch.object(material_router, "read_upload",
                           return_value=(b"%PDF-1.4", name, "application/pdf", size, "a" * 64)), \
              patch.object(material_router.storage, "save",
@@ -100,7 +101,34 @@ class ThesisVersionTest(unittest.TestCase):
                           side_effect=lambda ids: self.deleted_chunks.append(list(ids))):
             # 直接调用(不经 FastAPI)时 Form 默认值仍是 Form 对象, 依赖项必须显式给值
             return upload_material_file(file=None, material_type="THESIS", business_type=None,
-                                        business_id=None, user=STUDENT, db=self.db)
+                                        business_id=None, user=STUDENT, db=self.db,
+                                        background_tasks=self.background)
+
+    def test_upload_dispatches_only_after_document_is_committed(self):
+        self._upload()
+        self.assertEqual(len(self.background.tasks), 1)
+        doc_id = self._docs()[0].id
+
+        def verify_committed(document_id):
+            with Session(self.engine) as other:
+                self.assertEqual(other.get(AIDocument, document_id).file_id, self._docs()[0].file_id)
+
+        task = self.background.tasks[0]
+        with patch("app.tasks.dispatcher.dispatch_index_task", side_effect=verify_committed) as dispatch:
+            task.func(*task.args, **task.kwargs)
+        dispatch.assert_called_once_with(doc_id)
+
+    def test_dispatch_failure_preserves_upload_and_marks_retryable_failure(self):
+        response = self._upload()
+        with patch("app.tasks.dispatcher.dispatch_index_task", side_effect=RuntimeError("broker down")), \
+             patch("app.db.mysql.SessionLocal", return_value=Session(self.engine)):
+            task = self.background.tasks[0]
+            task.func(*task.args, **task.kwargs)
+        self.db.expire_all()
+        self.assertEqual(json.loads(response.body)["code"], 0)
+        self.assertEqual(self._docs()[0].index_status, "FAILED")
+        self.assertIn("重试", self._docs()[0].error_message)
+        self.assertEqual(self.db.query(material_router.GraduationMaterialFile).count(), 1)
 
     def _docs(self):
         return self.db.execute(select(AIDocument).where(AIDocument.document_type == "THESIS")).scalars().all()

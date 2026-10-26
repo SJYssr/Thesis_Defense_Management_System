@@ -3,10 +3,11 @@
 论文(THESIS)提交后自动创建 AI 知识文档记录并触发 RAG 入库(roadmap 三十二章).
 """
 import json
+import logging
 from datetime import date, datetime as dt, time, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Form, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
@@ -36,6 +37,27 @@ from app.shared.workflow import GraduationWorkflowService
 router = APIRouter(prefix="/student/material", tags=["Material-Student"])
 teacher_router = APIRouter(prefix="/teacher/materials", tags=["Material-Teacher"])
 admin_router = APIRouter(prefix="/admin/materials", tags=["Material-Admin"])
+logger = logging.getLogger("app.material")
+
+
+def _index_uploaded_thesis(document_id: int) -> None:
+    """材料已提交后独立索引; 模型或队列故障不影响上传, 并允许从知识库重试。"""
+    from app.db.mysql import SessionLocal
+    from app.tasks.dispatcher import dispatch_index_task
+
+    try:
+        dispatch_index_task(document_id)
+    except Exception:
+        logger.exception("论文 %s 自动索引失败", document_id)
+        try:
+            with SessionLocal() as session:
+                doc = session.get(AIDocument, document_id)
+                if doc is not None and doc.index_status != "FAILED":
+                    doc.index_status = "FAILED"
+                    doc.error_message = "自动索引未完成，请检查 AI 服务与任务队列后重试"
+                    session.commit()
+        except Exception:
+            logger.exception("论文 %s 索引失败状态记录失败", document_id)
 
 MATERIAL_TYPE_CN = {t.value: t.name for t in MaterialType}
 STATUS_CN = {
@@ -207,7 +229,8 @@ def upload_material_file(file: UploadFile,
                                                           description="业务归属类型(可选, 前端传 MATERIAL)"),
                          business_id: int | None = Form(default=None, ge=1,
                                                         description="业务归属主键(可选, 材料记录 id)"),
-                         user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+                         user: CurrentUser = Depends(require_student), db: Session = Depends(get_db),
+                         background_tasks: BackgroundTasks = None):
     try:
         MaterialType(material_type)
     except ValueError:
@@ -239,15 +262,20 @@ def upload_material_file(file: UploadFile,
     db.add(GraduationMaterialFile(material_id=m.id, file_id=f.id, material_type=material_type))
 
     # 论文文件 → 自动进入 AI 知识库待索引队列; 重传时先作废旧版, 保证 RAG 只命中最新一版(D40)
+    document = None
     if material_type == MaterialType.THESIS.value:
         version = _next_thesis_version(db, m.student_id)
         _purge_thesis_documents(db, m.student_id)
-        db.add(AIDocument(
+        document = AIDocument(
             student_id=m.student_id, topic_id=m.topic_id, document_type=AIDocumentType.THESIS.value,
             document_name=original_name, file_id=f.id, scope="STUDENT",
             index_status="WAITING", version=version,
-        ))
+        )
+        db.add(document)
     db.commit()
+    if document is not None:
+        tasks = background_tasks if background_tasks is not None else BackgroundTasks()
+        tasks.add_task(_index_uploaded_thesis, document.id)
     return ResponseUtil.success(_material_item(db, m))
 
 
