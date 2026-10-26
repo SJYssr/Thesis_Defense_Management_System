@@ -17,9 +17,9 @@ from app.db.mysql import get_db
 from app.models.business import FinalDefense, GraduationCycle, GraduationMaterial, MidtermReport, OpeningReport
 from app.models.defense import StageTask, StageTaskVersion
 from app.models.enums import ProcessStage
-from app.models.user import StudentProfile
+from app.models.user import StudentProfile, SysUser
 from app.shared import state_machine as sm
-from app.shared.events import now
+from app.shared.events import now, push_notification
 from app.shared.query import paginate
 from app.shared.task_policy import tasks_for_student
 from app.shared.workflow import GraduationWorkflowService
@@ -92,6 +92,7 @@ def _task_item(t: StageTask) -> dict:
         "college_id": t.college_id, "major_id": t.major_id, "class_id": t.class_id,
         "status": t.status, "current_version": t.current_version,
         "allowed_actions": sm.allowed_actions(sm.STAGE_TASK, t.status),
+        "can_remind": t.status == "PUBLISHED",
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
@@ -215,6 +216,53 @@ def close_task(task_id: int, user: CurrentUser = Depends(require_teacher_or_admi
     sm.transition(db, sm.STAGE_TASK, t, "close", user)
     db.commit()
     return ResponseUtil.success(_task_item(t), message="任务已关闭")
+
+
+class TaskReminder(BaseModel):
+    model_config = {"str_strip_whitespace": True}
+    content: str = Field(min_length=2, max_length=2000)
+
+
+@router.post("/stage-tasks/{task_id}/remind")
+def remind_task(task_id: int, body: TaskReminder,
+                user: CurrentUser = Depends(require_teacher_or_admin), db: Session = Depends(get_db)):
+    """向适用且仍需学生操作的任务接收人发送站内提醒，教师仅限本人指导学生。"""
+    from app.models.system import Reminder
+    from app.shared import audit
+
+    task = _load_task(db, task_id, user)
+    if task.status != "PUBLISHED":
+        raise BusinessException("仅已发布任务可提醒学生", 40003)
+    candidates = select(StudentProfile, SysUser).join(SysUser, SysUser.id == StudentProfile.user_id).where(
+        SysUser.role == "STUDENT", SysUser.status == 1, SysUser.deleted_at.is_(None),
+        StudentProfile.deleted_at.is_(None),
+    )
+    if user.role == "TEACHER":
+        own_students = select(GraduationCycle.student_id).where(
+            GraduationCycle.teacher_id == user.profile_id, GraduationCycle.status == "ACTIVE",
+            GraduationCycle.academic_year == task.academic_year)
+        candidates = candidates.where(StudentProfile.id.in_(own_students))
+    sent = 0
+    stage_key = {"SELECTION": "selection", "OPENING": "opening", "MIDTERM": "midterm",
+                 "FINAL": "final", "MATERIAL": "material"}[task.stage]
+    title = f"任务提醒：{task.title}"[:255]
+    for student, account in db.execute(candidates).all():
+        _, applicable = tasks_for_student(db, student.id)
+        if not any(t.id == task.id for t in applicable):
+            continue
+        material = GraduationWorkflowService.get_stage_snapshot(db, student.id)[stage_key]
+        if material is not None and material.status in ("APPROVED", "SUBMITTED", "PENDING"):
+            continue
+        db.add(Reminder(sender_id=user.id, receiver_id=account.id, student_id=student.id,
+                        title=title, content=body.content,
+                        related_business_type="STAGE_TASK", related_business_id=task.id))
+        push_notification(db, user_id=account.id, type="REMINDER", title=title, content=body.content,
+                          business_type="STAGE_TASK", business_id=task.id)
+        sent += 1
+    audit.record(db, user, "TASK", "REMIND_TASK", commit=False,
+                 detail={"task_id": task.id, "sent": sent})
+    db.commit()
+    return ResponseUtil.success({"sent": sent}, message=f"已向 {sent} 名学生发送提醒")
 
 
 @router.get("/stage-tasks/mine")

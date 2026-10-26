@@ -71,6 +71,7 @@ export interface StageTask {
   status: 'DRAFT' | 'PUBLISHED' | 'CLOSED' | string
   /** 当前状态下允许的动作, 如 DRAFT → ['publish'], PUBLISHED → ['close'], CLOSED → [] */
   allowed_actions?: StageTaskAction[]
+  can_remind?: boolean
   [key: string]: unknown
 }
 

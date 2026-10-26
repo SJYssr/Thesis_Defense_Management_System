@@ -96,7 +96,12 @@ async function showVersions(t: StageTask) {
 }
 
 async function remind(t: StageTask) {
-  await ElMessageBox.prompt('提醒内容', '提醒学生', { inputValue: `请于截止时间前完成「${t.title}」` })
+  const { value } = await ElMessageBox.prompt('提醒仍需提交的学生；教师仅提醒本人指导学生。', '提醒学生', {
+    inputValue: `请于截止时间前完成「${t.title}」`,
+    inputPattern: /\S[\s\S]+/, inputErrorMessage: '提醒内容至少 2 个字',
+  })
+  const { data } = await taskApi.remind(t.id, value)
+  ElMessage.success(`已向 ${data.sent} 名学生发送提醒`)
 }
 
 onMounted(async () => {
@@ -165,7 +170,7 @@ onMounted(async () => {
             <el-button v-if="canDo(row, 'publish')" size="small" text type="success" @click="publishTask(row)">发布</el-button>
             <el-button v-if="canDo(row, 'close')" size="small" text type="danger" @click="closeTask(row)">关闭</el-button>
             <el-button size="small" text @click="showVersions(row)">修改历史</el-button>
-            <el-button size="small" text type="warning" @click="remind(row)">提醒学生</el-button>
+            <el-button v-if="row.can_remind" size="small" text type="warning" @click="remind(row)">提醒学生</el-button>
           </template>
         </el-table-column>
       </el-table>

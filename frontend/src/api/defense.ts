@@ -26,6 +26,7 @@ export const taskApi = {
   versions: (id: number, params: { page?: number; page_size?: number } = { page: 1, page_size: 20 }) =>
     request.get<unknown, ApiEnvelope<PageResult<StageTaskVersion>>>(`/stage-tasks/${id}/versions`, { params }),
   mine: () => request.get('/stage-tasks/mine'),
+  remind: (id: number, content: string) => request.post(`/stage-tasks/${id}/remind`, { content }),
 }
 
 // ---------- 答辩排期(P1) ----------

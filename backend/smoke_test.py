@@ -223,6 +223,14 @@ r = client.put(f"{BASE}/stage-tasks/{task_id}", headers=auth(t1),
                      "description": "补充文献综述要求", "requirements": ["开题报告", "文献综述", "技术路线图"],
                      "opens_at": now_iso, "due_at": due_ok, "late_policy": "ALLOW"})
 check("教师修改任务(版本化)", r.json()["code"] == 0 and r.json()["data"]["current_version"] == 2, r.text[:200])
+r = client.post(f"{BASE}/stage-tasks/{task_id}/remind", headers=auth(t1), json={"content": "请补齐开题报告并及时提交，完整提醒验收。"})
+check("任务提醒真实发送给待提交的本人指导学生", r.json()["code"] == 0 and r.json()["data"]["sent"] >= 1, r.text[:200])
+s2 = login("20230002", "123456")
+r = client.get(f"{BASE}/notifications", headers=auth(s2), params={"page_size": 100})
+check("学生端读回任务提醒", any(n.get("business_id") == task_id and "完整提醒验收" in (n.get("content") or "")
+                             for n in r.json()["data"]["items"]), r.text[:200])
+r = client.post(f"{BASE}/stage-tasks/{task_id}/remind", headers=auth(t2), json={"content": "他人任务越权提醒测试"})
+check("其他教师不可代发他人任务提醒", r.json()["code"] == 40300, r.text[:200])
 
 r = client.post(f"{BASE}/stage-tasks", headers=auth(t1),
                 json={"academic_year": "2025-2026", "stage": "OPENING", "title": "逾期示例任务",
