@@ -73,7 +73,7 @@ const page = ref(1)
 const pageSize = 10
 
 const current = computed(() =>
-  items.value.find(i => i.status === 'APPROVED' || i.status === 'PENDING'))
+  items.value.find(i => i.is_current && (i.status === 'APPROVED' || i.status === 'PENDING')))
 
 interface RecordRow {
   key: string; time: string; topic: string; action: string
@@ -89,7 +89,7 @@ const records = computed<RecordRow[]>(() => {
       action: '提交选题申请', operator: '学生',
       status: s.status === 'PENDING' ? '待审核' : '已提交',
       cls: s.status === 'PENDING' ? 's-pending' : 's-info',
-      cancelable: s.status === 'PENDING', raw: s,
+      cancelable: s.is_current && s.status === 'PENDING', raw: s,
     })
     if (s.review_time) {
       const approved = s.status === 'APPROVED'

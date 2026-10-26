@@ -190,11 +190,12 @@ class ProgressService:
     def compute_risk(cls, db: Session, student_id: int,
                      cycle: GraduationCycle | int | None = None) -> tuple[str, str | None]:
         """规则引擎判定风险: 截止时间逾期 + 连续驳回次数."""
-        from app.shared.cycle import get_active_cycle
-
         cycle_obj = cls.resolve_cycle(db, student_id, cycle)
-        stage, _ = cls.compute_progress(db, student_id)
-        schedule = cls.get_active_schedule(db)
+        stage = cls.compute(db, student_id, cycle_obj).stage
+        schedule = db.execute(
+            select(GraduationSchedule).where(
+                GraduationSchedule.academic_year == cycle_obj.academic_year)
+        ).scalar_one_or_none() if cycle_obj is not None else cls.get_active_schedule(db)
         reasons: list[str] = []
         level = "NORMAL"
 

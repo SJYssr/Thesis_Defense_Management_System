@@ -67,7 +67,8 @@ def _selection_item(db: Session, s: TopicSelection) -> dict:
         ).scalar()
     reviewer = db.get(SysUser, s.reviewer_id) if s.reviewer_id else None
     return {
-        "id": s.id, "topic_id": s.topic_id, "topic_title": topic.title if topic else None,
+        "id": s.id, "cycle_id": s.cycle_id,
+        "topic_id": s.topic_id, "topic_title": topic.title if topic else None,
         "teacher_id": s.teacher_id, "teacher_name": teacher_name, "status": s.status,
         "student_reason": s.student_reason,
         "review_comment": s.review_comment, "review_time": s.review_time.isoformat() if s.review_time else None,
@@ -168,10 +169,17 @@ def apply_selection(body: ApplyRequest, user: CurrentUser = Depends(require_stud
 
 @router.get("")
 def my_selections(user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+    from app.shared.cycle import get_active_cycle
+
+    cycle = get_active_cycle(db, user.profile_id)
     rows = db.execute(
         select(TopicSelection).where(TopicSelection.student_id == user.profile_id).order_by(TopicSelection.id.desc())
     ).scalars().all()
-    return ResponseUtil.success([_selection_item(db, s) for s in rows])
+    return ResponseUtil.success([
+        {**_selection_item(db, s),
+         "is_current": bool(cycle and s.cycle_id == cycle.id and s.active_flag == 1)}
+        for s in rows
+    ])
 
 
 @router.post("/{selection_id}/cancel")

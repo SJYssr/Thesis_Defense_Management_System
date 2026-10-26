@@ -108,6 +108,11 @@ class GraduationWorkflowService:
 
     @classmethod
     def require_can_apply_selection(cls, db: Session, student_id: int) -> None:
+        from app.shared.cycle import academic_year_for
+
+        cycle = cls.get_active_cycle(db, student_id)
+        if cycle is not None and cycle.academic_year != academic_year_for(db):
+            return  # 新学年申请由 ensure_cycle 建新实例, 历史学年选题不能阻塞重做。
         sel = cls.get_active_selection(db, student_id)
         if sel is not None and sel.status == "PENDING":
             raise StageValidationException("您已有一个待审核的选题申请,请等待教师审核")
@@ -163,7 +168,13 @@ class GraduationWorkflowService:
         from app.shared.cycle import ensure_cycle
         from app.shared.progress import ProgressService
 
-        cycle = ensure_cycle(db, selection.student_id, selection.topic_id, selection.teacher_id)
+        cycle = db.get(GraduationCycle, selection.cycle_id) if selection.cycle_id else None
+        if cycle is None:
+            cycle = ensure_cycle(db, selection.student_id, selection.topic_id, selection.teacher_id)
+        else:
+            # 审核历史学年申请时只推进它所属的实例, 不迁移到当前学年或重新激活历史实例。
+            cycle.topic_id = selection.topic_id
+            cycle.teacher_id = selection.teacher_id
         selection.cycle_id = cycle.id
         process = cls._get_or_create_process(db, cycle, selection.topic_id, selection.teacher_id)
         if not process.started_at:
