@@ -309,15 +309,17 @@ def _unreferenced_condition():
     return ~or_(*referenced)
 
 
-def _own_unreferenced_files(db: Session, user: CurrentUser) -> list[SysFile]:
-    """本人上传且尚未被任何业务记录引用的文件(可按 id desc 取前 _STUDENT_FILE_LIMIT 条)."""
-    stmt = (
-        select(SysFile)
-        .where(SysFile.uploader_id == user.id, SysFile.deleted_at.is_(None), _unreferenced_condition())
-        .order_by(SysFile.id.desc())
-        .limit(_STUDENT_FILE_LIMIT)
-    )
-    return list(db.execute(stmt).scalars().all())
+def _eligible_archive_files(db: Session, user: CurrentUser, cycle_id: int | None) -> list[SysFile]:
+    """本人未挂载文件与当前流程毕业材料均可选，避免已提交论文必须重复上传。"""
+    conditions = [_unreferenced_condition()]
+    if cycle_id is not None:
+        material_files = (select(GraduationMaterialFile.file_id)
+                          .join(GraduationMaterial, GraduationMaterial.id == GraduationMaterialFile.material_id)
+                          .where(GraduationMaterial.cycle_id == cycle_id))
+        conditions.append(SysFile.id.in_(material_files))
+    return list(db.execute(select(SysFile).where(
+        SysFile.uploader_id == user.id, SysFile.deleted_at.is_(None), or_(*conditions)
+    ).order_by(SysFile.id.desc()).limit(_STUDENT_FILE_LIMIT)).scalars().all())
 
 
 @router.get("/student/archive/eligibility")
@@ -343,7 +345,7 @@ def student_archive_eligibility(user: CurrentUser = Depends(require_student),
             eligible = True
         except BusinessException as exc:
             reason = exc.message
-    files = _own_unreferenced_files(db, user)
+    files = _eligible_archive_files(db, user, cycle.id if cycle else None)
     return ResponseUtil.success({
         "eligible": eligible,
         "reason": reason,

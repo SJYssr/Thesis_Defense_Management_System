@@ -154,6 +154,18 @@ class ArchiveBaseCase(unittest.TestCase):
 class EligibilityTest(ArchiveBaseCase):
     """GET /student/archive/eligibility: 能提交与否 + 可用文件清单."""
 
+    def test_current_material_files_can_be_reused_for_archive(self):
+        from app.models.business import GraduationMaterialFile
+
+        self.db.add(GraduationMaterialFile(material_id=1, file_id=1, material_type="THESIS"))
+        self.db.add(GraduationMaterialFile(material_id=3, file_id=2, material_type="SOURCE_CODE"))
+        self.db.commit()
+        data = body_json(student_archive_eligibility(user=STUDENT_A, db=self.db))
+        # 当前学年论文可直接勾选; 已挂到另一流程的文件不列入。
+        self.assertEqual([f["file_id"] for f in data["files"]], [1])
+        self.submit(file_ids=(1,))
+        self.assertEqual(self.package_count(), 1)
+
     def test_eligible_student_20230001(self):
         data = body_json(student_archive_eligibility(user=STUDENT_A, db=self.db))
         print(f"[eligibility] 学生20230001: eligible={data['eligible']} reason={data['reason']} "
