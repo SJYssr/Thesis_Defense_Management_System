@@ -197,8 +197,10 @@ class StageEngine:
 
     def student_submit(self, db: Session, student_id: int, user_id: int):
         from app.shared.events import push_notification
+        from app.shared.task_policy import ensure_task_submission_open
 
         self.cfg.require_check(db, student_id)
+        ensure_task_submission_open(db, student_id, self.cfg.stage.value)
         self.require_cycle(db, student_id)
         report = self.get_report(db, student_id)
         if report is None:

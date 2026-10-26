@@ -7,7 +7,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, PermissionDeniedException, ResourceNotFoundException
@@ -21,6 +21,7 @@ from app.models.user import StudentProfile
 from app.shared import state_machine as sm
 from app.shared.events import now
 from app.shared.query import paginate
+from app.shared.task_policy import tasks_for_student
 from app.shared.workflow import GraduationWorkflowService
 
 router = APIRouter(tags=["StageTask"])
@@ -68,12 +69,16 @@ class TaskPatch(TaskCreate):
 
 
 def _parse_dt(v: str | None):
-    if not v:
-        return None
-    try:
-        return datetime.fromisoformat(v)
-    except ValueError:
-        raise BusinessException("时间格式错误, 应为 ISO 格式(2026-09-30T18:00:00)")
+    from app.modules.schedule.router import to_naive
+
+    return to_naive(v, "task")
+
+
+def _task_times(body: TaskCreate):
+    start, end = _parse_dt(body.opens_at), _parse_dt(body.due_at)
+    if start and end and start >= end:
+        raise BusinessException("任务开放时间必须早于截止时间", 40002)
+    return start, end
 
 
 def _task_item(t: StageTask) -> dict:
@@ -103,11 +108,8 @@ def list_tasks(academic_year: str | None = None, stage: str | None = None, statu
         conds.append(StageTask.stage == stage)
     if status:
         conds.append(StageTask.status == status)
-    total = db.execute(select(func.count(StageTask.id)).where(*conds)).scalar()
-    rows = db.execute(
-        select(StageTask).where(*conds).order_by(StageTask.id.desc())
-        .offset((page - 1) * page_size).limit(page_size)
-    ).scalars().all()
+    rows, total = paginate(db, select(StageTask).order_by(StageTask.id.desc()),
+                           page=page, size=page_size, filters=conds)
     return ResponseUtil.page([_task_item(t) for t in rows], total, page, page_size)
 
 
@@ -129,20 +131,21 @@ def _load_task(db: Session, task_id: int, user: CurrentUser) -> StageTask:
 
 @router.post("/stage-tasks")
 def create_task(body: TaskCreate, user: CurrentUser = Depends(require_teacher_or_admin), db: Session = Depends(get_db)):
+    opens_at, due_at = _task_times(body)
     t = StageTask(
         academic_year=body.academic_year, stage=body.stage, title=body.title,
         description=body.description,
         requirements_json=json.dumps(body.requirements, ensure_ascii=False) if body.requirements else None,
-        opens_at=_parse_dt(body.opens_at), due_at=_parse_dt(body.due_at),
+        opens_at=opens_at, due_at=due_at,
         late_policy=body.late_policy, college_id=body.college_id, major_id=body.major_id,
         class_id=body.class_id, status="DRAFT", created_by=user.id, current_version=1,
     )
     db.add(t)
-    db.commit()
+    db.flush()
     if body.status == "PUBLISHED":
         # 兼容旧请求体: 发布只能经状态机, 不接受直接赋值 status
         sm.transition(db, sm.STAGE_TASK, t, "publish", user)
-        db.commit()
+    db.commit()
     return ResponseUtil.success(_task_item(t),
                                 message="任务已发布" if t.status == "PUBLISHED" else "任务已创建")
 
@@ -156,16 +159,19 @@ def update_task(task_id: int, body: TaskPatch, user: CurrentUser = Depends(requi
     D59: 本接口不动 status, 发布/关闭走 /publish、/close 两个动作端点。
     """
     t = _load_task(db, task_id, user)
+    opens_at, due_at = _task_times(body)
     snapshot = {f: getattr(t, f).isoformat() if isinstance(getattr(t, f), datetime) else getattr(t, f)
                 for f in _TASK_FIELDS}
     db.add(StageTaskVersion(task_id=t.id, version_no=t.current_version,
                             snapshot_json=json.dumps(snapshot, ensure_ascii=False, default=str),
                             changed_by=user.id))
     t.title = body.title
+    t.academic_year = body.academic_year
+    t.stage = body.stage
     t.description = body.description
     t.requirements_json = json.dumps(body.requirements, ensure_ascii=False) if body.requirements else None
-    t.opens_at = _parse_dt(body.opens_at)
-    t.due_at = _parse_dt(body.due_at)
+    t.opens_at = opens_at
+    t.due_at = due_at
     t.late_policy = body.late_policy
     t.college_id = body.college_id
     t.major_id = body.major_id
@@ -214,21 +220,7 @@ def close_task(task_id: int, user: CurrentUser = Depends(require_teacher_or_admi
 @router.get("/stage-tasks/mine")
 def my_tasks(user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     """学生待办: 匹配学年与适用范围, 携带该阶段材料的服务端提交/审核状态与逾期标记."""
-    cycle = db.execute(
-        select(GraduationCycle).where(GraduationCycle.student_id == user.profile_id,
-                                      GraduationCycle.status == "ACTIVE")
-        .order_by(GraduationCycle.id.desc()).limit(1)
-    ).scalar_one_or_none()
-    if cycle is None:
-        return ResponseUtil.success({"academic_year": None, "tasks": []})
-
-    sp = db.get(StudentProfile, user.profile_id)
-    rows = db.execute(
-        select(StageTask).where(
-            StageTask.academic_year == cycle.academic_year,
-            StageTask.status == "PUBLISHED",
-        ).order_by(StageTask.due_at)
-    ).scalars().all()
+    year, rows = tasks_for_student(db, user.profile_id)
 
     # 服务端一次取全阶段材料状态
     snap = GraduationWorkflowService.get_stage_snapshot(db, user.profile_id)
@@ -239,13 +231,6 @@ def my_tasks(user: CurrentUser = Depends(require_student), db: Session = Depends
     current = now()
     tasks = []
     for t in rows:
-        if t.college_id is not None and t.college_id != sp.college_id:
-            continue
-        if t.major_id is not None and t.major_id != sp.major_id:
-            continue
-        if t.class_id is not None and t.class_id != sp.class_id:
-            continue
-
         if t.stage == "SELECTION":
             m_status = sel.status if sel else "NOT_SELECTED"
             m_submitted = sel.created_at if sel else None
@@ -276,7 +261,7 @@ def my_tasks(user: CurrentUser = Depends(require_student), db: Session = Depends
             "review_comment": m_comment,
             "done": done, "overdue": overdue, "not_opened": not_opened,
         })
-    return ResponseUtil.success({"academic_year": cycle.academic_year, "tasks": tasks})
+    return ResponseUtil.success({"academic_year": year, "tasks": tasks})
 
 
 def _status_cn(s: str) -> str:

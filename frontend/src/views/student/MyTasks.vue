@@ -39,7 +39,7 @@ onMounted(load)
   <section v-if="loaded && !tasks.length" class="page-card">
     <el-empty description="当前学年暂无已发布任务">
       <template #description>
-        <p>当前学年{{ year ? `(${year})` : '' }}暂无已发布任务。<br />请先完成选题，任务发布后将在此显示截止时间与所需材料。</p>
+        <p>当前学年{{ year ? `(${year})` : '' }}暂无已发布任务。<br />任务发布后将在此显示截止时间与所需材料。</p>
       </template>
       <el-button type="primary" @click="router.push('/student/topics')">前往题目中心</el-button>
     </el-empty>

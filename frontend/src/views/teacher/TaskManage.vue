@@ -33,6 +33,7 @@ function openEdit(t: any) {
     academic_year: t.academic_year, stage: t.stage, title: t.title, description: t.description || '',
     requirements: (t.requirements || []).join('、'), opens_at: t.opens_at || '', due_at: t.due_at || '',
     late_policy: t.late_policy, status: t.status,
+    college_id: t.college_id, major_id: t.major_id, class_id: t.class_id,
   })
   dialogVisible.value = true
 }

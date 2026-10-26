@@ -298,7 +298,10 @@ def delete_material_file(mf_id: int, user: CurrentUser = Depends(require_student
 
 @router.post("/submit")
 def submit_material(user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+    from app.shared.task_policy import ensure_task_submission_open
+
     GraduationWorkflowService.require_can_submit_material(db, user.profile_id)
+    ensure_task_submission_open(db, user.profile_id, "MATERIAL")
     m = _get_or_create(db, user.profile_id)
     if m.status not in ("NOT_SUBMITTED", "DRAFT", "REJECTED", "RESUBMIT_REQUIRED"):
         raise BusinessException("当前状态不允许提交")

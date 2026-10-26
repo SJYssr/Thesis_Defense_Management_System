@@ -222,8 +222,11 @@ check("教师修改任务(版本化)", r.json()["code"] == 0 and r.json()["data"
 
 r = client.post(f"{BASE}/stage-tasks", headers=auth(t1),
                 json={"academic_year": "2025-2026", "stage": "OPENING", "title": "逾期示例任务",
-                      "requirements": ["开题报告"], "opens_at": now_iso, "due_at": due_pass,
+                      "requirements": ["开题报告"],
+                      "opens_at": (datetime.now() - timedelta(days=7)).isoformat(timespec="seconds"),
+                      "due_at": due_pass,
                       "status": "PUBLISHED"})
+check("创建合法逾期任务", r.json()["code"] == 0, r.text[:200])
 overdue_task_id = r.json()["data"]["id"]
 
 r = client.get(f"{BASE}/stage-tasks/mine", headers=auth(s6))

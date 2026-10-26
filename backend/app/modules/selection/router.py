@@ -118,12 +118,14 @@ def _approved_selection_ids(db: Session, topic_id: int) -> list[int]:
 
 @router.post("")
 def apply_selection(body: ApplyRequest, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
-    from app.shared.cycle import ensure_cycle
+    from app.shared.cycle import academic_year_for, ensure_cycle
+    from app.shared.task_policy import ensure_task_submission_open
 
     GraduationWorkflowService.require_can_apply_selection(db, user.profile_id)
 
     # 选题时间窗校验(roadmap 八十五章"允许选题时间"): 以当前激活学年配置为准
     ProgressService.ensure_selection_window_open(db)
+    ensure_task_submission_open(db, user.profile_id, "SELECTION", academic_year_for(db))
 
     topic = db.execute(
         select(GraduationTopic).where(
