@@ -148,10 +148,10 @@ onMounted(() => { loadSessions(); loadRubrics() })
             <el-table-column label="操作" width="300" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" text type="primary" @click="doPreview(row)">复算预览</el-button>
-                <el-button v-if="row.result?.status === 'PENDING'" size="small" text type="warning" @click="calculate(row)">复算结论</el-button>
+                <el-button v-if="row.result && ['PENDING', 'WITHDRAWN'].includes(row.result.status)" size="small" text type="warning" @click="calculate(row)">复算结论</el-button>
                 <el-button v-if="row.result && ['READY', 'UNDER_REVIEW'].includes(row.result.status)" size="small" type="success" @click="publish(row)">发布</el-button>
                 <el-button v-if="row.result?.status === 'PUBLISHED'" size="small" type="warning" @click="withdraw(row)">撤回</el-button>
-                <el-button v-if="row.result && ['PUBLISHED', 'UNDER_REVIEW'].includes(row.result.status)" size="small" text type="danger" @click="reopen(row)">复核重开</el-button>
+                <el-button v-if="row.result && ['PUBLISHED', 'UNDER_REVIEW', 'WITHDRAWN', 'READY'].includes(row.result.status)" size="small" text type="danger" @click="reopen(row)">复核重开</el-button>
               </template>
             </el-table-column>
           </el-table>

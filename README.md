@@ -13,7 +13,7 @@
 → 终期答辩 → 终期审核 → 毕业材料 → 材料审核 → 毕业
 ```
 
-- **管理员**: 数据统计(ECharts)、题目/选题/四阶段全局视图、用户管理、公告管理、全局进度、系统配置(名称/AI开关/限流/上传上限/LLM模型名覆盖, 即时生效)、学年阶段时间配置(选题/开题/中期/终期/材料窗口, 激活即切换; 选题提交按时间窗校验)、Prompt 配置(七场景 System Prompt 覆盖/停用/重置, 版本留痕, 防注入安全声明强制追加不可删改)、AI 调用日志(场景/Token/耗时明细与汇总)
+- **管理员**: 数据统计(ECharts)、题目/选题/四阶段全局视图、用户管理、公告管理、全局进度、系统配置(名称/AI开关/限流/上传上限, 即时生效)与 AI 供应商及能力绑定、学年阶段时间配置(选题/开题/中期/终期/材料窗口, 激活即切换; 选题提交按时间窗校验)、Prompt 配置(七场景 System Prompt 覆盖/停用/重置, 版本留痕, 防注入安全声明强制追加不可删改)、AI 调用日志(场景/Token/耗时明细与汇总)
 - **教师**: 我的题目、四阶段审核(含终期评分)、学生进度、AI 进度分析、一键提醒
 - **学生**: 题目中心、我的选题、四阶段材料(版本管理+审核轨迹)、毕业材料上传、进度时间轴
 
@@ -49,9 +49,10 @@ docker compose up -d        # MySQL 8 (3306) + redis-stack (6380, 含 RediSearch
 ```bash
 cd backend
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env        # 按需修改; 不填 LLM API Key 也可运行(内置离线 Mock)
-.venv/bin/python seed.py    # 自动补齐 Alembic 迁移 + 种子数据 + 演示论文入知识库
-.venv/bin/python -m uvicorn app.main:app --port 8000
+cp .env.example .env        # 必须设置随机 SECRET_KEY(至少32字符)和有效 UPLOAD_DIR
+.venv/bin/python -m alembic upgrade head
+AI_TEST_MODE=mock .venv/bin/python seed.py    # 仅开发验收: 种子数据与演示论文索引
+AI_TEST_MODE=mock .venv/bin/python -m uvicorn app.main:app --port 8000
 ```
 
 健康检查: `curl http://127.0.0.1:8000/api/v1/health`
@@ -73,41 +74,41 @@ npm run dev                 # http://localhost:5174 (已配置 /api 代理到 80
 | 学生 | 20230001 | 123456 | **主演示账号**: 已到毕业材料阶段, 论文已入知识库, 可直接体验 AI 模拟答辩 |
 | 学生 | 20230002~07 | 123456 | 各阶段分布(供统计/审核演示) |
 
-### 5. 接入真实大模型(可选)
+### 5. 接入真实大模型
 
-编辑 `backend/.env`:
+登录管理员账号，在「系统设置 → AI 服务」添加供应商（服务地址、API Key），再把会话、向量和精排能力绑定到对应供应商与模型。配置只存数据库，保存即生效；密钥加密存储，接口仅返回是否已配置与脱敏提示。
 
-```env
-LLM_PROVIDER=auto           # 有 Key 自动启用真实 API
-LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4   # 智谱; DeepSeek/通义/OpenAI 均兼容
-LLM_API_KEY=你的Key
-LLM_MODEL=glm-4-flash
+使用真实模型时启动命令不带 `AI_TEST_MODE`。未配置供应商时，AI 接口明确提示服务未配置（50301），不会静默输出模拟回答。开发验收可以显式使用 `AI_TEST_MODE=mock`；生产环境禁止启用该替身。更换向量模型后，应在知识准备页重建已有文档索引。
 
-EMBEDDING_API_KEY=你的Key
-EMBEDDING_MODEL=embedding-3
-```
-
-重启后端即可, 代码零修改(所有模型经 LLMService/EmbeddingService 抽象)。
-
-### 6. 存量库迁移(已建库升级到正式答辩版)
+### 6. 数据库升级
 
 ```bash
-cd backend && .venv/bin/python backfill_cycles.py
-# 幂等: 建新表 → 补 cycle_id 列 → 回填 → 唯一约束由"单学生"切换为"单流程实例"
-# 旧 final_defense.score 仅保留为旧版材料评分, 不会生成任何正式答辩结论
+cd backend && .venv/bin/python -m alembic upgrade head
 ```
+
+正常初始化和升级都通过 Alembic 执行。`backfill_cycles.py` 只用于旧版流程数据的专项回填，不代替迁移命令；旧 `final_defense.score` 不会被转换为正式答辩结论。
 
 ### 7. 自测
 
-```bash
-cd backend && .venv/bin/python -m unittest discover -s tests   # 42 项单测(状态分离/冲突/复算/归档/配置/PPTX/学年时间窗)
-cd backend && .venv/bin/python smoke_test.py                    # 121 项断言
-# 登录鉴权/RBAC/选题并发/阶段状态机强校验/对象级权限/RAG学生隔离/AI答辩全流程/
-# PPT/进度分析/SSE/Dashboard + 阶段任务/答辩排期冲突/评审成绩闭环/归档与文件权限
+后端单元测试、真库冒烟及前端三项校验：
 
-cd backend && .venv/bin/python rag_experiment.py               # RAG 三臂检索实验(24题标注集)
-# vector / keyword / hybrid(默认) 对比 Recall@K、MRR、命中率; --with-answers 需真实 LLM Key
+```bash
+cd backend
+.venv/bin/python -m unittest discover -s tests
+# 以下会重置开发库和 Redis 0, 仅对可重建的本地验收数据执行。
+# 必须先清 Redis 再 seed; 正在运行的后端也必须使用 AI_TEST_MODE=mock。
+docker exec graduation-redis redis-cli -n 0 FLUSHDB \
+  && AI_TEST_MODE=mock .venv/bin/python seed.py --force \
+  && AI_TEST_MODE=mock .venv/bin/python smoke_test.py
+cd ../frontend
+npm run build && npm run check:contract && npm run verify:401
 ```
+
+冒烟测试非幂等，必须紧接 seed。覆盖登录、角色与对象权限、材料版本、任务截止拦截、正式评分、归档授权，以及新学生从选题到论文自动索引、评分发布、归档毕业和撤回复核的完整链路。`SMOKE_BASE_URL` 可指定独立验收服务的 API 前缀；数据库、Redis 和上传目录必须与该服务使用同一组隔离配置。
+
+2026-10-26 验收：558 项后端用例（3 项需要专用 MySQL 并发环境而跳过）、264 项真库冒烟断言、前端构建与接口契约、34 项登录恢复断言通过。范围和证据见 [本轮审阅记录](docs/project-audit-2026-10-26.md)。AI 验收使用显式替身，不代表真实模型质量已验收。
+
+RAG 检索实验：在 backend 目录执行 `.venv/bin/python rag_experiment.py`；真实回答实验需先配置供应商。
 
 生产环境备份-恢复验收记录见 `docs/prod-restore-drill.md`（五容器部署 + nginx 端到端 + 行级校验闭环）。
 
@@ -165,7 +166,7 @@ backend/
 │   └── shared/        # 工作流状态机/进度规则引擎/学年流程/文件权限/存储/事件
 ├── backfill_cycles.py # P0 迁移: cycle_id 回填 + 唯一约束切换(幂等)
 ├── seed.py            # 种子数据(含演示论文+答辩场次+评分+归档)
-└── smoke_test.py      # 121项核心链路自测
+└── smoke_test.py      # 接口与新学生完整毕业链路自测
 
 frontend/src/
 ├── api/ stores/ router/ layouts/
@@ -184,7 +185,7 @@ frontend/src/
 - AI: `/ai/documents/*`(索引) `/ai/rag/query`(检索测试) `/ai/chat/stream`(SSE)
   `/ai/defense/*`(问题库/会话/回答/追问/报告) `/ai/ppt-outline/generate` `/ai/ppt-outline/export`(真实.pptx)
   `/ai/progress/student/{id}/analyse`
-- 系统: `/config/public`(登录前公开配置) `/admin/system-configs`(配置读写, 含 ai_llm_model 覆盖) `/admin/ai-model-info`(LLM/Embedding 当前生效信息) `/admin/ai-prompts`(Prompt 模板覆盖/停用/重置/版本历史) `/admin/academic-schedules`(学年阶段时间配置, 激活唯一) `/academic-schedule/active`(当前学年窗口) `/admin/ai-usage-logs`(AI 调用明细+汇总) `/admin/progress/overdue-scan`(逾期风险扫描, 亦由 Celery Beat 每日 01:00 自动执行)
+- 系统: `/config/public`(登录前公开配置) `/admin/system-configs`(业务配置读写) `/admin/ai/providers`(供应商管理) `/admin/ai/bindings`(能力绑定) `/admin/ai/overview`(AI 生效信息) `/admin/ai-prompts`(Prompt 模板覆盖/停用/重置/版本历史) `/admin/academic-schedules`(学年阶段时间配置, 激活唯一) `/academic-schedule/active`(当前学年窗口) `/admin/ai-usage-logs`(AI 调用明细+汇总) `/admin/progress/overdue-scan`(逾期风险扫描, 亦由 Celery Beat 每日 01:00 自动执行)
 - 完整文档: 启动后访问 `http://127.0.0.1:8000/docs`
 
 ## 六、生产部署(Docker Compose 五容器)
@@ -195,7 +196,7 @@ nginx(前端静态+/api反代) ← backend(FastAPI×2) ← mysql8 + redis-stack
 ```
 
 ```bash
-cp .env.prod.example .env.prod    # 修改密钥与大模型 Key
+cp .env.prod.example .env.prod    # 设置随机 SECRET_KEY 与数据库密码; AI 在管理端配置
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml exec backend python seed.py   # 首次初始化演示数据(可选)
 # 访问 http://localhost:8080
@@ -217,13 +218,13 @@ docker compose -f docker-compose.prod.yml exec backend python seed.py   # 首次
 | P3 RAG | 解析/分块/Embedding/Redis向量/Hybrid检索/测试接口 | ✅ |
 | P4 AI答辩 | 问题库/会话/四维评分/动态追问/报告/PPT大纲 | ✅ |
 | P5 数据统计 | 三角色首页/ECharts 四图/AI用量/答辩运营统计 | ✅ |
-| P6 测试 | 121项核心场景自测(含7个必测场景+RAG隔离/学年时间窗/AI调用日志) + 42项单测 | ✅ |
+| P6 测试 | 单元测试、真库接口与完整毕业链路、前端契约与登录恢复验收，详见审阅记录 | ✅ |
 | 执行版P0 | 学年流程实例/三状态域分离/迁移脚本 | ✅ |
 | 执行版P1 | 阶段任务/答辩排期/冲突校验/改期留痕 | ✅ |
 | 执行版P2 | 评分表/评委评分锁定/成绩复算与发布 | ✅ |
 | 执行版P3 | 成果归档/公开授权/下载审计/撤回 | ✅ |
 | 执行版P4 | 测试、运营统计、移动端回归、开发与生产两级备份恢复演练与验收 ✅ | ✅ |
 
-> 说明: LLM/Embedding 未配置 API Key 时自动降级为内置离线实现(Mock LLM + 本地哈希向量),
-> 全部链路可离线演示; 配置 Key 后无需改码即切换真实大模型。
+> 说明: AI 供应商与能力绑定只从数据库解析；未配置会明确报错。
+> 仅开发测试显式使用 AI_TEST_MODE=mock 时启用模板回答与哈希向量，生产环境禁止。
 > AI 模拟答辩分数仅为练习结果, 不进入正式成绩; 正式结论只来自评委评分的发布链路。

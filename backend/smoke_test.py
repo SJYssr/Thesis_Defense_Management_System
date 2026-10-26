@@ -1,11 +1,13 @@
 """核心链路自测: 覆盖 roadmap 九十章的必测业务场景."""
 import json
+import os
 import sys
+import time
 
 import httpx
 
-BASE = "http://127.0.0.1:8000/api/v1"
-client = httpx.Client(timeout=120)
+BASE = os.getenv("SMOKE_BASE_URL", "http://127.0.0.1:8000/api/v1").rstrip("/")
+client = httpx.Client(timeout=120, trust_env=False)
 passed, failed = 0, 0
 
 
@@ -723,6 +725,136 @@ check("孤儿文件清理 dry_run 返回规模与可删清单",
 r = client.post(f"{BASE}/admin/files/gc", headers=auth(s1), params={"dry_run": True})
 check("学生不可调用孤儿清理 403", r.status_code == 403 and r.json()["code"] == 40300,
       f"{r.status_code} {r.text[:150]}")
+print("== 20. 新学生完整毕业链路(选题至归档, 含自动索引与撤回复核) ==")
+
+
+def workflow_call(method, path, token, **kwargs):
+    response = client.request(method, f"{BASE}{path}", headers=auth(token), **kwargs)
+    body = response.json()
+    check(f"完整链路 {method} {path}", body["code"] == 0, response.text[:250])
+    if body["code"] != 0:
+        raise AssertionError(f"完整链路中断: {method} {path}: {body['message']}")
+    return body["data"]
+
+
+# 学生7在 seed 后尚未选题; 整条链路通过实际 HTTP 写入并读回, 不从 ORM 预置中间状态。
+year = workflow_call("GET", "/academic-schedule/active", s7)["academic_year"]
+tasks_before = workflow_call("GET", "/stage-tasks/mine", s7)
+check("选题前也能看到本学年已发布任务", tasks_before["academic_year"] == year and bool(tasks_before["tasks"]))
+new_topic = workflow_call("POST", "/teacher/topics", t1, json={
+    "title": "完整毕业链路验收题目", "description": "从选题、论文索引到正式评分与归档的验收", "max_students": 1})["id"]
+workflow_call("POST", f"/teacher/topics/{new_topic}/publish", t1)
+new_selection = workflow_call("POST", "/student/selections", s7, json={
+    "topic_id": new_topic, "reason": "我已完成相关技术学习，希望完成全流程毕业设计。"})["id"]
+workflow_call("POST", f"/teacher/selections/{new_selection}/approve", t1, json={"comment": "同意"})
+
+# 种子数据的终期任务已经截止。先验证真实拦截, 再由管理员明确延期后继续。
+final_tasks = workflow_call("GET", "/stage-tasks", admin, params={
+    "academic_year": year, "stage": "FINAL", "status": "PUBLISHED", "page_size": 100})["items"]
+for student_path, teacher_path, fields in [
+    ("opening-report", "opening-reports", ["title", "research_background", "research_content", "research_method", "schedule_plan"]),
+    ("midterm", "midterms", ["progress_description", "completed_content", "next_plan"]),
+    ("final-defense", "final-defenses", ["summary", "technical_solution", "test_result"]),
+]:
+    content = {field: "毕业设计全流程验收内容，验证业务状态、版本与持久化。" for field in fields}
+    saved = workflow_call("POST", f"/student/{student_path}", s7, json={"content": content})
+    if student_path == "final-defense":
+        denied = client.post(f"{BASE}/student/{student_path}/submit", headers=auth(s7))
+        check("已截止且禁止补交的终期任务拒绝真实提交", denied.json()["code"] == 40003, denied.text[:200])
+        for task in final_tasks:
+            changed = {**task, "due_at": (datetime.now() + timedelta(days=7)).isoformat(timespec="seconds")}
+            workflow_call("PUT", f"/stage-tasks/{task['id']}", admin, json=changed)
+    workflow_call("POST", f"/student/{student_path}/submit", s7)
+    if student_path == "opening-report":
+        workflow_call("POST", f"/teacher/{teacher_path}/{saved['id']}/reject", t1,
+                      json={"decision": "request_revision", "comment": "补充技术路线后重新提交"})
+        workflow_call("POST", f"/student/{student_path}", s7, json={"content": content})
+        workflow_call("POST", f"/student/{student_path}/submit", s7)
+        versions = workflow_call("GET", f"/student/{student_path}/versions", s7)
+        check("退回修改后保留两份提交版本", len(versions) == 2, str(versions)[:100])
+    workflow_call("POST", f"/teacher/{teacher_path}/{saved['id']}/approve", t1, json={"comment": "审核通过"})
+
+thesis_bytes = ("全流程论文检索标识星海。系统使用FastAPI实现业务接口，Redis完成向量检索，"
+                "采用学生标识隔离论文数据，并以状态机处理正式评分和归档。" * 20).encode("utf-8")
+material = workflow_call("POST", "/student/material/files", s7, params={"material_type": "THESIS"},
+                         files={"file": ("full-flow-thesis.txt", thesis_bytes, "text/plain")})
+file_id = material["files"][-1]["file_id"]
+indexed = None
+for _ in range(60):
+    docs = client.get(f"{BASE}/ai/documents", headers=auth(s7), params={"size": 100}).json()["data"]["items"]
+    indexed = next((doc for doc in docs if doc["file_id"] == file_id), None)
+    if indexed and indexed["index_status"] in ("SUCCESS", "FAILED"):
+        break
+    time.sleep(0.5)
+check("论文上传后无需手动重建即自动完成索引", bool(indexed and indexed["index_status"] == "SUCCESS"), str(indexed)[:250])
+chunks = workflow_call("POST", "/ai/rag/query", s7, json={"query": "全流程论文检索标识星海", "top_k": 5})["chunks"]
+check("检索实际命中新上传的论文", bool(indexed and any(c["document_id"] == indexed["id"] for c in chunks)))
+workflow_call("POST", "/student/material/submit", s7)
+workflow_call("POST", f"/teacher/materials/{material['id']}/approve", t1, json={"comment": "材料齐全"})
+progress = workflow_call("GET", "/student/progress", s7)
+check("仅材料通过不能判定毕业", progress["progress_percent"] <= 90 and not progress.get("completed_at"))
+cycle_id = progress["formal_defense"]["cycle_id"]
+session = workflow_call("POST", "/defense-sessions", admin, json={
+    "academic_year": year, "stage": "FINAL", "title": "完整毕业链路正式答辩",
+    "starts_at": (datetime.now() - timedelta(minutes=1)).isoformat(timespec="seconds"),
+    "ends_at": (datetime.now() + timedelta(hours=2)).isoformat(timespec="seconds"),
+    "location": "全流程验收教室", "capacity": 2})["id"]
+for teacher_id, role in [(1, "CHAIR"), (2, "EXAMINER")]:
+    workflow_call("POST", f"/defense-sessions/{session}/examiners", admin,
+                  json={"teacher_id": teacher_id, "examiner_role": role})
+seat = workflow_call("POST", f"/defense-sessions/{session}/assignments", admin, json={"cycle_ids": [cycle_id]})["added"][0]
+drafts = workflow_call("GET", "/defense-sessions/mine", s7)
+check("草稿排期对学生不可见", all(item["id"] != session for item in drafts))
+workflow_call("POST", f"/defense-sessions/{session}/publish", admin)
+workflow_call("POST", f"/defense-assignments/{seat}/acknowledge", s7)
+workflow_call("POST", f"/defense-sessions/{session}/start", admin)
+workflow_call("POST", f"/defense-assignments/{seat}/seat", admin, json={"seat_status": "ATTENDED"})
+review = workflow_call("GET", f"/defense-assignments/{seat}/review", t1)
+scores = {weight["name"]: 88 for weight in review["rubric"]["weights"]}
+for token in (t1, t2):
+    workflow_call("POST", f"/defense-assignments/{seat}/scores/submit", token,
+                  json={"scores": scores, "comment": "完整毕业链路评审"})
+result = workflow_call("POST", "/defense-results/generate", admin, json={"assignment_id": seat})["id"]
+workflow_call("POST", f"/defense-results/{result}/publish", admin)
+eligibility = workflow_call("GET", "/student/archive/eligibility", s7)
+check("归档可直接复用已提交论文", eligibility["eligible"] and any(f["file_id"] == file_id for f in eligibility["files"]))
+package = workflow_call("POST", "/student/archive/packages", s7, json={
+    "title": "完整毕业链路归档", "files": [{"file_id": file_id, "file_role": "THESIS"}]})["id"]
+workflow_call("POST", f"/archive-packages/{package}/approve", admin, json={"comment": "确认归档"})
+progress = workflow_call("GET", "/student/progress", s7)
+check("正式通过且归档确认后进度达到100并记录毕业时间",
+      progress["progress_percent"] == 100 and bool(progress["completed_at"]) and progress["formal_defense"]["score"] == 88)
+detail = workflow_call("GET", f"/archive-packages/{package}", s7)
+download = client.get(f"{BASE}/archive-files/{detail['files'][0]['id']}/download", headers=auth(s7))
+check("归档文件下载内容与上传原文一致", download.status_code == 200 and download.content == thesis_bytes)
+workflow_call("POST", f"/defense-results/{result}/withdraw", admin, json={"reason": "完整链路复核撤回验收"})
+progress = workflow_call("GET", "/student/progress", s7)
+check("撤回正式结论后毕业时间与满分进度立即回退",
+      progress["progress_percent"] <= 90 and not progress.get("completed_at"))
+check("进度页正确展示撤回复核且不泄露原成绩",
+      progress["formal_defense"]["status"] == "WITHDRAWN"
+      and progress["formal_defense"]["score"] is None and progress["formal_defense"]["decision"] is None)
+workflow_call("POST", f"/defense-results/{result}/calculate", admin)
+workflow_call("POST", f"/defense-results/{result}/publish", admin)
+progress = workflow_call("GET", "/student/progress", s7)
+check("撤回后可复算重新发布并恢复毕业状态", progress["progress_percent"] == 100 and bool(progress["completed_at"]))
+score_detail = workflow_call("GET", f"/defense-results/{result}/preview", admin)["detail"]
+for score in score_detail:
+    workflow_call("POST", f"/examiner-scores/{score['score_id']}/reopen", admin, json={"reason": "逐评委复核完整链路"})
+progress = workflow_call("GET", "/student/progress", s7)
+check("重开全部评委评分后毕业状态立即回退", progress["progress_percent"] <= 90 and not progress.get("completed_at"))
+for token in (t1, t2):
+    workflow_call("POST", f"/defense-assignments/{seat}/scores/submit", token,
+                  json={"scores": {name: 92 for name in scores}, "comment": "复核后评分"})
+    revised = workflow_call("GET", f"/defense-assignments/{seat}/review", token)
+    check("复核重交产生新版本评分", revised["my_score"]["version"] == 2)
+workflow_call("POST", f"/defense-results/{result}/publish", admin)
+progress = workflow_call("GET", "/student/progress", s7)
+check("复核发布使用新评分并恢复毕业", progress["formal_defense"]["score"] == 92
+      and progress["progress_percent"] == 100 and bool(progress["completed_at"]))
+for task in final_tasks:
+    workflow_call("PUT", f"/stage-tasks/{task['id']}", admin, json=task)
+
 # D13: 登出后旧 access token 立即失效(token_version + 1 + jti 黑名单)
 r = client.post(f"{BASE}/auth/logout", headers=auth(s1))
 check("D13 登出成功", r.json()["code"] == 0, r.text[:150])

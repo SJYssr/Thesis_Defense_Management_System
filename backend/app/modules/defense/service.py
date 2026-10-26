@@ -650,7 +650,9 @@ def withdraw_result(db: Session, result_id: int, actor, reason: str) -> DefenseR
 def mark_result_under_review(db: Session, result: DefenseResult, reason: str | None,
                              actor=None) -> DefenseResult:
     """已发布结论转入复核(UNDER_REVIEW), 经统一状态机(PUBLISHED -> UNDER_REVIEW)."""
-    transition(db, RESULT, result, "review", actor, comment=reason)
+    if result.status != ResultStatus.UNDER_REVIEW.value:
+        transition(db, RESULT, result, "review", actor, comment=reason)
     if reason:
         result.withdraw_reason = reason
+    _recompute_progress(db, result.cycle_id)
     return result

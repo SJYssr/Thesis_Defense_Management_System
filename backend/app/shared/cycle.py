@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models.business import GraduationCycle, GraduationSchedule
-from app.models.defense import DefenseResult
+from app.models.defense import DefenseAssignment, DefenseResult, DefenseSession
 
 log = logging.getLogger("app.cycle")
 
@@ -114,6 +114,7 @@ def formal_defense_snapshot(db: Session, student_id: int, academic_year: str | N
     """
     cycle = get_active_cycle(db, student_id)
     result = None
+    pending_status = "NOT_SCHEDULED"
     if cycle is not None:
         result = db.execute(
             select(DefenseResult)
@@ -124,11 +125,25 @@ def formal_defense_snapshot(db: Session, student_id: int, academic_year: str | N
             )
             .order_by(DefenseResult.id.desc())
         ).scalars().first()
+        if result is None:
+            result = db.execute(select(DefenseResult).where(
+                DefenseResult.cycle_id == cycle.id, DefenseResult.stage == "FINAL"
+            ).order_by(DefenseResult.id.desc())).scalars().first()
+        if result is None:
+            session = db.execute(select(DefenseSession)
+                                 .join(DefenseAssignment, DefenseAssignment.session_id == DefenseSession.id)
+                                 .where(DefenseAssignment.cycle_id == cycle.id,
+                                        DefenseSession.stage == "FINAL",
+                                        DefenseSession.status.notin_(["DRAFT", "CANCELLED"]))
+                                 .order_by(DefenseSession.starts_at.desc())).scalars().first()
+            if session is not None:
+                pending_status = "SCHEDULED" if session.status == "PUBLISHED" else "UNDER_REVIEW"
+    published = result is not None and result.status == "PUBLISHED"
     return {
         "academic_year": cycle.academic_year if cycle is not None else (academic_year or academic_year_for(db)),
         "cycle_id": cycle.id if cycle is not None else None,
-        "status": result.status if result else "NOT_SCHEDULED",
-        "decision": result.decision if result else None,
-        "score": result.score if result else None,
-        "published_at": result.published_at.isoformat() if result and result.published_at else None,
+        "status": result.status if result else pending_status,
+        "decision": result.decision if published else None,
+        "score": result.score if published else None,
+        "published_at": result.published_at.isoformat() if published and result.published_at else None,
     }

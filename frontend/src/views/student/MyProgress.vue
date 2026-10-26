@@ -25,6 +25,8 @@
         <span v-if="data.formal_defense.score != null" class="defense-score">{{ data.formal_defense.score }} 分</span>
       </p>
       <p v-else-if="data?.formal_defense?.status === 'NOT_SCHEDULED'" class="defense-muted">尚未安排正式答辩。材料审核结果与 AI 模拟答辩成绩均不代表正式答辩结论。</p>
+      <p v-else-if="data?.formal_defense?.status === 'WITHDRAWN'" class="defense-muted">正式答辩结论已撤回，成绩复核中，重新发布后显示。</p>
+      <p v-else-if="data?.formal_defense?.status === 'SCHEDULED'" class="defense-muted">已安排正式答辩，请在「我的答辩」确认时间与地点。</p>
       <p v-else class="defense-muted">正式答辩结果尚未发布。</p>
     </section>
 

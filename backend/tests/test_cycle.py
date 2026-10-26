@@ -83,6 +83,35 @@ class ActiveCycleTest(unittest.TestCase):
 
 
 class FormalDefenseSnapshotTest(unittest.TestCase):
+    def test_withdrawn_result_keeps_review_status_but_hides_score(self):
+        with new_session() as db:
+            db.add(GraduationCycle(id=1, academic_year="2026-2027", student_id=1, status="ACTIVE"))
+            db.add(DefenseResult(id=1, assignment_id=1, cycle_id=1, stage="FINAL",
+                                 status="WITHDRAWN", decision="PASS", score=88))
+            db.flush()
+            snapshot = formal_defense_snapshot(db, 1)
+            self.assertEqual(snapshot["status"], "WITHDRAWN")
+            self.assertIsNone(snapshot["score"])
+            self.assertIsNone(snapshot["decision"])
+            self.assertIsNone(snapshot["published_at"])
+
+    def test_published_session_without_result_is_scheduled(self):
+        from datetime import datetime
+        from app.models.defense import DefenseAssignment, DefenseSession
+
+        with new_session() as db:
+            db.add(GraduationCycle(id=1, academic_year="2026-2027", student_id=1, status="ACTIVE"))
+            session = DefenseSession(id=1, academic_year="2026-2027", stage="FINAL",
+                                     starts_at=datetime(2026, 10, 27), ends_at=datetime(2026, 10, 28),
+                                     status="PUBLISHED")
+            db.add(session)
+            db.add(DefenseAssignment(id=1, session_id=1, cycle_id=1))
+            db.flush()
+            self.assertEqual(formal_defense_snapshot(db, 1)["status"], "SCHEDULED")
+            session.status = "DRAFT"
+            db.flush()
+            self.assertEqual(formal_defense_snapshot(db, 1)["status"], "NOT_SCHEDULED")
+
     def test_snapshot_reads_active_cycle_only(self):
         with new_session() as db:
             db.add_all([

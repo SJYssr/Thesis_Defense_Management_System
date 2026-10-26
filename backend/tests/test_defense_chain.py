@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import BusinessException, ConflictException
 from app.db.base import Base
 from app.models import all as _all_models  # noqa: F401
-from app.models.business import FinalDefense, GraduationCycle, GraduationSchedule, GraduationTopic
+from app.models.business import FinalDefense, GraduationCycle, GraduationProcess, GraduationSchedule, GraduationTopic
 from app.models.defense import (
     DefenseAssignment,
     DefenseExaminer,
@@ -320,6 +320,8 @@ class ResultStateMachineTest(unittest.TestCase):
         _submit(self.db, self.assignment.id, 2, {"报告质量": 80, "答辩表现": 80})
         self.result = DefenseResult(assignment_id=self.assignment.id, cycle_id=1, stage="FINAL",
                                     status=ResultStatus.PENDING.value)
+        # 独立运行本文件时 SQLite 的 BIGINT 不自增，不能依赖其它测试全局改过元数据。
+        self.db.add(GraduationProcess(id=1, student_id=1, cycle_id=1))
         self.db.add(self.result)
         self.db.flush()
 
@@ -349,6 +351,23 @@ class ResultStateMachineTest(unittest.TestCase):
         self.assertIsNotNone(self.result.withdrawn_at)
         self.assertEqual(self.result.withdraw_reason, "评委复核后重新计算")
         self.assertEqual(self.result.withdrawn_by, ADMIN.id)
+
+    def test_withdrawn_result_can_be_recalculated_and_republished(self):
+        calculate_result(self.db, self.result.id, ADMIN)
+        publish_result(self.db, self.result.id, ADMIN)
+        withdraw_result(self.db, self.result.id, ADMIN, "复核重算")
+        calculate_result(self.db, self.result.id, ADMIN)
+        self.assertEqual(self.result.status, "READY")
+        publish_result(self.db, self.result.id, ADMIN)
+        self.assertEqual(self.result.status, "PUBLISHED")
+        self.assertEqual(self.result.score, 80)
+
+    def test_multiple_reopened_scores_keep_result_under_review(self):
+        calculate_result(self.db, self.result.id, ADMIN)
+        publish_result(self.db, self.result.id, ADMIN)
+        for _ in range(2):
+            service.mark_result_under_review(self.db, self.result, "重开多位评委评分", ADMIN)
+        self.assertEqual(self.result.status, "UNDER_REVIEW")
 
     def test_calculate_twice_rejected(self):
         calculate_result(self.db, self.result.id, ADMIN)

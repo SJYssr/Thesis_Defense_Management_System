@@ -180,11 +180,11 @@ _RULES = _RULES + (
     Rule(SEAT, "retake", frozenset({"ABSENT", "POSTPONED"}), "RETAKE", _REVIEWER),
     Rule(SEAT, "reset", frozenset({"POSTPONED", "RETAKE"}), "SCHEDULED", _ADMIN),
     # --- 正式结论 ---
-    Rule(RESULT, "compute", frozenset({"PENDING"}), "READY", internal=True),
+    Rule(RESULT, "compute", frozenset({"PENDING", "WITHDRAWN"}), "READY", internal=True),
     Rule(RESULT, "publish", frozenset({"READY", "UNDER_REVIEW"}), "PUBLISHED", _ADMIN),
     Rule(RESULT, "withdraw", frozenset({"PUBLISHED"}), "WITHDRAWN", _ADMIN, require_comment=True),
     # 评分被重开复核时, 已发布结论必须转入复核中, 否则页面仍显示已定档的旧分
-    Rule(RESULT, "review", frozenset({"PUBLISHED"}), "UNDER_REVIEW", _ADMIN),
+    Rule(RESULT, "review", frozenset({"PUBLISHED", "WITHDRAWN", "READY", "PENDING"}), "UNDER_REVIEW", _ADMIN),
     # --- 归档(状态真源是 ArchiveStatus: PENDING/ARCHIVED/REVOKED) ---
     # 提交即进入 PENDING; 已 REVOKED 的归档可重新提交并复用同一条记录(D28)
     Rule(ARCHIVE, "submit", frozenset({"PENDING", "REVOKED"}), "PENDING", _STUDENT_OR_ADMIN,
