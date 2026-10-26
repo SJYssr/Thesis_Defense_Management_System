@@ -108,6 +108,19 @@ class TopicLifecycleTest(unittest.TestCase):
         self.assertEqual(data["total"], 0)
         self.assertEqual(data["items"], [])
 
+    def test_teacher_topic_filters_keep_owner_and_total(self):
+        from app.modules.topic.router import my_topics
+
+        for i in range(25):
+            self.db.add(GraduationTopic(teacher_id=1, title=f"教师分页题目{i}",
+                                       topic_type="算法研究" if i == 0 else "软件开发", status="PUBLISHED"))
+        self.db.add(GraduationTopic(teacher_id=2, title="教师分页题目0", topic_type="算法研究", status="PUBLISHED"))
+        self.db.commit()
+        data = json.loads(my_topics(page=1, page_size=5, keyword="题目0", topic_type="算法研究",
+                                    user=teacher(1, 1), db=self.db).body)["data"]
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["items"][0]["teacher_id"], 1)
+
     def test_invalid_source_state_raises_40003(self):
         topic_id = self._create_topic(teacher(1, 1))
         # DRAFT 不能直接关闭

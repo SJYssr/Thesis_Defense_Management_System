@@ -2,8 +2,11 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { defenseApi, reviewApi, rubricApi } from '@/api/defense'
+import { academicYearApi } from '@/api/common'
 
 const sessions = ref<any[]>([])
+const years = ref<string[]>([])
+const activeYear = ref('')
 const activeSession = ref<number | null>(null)
 const rows = ref<any[]>([])
 const preview = ref<any | null>(null)
@@ -11,7 +14,7 @@ const rubrics = ref<any[]>([])
 const rubricDialog = ref(false)
 const rubricListVisible = ref(false)
 const rubricForm = ref({
-  academic_year: '2025-2026', stage: 'FINAL', min_examiners: 3, pass_line: 60,
+  academic_year: '', stage: 'FINAL', min_examiners: 3, pass_line: 60,
   weights: [
     { name: '报告质量', weight: 30 }, { name: '系统实现', weight: 40 }, { name: '答辩表现', weight: 30 },
   ],
@@ -22,12 +25,13 @@ const RESULT_TYPE: Record<string, string> = {
 }
 
 async function loadSessions() {
-  const res = await defenseApi.adminList({ academic_year: '2025-2026', page: 1, page_size: 50 })
+  const res = await defenseApi.adminList({ academic_year: activeYear.value || undefined, page: 1, page_size: 50 })
   sessions.value = res.data.items || []
-  if (!activeSession.value && sessions.value.length) {
-    activeSession.value = sessions.value[0].id
-    loadResults()
-  }
+  activeSession.value = sessions.value[0]?.id ?? null
+  rows.value = []
+  preview.value = null
+  rubricForm.value.academic_year = activeYear.value
+  if (activeSession.value) await loadResults()
 }
 
 async function loadResults() {
@@ -104,7 +108,12 @@ async function enableRubric(r: any) {
   loadRubrics()
 }
 
-onMounted(() => { loadSessions(); loadRubrics() })
+onMounted(async () => {
+  const { data } = await academicYearApi.list()
+  years.value = data.years
+  activeYear.value = data.active_year
+  await Promise.all([loadSessions(), loadRubrics()])
+})
 </script>
 
 <template>
@@ -113,6 +122,9 @@ onMounted(() => { loadSessions(); loadRubrics() })
       <div class="tab-bar">
         <div class="tabs"><div class="tab active">成绩复核</div></div>
         <div class="tab-actions">
+          <el-select v-model="activeYear" style="width:140px" @change="loadSessions">
+            <el-option v-for="year in years" :key="year" :label="year" :value="year" />
+          </el-select>
           <el-button @click="rubricListVisible = true">评分表版本</el-button>
           <el-button type="primary" @click="rubricDialog = true">新建评分表</el-button>
         </div>

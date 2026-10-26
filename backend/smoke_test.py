@@ -466,6 +466,10 @@ r = client.post(f"{BASE}/admin/academic-schedules", headers=auth(admin),
                 json={"academic_year": "2099-2100", "is_active": True,
                       "windows": {"selection_end": "2000-01-01T00:00:00"}})
 check("创建并激活新学年", r.json()["code"] == 0, r.text[:150])
+r = client.get(f"{BASE}/academic-schedule/years", headers=auth(t1))
+year_options = r.json()["data"]
+check("教师可获取服务端动态学年选项", r.json()["code"] == 0 and year_options["active_year"] == "2099-2100")
+check("学年选项保留历史业务学年", origin["academic_year"] in year_options["years"])
 s7 = login("20230007", "123456")
 r = client.post(f"{BASE}/student/selections", headers=auth(s7),
                 json={"topic_id": 1, "reason": "时间窗校验冒烟测试: 我对RAG方向有浓厚兴趣。"})

@@ -2,15 +2,18 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { defenseApi } from '@/api/defense'
+import { academicYearApi } from '@/api/common'
 
 const sessions = ref<any[]>([])
 const stats = ref<any>({})
-const query = reactive({ academic_year: '2025-2026', stage: '', status: '' })
+const query = reactive({ academic_year: '', stage: '', status: '' })
+const years = ref<string[]>([])
+const activeYear = ref('')
 const createVisible = ref(false)
 const detail = ref<any | null>(null)
 const detailVisible = ref(false)
 const createForm = reactive({
-  academic_year: '2025-2026', stage: 'MIDTERM', title: '',
+  academic_year: '', stage: 'MIDTERM', title: '',
   date: '' as any, startTime: '09:00', endTime: '12:00',
   location: '', online_link: '', capacity: 10,
 })
@@ -31,7 +34,8 @@ async function loadStats() {
 }
 
 function openCreate() {
-  Object.assign(createForm, { stage: 'MIDTERM', title: '', date: '', startTime: '09:00', endTime: '12:00', location: '', online_link: '', capacity: 10 })
+  Object.assign(createForm, { academic_year: query.academic_year || activeYear.value,
+    stage: 'MIDTERM', title: '', date: '', startTime: '09:00', endTime: '12:00', location: '', online_link: '', capacity: 10 })
   createVisible.value = true
 }
 
@@ -142,7 +146,14 @@ async function refreshDetailAndList(id: number) {
   sessions.value = list.data.items || []
 }
 
-onMounted(() => { load(); loadStats() })
+onMounted(async () => {
+  const { data } = await academicYearApi.list()
+  years.value = data.years
+  activeYear.value = data.active_year
+  query.academic_year = data.active_year
+  createForm.academic_year = data.active_year
+  await Promise.all([load(), loadStats()])
+})
 </script>
 
 <template>
@@ -169,7 +180,7 @@ onMounted(() => { load(); loadStats() })
 
       <div class="filter-row">
         <el-select v-model="query.academic_year" style="width: 140px">
-          <el-option label="2025-2026" value="2025-2026" /><el-option label="2024-2025" value="2024-2025" />
+          <el-option v-for="year in years" :key="year" :label="year" :value="year" />
         </el-select>
         <el-select v-model="query.stage" placeholder="全部阶段" clearable style="width: 130px">
           <el-option label="开题答辩" value="OPENING" /><el-option label="中期答辩" value="MIDTERM" /><el-option label="终期答辩" value="FINAL" />

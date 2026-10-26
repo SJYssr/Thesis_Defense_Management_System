@@ -2,8 +2,10 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { archiveApi } from '@/api/defense'
+import { academicYearApi } from '@/api/common'
 
 const packages = ref<any[]>([])
+const years = ref<string[]>([])
 const total = ref(0)
 const loading = ref(false)
 const pendingTotal = ref(0)
@@ -93,6 +95,8 @@ async function exportList() {
 }
 
 onMounted(async () => {
+  const { data } = await academicYearApi.list()
+  years.value = data.years
   await Promise.all([load(), loadPendingTotal()])
 })
 </script>
@@ -115,7 +119,7 @@ onMounted(async () => {
 
       <div class="filter-row">
         <el-select v-model="query.academic_year" placeholder="全部学年" clearable style="width: 140px" @change="search">
-          <el-option label="2025-2026" value="2025-2026" /><el-option label="2024-2025" value="2024-2025" />
+          <el-option v-for="year in years" :key="year" :label="year" :value="year" />
         </el-select>
         <el-select v-model="query.status" placeholder="全部状态" clearable style="width: 130px" @change="search">
           <el-option label="待确认" value="PENDING" />

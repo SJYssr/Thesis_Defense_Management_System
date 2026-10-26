@@ -107,13 +107,13 @@
 
           <div class="pagination-bar">
             <span class="page-total">共 {{ filteredTotal }} 条数据</span>
-            <el-select v-model="pageSize" size="small" class="page-size">
+            <el-select v-model="pageSize" size="small" class="page-size" @change="onSearch">
               <el-option label="10条/页" :value="10" />
               <el-option label="20条/页" :value="20" />
             </el-select>
             <el-pagination
               v-model:current-page="page" :page-size="pageSize" :total="filteredTotal"
-              background layout="prev, pager, next, jumper" class="pager"
+              background layout="prev, pager, next, jumper" class="pager" @current-change="loadRows"
             />
           </div>
         </div>
@@ -244,16 +244,10 @@ function pct(value: number, total: number) { return total ? Math.round((value / 
 const typeOptions = computed(() =>
   [...new Set([...TYPE_PRESETS, ...rows.value.map(r => r.topic_type || '').filter(Boolean)])])
 
-const filteredRows = computed(() => rows.value.filter((r) => {
-  if (query.status && r.status !== query.status) return false
-  if (query.topicType && (r.topic_type || '') !== query.topicType) return false
-  if (query.keyword && !r.title.includes(query.keyword.trim())) return false
-  return true
-}))
-const filteredTotal = computed(() => filteredRows.value.length)
+const filteredTotal = ref(0)
 const pagedRows = computed<TopicRow[]>(() => {
   const start = (page.value - 1) * pageSize.value
-  return filteredRows.value.slice(start, start + pageSize.value).map((r, i) => ({
+  return rows.value.map((r, i) => ({
     ...r, index: start + i + 1,
     statusCn: r.status === 'PUBLISHED' ? '已发布' : r.status === 'DRAFT' ? '待发布' : '已关闭',
     statusClass: r.status === 'DRAFT' ? 's-pending' : r.status === 'PUBLISHED' ? 's-published' : 's-closed',
@@ -275,22 +269,23 @@ async function loadSummary() {
 async function loadRows() {
   loading.value = true
   try {
-    const all: TopicItem[] = []
-    for (let current = 1; current <= 10; current++) {
-      const res = await topicApi.teacherList({ page: current, page_size: 100 })
-      all.push(...res.data.items)
-      if (all.length >= res.data.total) break
-    }
-    rows.value = all
+    const res = await topicApi.teacherList({
+      page: page.value, page_size: pageSize.value,
+      status: query.status || undefined, topic_type: query.topicType || undefined,
+      keyword: query.keyword.trim() || undefined,
+    })
+    rows.value = res.data.items
+    filteredTotal.value = res.data.total
   } finally { loading.value = false }
 }
 
 async function refresh() { await Promise.all([loadRows(), loadSummary()]) }
 
-function onSearch() { page.value = 1 }
+function onSearch() { page.value = 1; loadRows() }
 function onReset() {
   Object.assign(query, { keyword: '', topicType: '', status: '' })
   page.value = 1
+  loadRows()
 }
 function onSelectionChange(sel: TopicRow[]) { selected.value = sel }
 

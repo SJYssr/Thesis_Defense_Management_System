@@ -108,6 +108,20 @@ def active_schedule(user: CurrentUser = Depends(get_current_user), db: Session =
     return ResponseUtil.success(_item(schedule) if schedule else None)
 
 
+@router.get("/years")
+def academic_year_options(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    """已配置及有业务记录的学年；三角色共用，不暴露学生或成绩。"""
+    from app.models.business import GraduationCycle
+    from app.models.defense import DefenseSession, ReviewRubric, StageTask
+    from app.shared.cycle import academic_year_for
+
+    active = academic_year_for(db)
+    years = {active}
+    for model in (GraduationSchedule, GraduationCycle, DefenseSession, ReviewRubric, StageTask):
+        years.update(year for year in db.execute(select(model.academic_year).distinct()).scalars() if year)
+    return ResponseUtil.success({"active_year": active, "years": sorted(years, reverse=True)})
+
+
 @admin_router.get("")
 def list_schedules(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                    _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):

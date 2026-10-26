@@ -144,3 +144,7 @@ export const healthApi = {
   ai: () => request.get('/health/ai'),
 }
 
+export const academicYearApi = {
+  list: () => request.get<unknown, ApiEnvelope<{ active_year: string; years: string[] }>>('/academic-schedule/years'),
+}
+

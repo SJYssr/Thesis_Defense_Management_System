@@ -2,16 +2,19 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { taskApi } from '@/api/defense'
+import { academicYearApi } from '@/api/common'
 import type { StageTask, StageTaskAction, StageTaskVersion } from '@/types/api'
 
 const tasks = ref<StageTask[]>([])
 const versions = ref<StageTaskVersion[]>([])
 const versionsVisible = ref(false)
-const query = reactive({ academic_year: '2025-2026', stage: '', status: '' })
+const query = reactive({ academic_year: '', stage: '', status: '' })
+const years = ref<string[]>([])
+const activeYear = ref('')
 const dialogVisible = ref(false)
 const editing = ref<any | null>(null)
 const form = reactive({
-  academic_year: '2025-2026', stage: 'OPENING', title: '', description: '',
+  academic_year: '', stage: 'OPENING', title: '', description: '',
   requirements: '', opens_at: '', due_at: '', late_policy: 'ALLOW', status: 'PUBLISHED',
   college_id: null as number | null, major_id: null as number | null, class_id: null as number | null,
 })
@@ -23,7 +26,9 @@ async function load() {
 
 function openCreate() {
   editing.value = null
-  Object.assign(form, { stage: 'OPENING', title: '', description: '', requirements: '', opens_at: '', due_at: '', late_policy: 'ALLOW', status: 'PUBLISHED' })
+  Object.assign(form, { academic_year: query.academic_year || activeYear.value,
+    stage: 'OPENING', title: '', description: '', requirements: '', opens_at: '', due_at: '',
+    late_policy: 'ALLOW', status: 'PUBLISHED', college_id: null, major_id: null, class_id: null })
   dialogVisible.value = true
 }
 
@@ -94,7 +99,14 @@ async function remind(t: StageTask) {
   await ElMessageBox.prompt('提醒内容', '提醒学生', { inputValue: `请于截止时间前完成「${t.title}」` })
 }
 
-onMounted(load)
+onMounted(async () => {
+  const { data } = await academicYearApi.list()
+  years.value = data.years
+  activeYear.value = data.active_year
+  query.academic_year = data.active_year
+  form.academic_year = data.active_year
+  await load()
+})
 </script>
 
 <template>
@@ -109,8 +121,7 @@ onMounted(load)
 
       <div class="filter-row">
         <el-select v-model="query.academic_year" style="width: 140px">
-          <el-option label="2025-2026" value="2025-2026" />
-          <el-option label="2024-2025" value="2024-2025" />
+          <el-option v-for="year in years" :key="year" :label="year" :value="year" />
         </el-select>
         <el-select v-model="query.stage" placeholder="全部阶段" clearable style="width: 140px">
           <el-option v-for="s in ['SELECTION', 'OPENING', 'MIDTERM', 'FINAL', 'MATERIAL']" :key="s" :label="s" :value="s" />

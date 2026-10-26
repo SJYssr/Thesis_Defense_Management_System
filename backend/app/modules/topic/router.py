@@ -108,12 +108,16 @@ teacher_router = APIRouter(prefix="/teacher/topics", tags=["Topic-Teacher"])
 
 @teacher_router.get("")
 def my_topics(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), status: str | None = None,
+              keyword: str | None = None, topic_type: str | None = None,
               user: CurrentUser = Depends(require_teacher), db: Session = Depends(get_db)):
     conds = [GraduationTopic.teacher_id == user.profile_id, GraduationTopic.deleted_at.is_(None)]
     if status:
         conds.append(GraduationTopic.status == status)
+    if topic_type:
+        conds.append(GraduationTopic.topic_type == topic_type)
     rows, total = paginate(db, select(GraduationTopic).order_by(GraduationTopic.id.desc()),
-                           page=page, size=page_size, filters=conds)
+                           page=page, size=page_size, filters=conds,
+                           keyword=keyword, keyword_fields=(GraduationTopic.title, GraduationTopic.description))
     return ResponseUtil.page([_topic_item(db, t) for t in rows], total, page, page_size)
 
 

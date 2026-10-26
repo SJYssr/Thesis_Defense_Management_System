@@ -16,6 +16,21 @@ from app.shared.progress import ProgressService
 
 
 class WindowValidationTest(unittest.TestCase):
+    def test_year_options_follow_active_schedule_and_include_historical_business(self):
+        from app.modules.schedule.router import academic_year_options
+        from app.models.defense import StageTask
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        with Session(engine) as db:
+            db.add(GraduationSchedule(id=1, academic_year="2099-2100", is_active=1))
+            db.add(StageTask(id=1, academic_year="2027-2028", stage="OPENING", title="历史任务"))
+            db.commit()
+            data = json.loads(academic_year_options(SimpleNamespace(role="TEACHER"), db).body)["data"]
+            self.assertEqual(data["active_year"], "2099-2100")
+            self.assertEqual(data["years"], ["2099-2100", "2027-2028"])
+        engine.dispose()
+
     def test_unknown_key_rejected(self):
         with self.assertRaises(BusinessException):
             validate_windows({"holidy_start": datetime(2026, 9, 1)})
