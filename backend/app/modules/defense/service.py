@@ -13,7 +13,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import BusinessException, ConflictException, PermissionDeniedException, ResourceNotFoundException
+from app.core.exceptions import BusinessException, ConflictException, ResourceNotFoundException
 from app.models.business import GraduationCycle
 from app.models.defense import (
     DefenseAssignment,
@@ -30,7 +30,6 @@ from app.models.enums import (
     SeatStatus,
     SessionStatus,
 )
-from app.models.system import SysFile
 from app.models.user import StudentProfile, SysUser, TeacherProfile
 from app.shared.events import push_notification
 from app.shared.state_machine import RESULT, SESSION, transition
@@ -405,7 +404,6 @@ def assignment_item(db: Session, a: DefenseAssignment, cycle: GraduationCycle | 
         cycle = db.get(GraduationCycle, a.cycle_id)
     stu_user = None
     student_no = None
-    college_id = None
     if cycle:
         row = db.execute(
             select(SysUser, StudentProfile).join(StudentProfile, StudentProfile.user_id == SysUser.id)
@@ -414,7 +412,6 @@ def assignment_item(db: Session, a: DefenseAssignment, cycle: GraduationCycle | 
         if row:
             stu_user, sp = row
             student_no = sp.student_no
-            college_id = sp.college_id
     topic_title = None
     if cycle and cycle.topic_id:
         from app.models.business import GraduationTopic
@@ -599,7 +596,7 @@ def _apply_result_payload(r: DefenseResult, computed: dict) -> None:
 
 def calculate_result(db: Session, result_id: int, actor) -> tuple[DefenseResult, dict]:
     """复算并置 READY: PENDING -> READY(internal 系统动作). 未 calculate 不能 publish."""
-    r, a, s, cycle, rubric = load_result(db, result_id)
+    r, a, _s, _cycle, rubric = load_result(db, result_id)
     if rubric is None:
         raise BusinessException("未配置启用的评分表")
     computed = compute_result(db, a, rubric)
@@ -610,7 +607,7 @@ def calculate_result(db: Session, result_id: int, actor) -> tuple[DefenseResult,
 
 def publish_result(db: Session, result_id: int, actor) -> tuple[DefenseResult, dict]:
     """发布正式结论: 同事务复检场次状态/到场/评委人数/评分完整性, 再走 READY -> PUBLISHED."""
-    r, a, s, cycle, rubric = load_result(db, result_id)
+    r, a, s, _cycle, rubric = load_result(db, result_id)
     if rubric is None:
         raise BusinessException("未配置启用的评分表")
     if s.status in (SessionStatus.DRAFT.value, SessionStatus.CANCELLED.value):

@@ -12,8 +12,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -343,7 +344,7 @@ class AgentToolbox:
         """执行工具; 任何异常都变成 {"error": ...} 观察结果, 绝不抛给决策循环."""
         try:
             tool = self.get(name)
-            payload = args if args is None else args
+            payload = args
             if not isinstance(payload, dict):
                 raise AgentToolError(f"工具 {name} 的 args 必须是 JSON 对象")
             return tool.run(db, ctx, **payload)

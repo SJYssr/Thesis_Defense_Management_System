@@ -19,7 +19,7 @@ from app.core.exceptions import AuthenticationException, PermissionDeniedExcepti
 from app.core.security import TOKEN_VERSION_CLAIM, decode_token
 from app.db.mysql import get_db
 from app.db.redis import RedisKeys, redis_client
-from app.models.business import GraduationProcess, GraduationTopic, TopicSelection
+from app.models.business import GraduationTopic, TopicSelection
 from app.models.enums import Role
 from app.models.user import StudentProfile, SysUser, TeacherProfile
 

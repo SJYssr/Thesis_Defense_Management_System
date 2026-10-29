@@ -9,19 +9,14 @@ from sqlalchemy.orm import Session
 
 from app.ai.llm.factory import LLMFactory, extract_json
 from app.ai.prompts import progress_analysis_prompt, resolve_system_prompt
-from app.models.ai import AIUsageLog
 from app.core.exceptions import BusinessException
+from app.models.ai import AIUsageLog
 from app.models.business import (
-    FinalDefense,
-    GraduationMaterial,
     GraduationTopic,
-    MidtermReport,
-    OpeningReport,
-    TopicSelection,
 )
 from app.models.enums import ProcessStage
 from app.models.system import ReviewRecord
-from app.shared.progress import ProgressService, STAGE_LABELS
+from app.shared.progress import STAGE_LABELS, ProgressService
 from app.shared.workflow import GraduationWorkflowService
 
 

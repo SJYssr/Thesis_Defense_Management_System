@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Generator
+from collections.abc import Generator
+from typing import Any
 
-from app.ai.agent.tools import AgentContext, AgentToolbox, RETRIEVAL_TOOLS, tools_prompt
+from app.ai.agent.tools import RETRIEVAL_TOOLS, AgentContext, AgentToolbox, tools_prompt
 from app.ai.llm.factory import LLMFactory, extract_json
 from app.ai.prompts import AGENT_TOOLS_PLACEHOLDER, DOC_TYPE_CN, resolve_system_prompt, untrusted_note
 from app.core.config import settings

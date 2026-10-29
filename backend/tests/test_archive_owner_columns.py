@@ -12,7 +12,7 @@ import pathlib
 import unittest
 
 BASE = pathlib.Path(__file__).resolve().parent.parent
-TARGETS = sorted((BASE / "app").rglob("*.py")) + [BASE / "seed.py"]
+TARGETS = [*sorted((BASE / "app").rglob("*.py")), BASE / "seed.py"]
 
 
 def constructions(path: pathlib.Path) -> list[ast.Call]:

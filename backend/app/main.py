@@ -79,47 +79,48 @@ register_exception_handlers(app)
 API_PREFIX = "/api/v1"
 
 # 业务模块
+from app.modules.ai.admin import router as ai_admin_router  # noqa: E402
+from app.modules.ai.router import defense as ai_defense_router  # noqa: E402
+from app.modules.ai.router import router as ai_router  # noqa: E402
+from app.modules.aiprompt.router import router as aiprompt_router  # noqa: E402
+from app.modules.announcement.router import admin_router as ann_admin  # noqa: E402
+from app.modules.announcement.router import notification_router  # noqa: E402
+from app.modules.announcement.router import router as ann_router  # noqa: E402
+from app.modules.archive.router import router as archive_router  # noqa: E402
+from app.modules.audit.router import ai_router as ai_usage_router  # noqa: E402
+from app.modules.audit.router import router as audit_router  # noqa: E402
 from app.modules.auth.router import router as auth_router  # noqa: E402
-from app.modules.user.router import org_router, router as user_router  # noqa: E402
-from app.modules.topic.router import admin_router as topic_admin_router  # noqa: E402
-from app.modules.topic.router import router as topic_router  # noqa: E402
-from app.modules.topic.router import teacher_router as topic_teacher_router  # noqa: E402
-from app.modules.selection.router import admin_router as sel_admin_router  # noqa: E402
-from app.modules.selection.router import router as sel_router  # noqa: E402
-from app.modules.selection.router import teacher_router as sel_teacher_router  # noqa: E402
-from app.modules.opening.router import admin_router as opening_admin  # noqa: E402
-from app.modules.opening.router import student_router as opening_student  # noqa: E402
-from app.modules.opening.router import teacher_router as opening_teacher  # noqa: E402
-from app.modules.midterm.router import admin_router as midterm_admin  # noqa: E402
-from app.modules.midterm.router import student_router as midterm_student  # noqa: E402
-from app.modules.midterm.router import teacher_router as midterm_teacher  # noqa: E402
+from app.modules.dashboard.router import router as dashboard_router  # noqa: E402
+from app.modules.defense.router import router as defense_router  # noqa: E402
+from app.modules.defense.router import rubric_router  # noqa: E402
+from app.modules.file.router import router as file_router  # noqa: E402
 from app.modules.final_defense.router import admin_router as final_admin  # noqa: E402
 from app.modules.final_defense.router import student_router as final_student  # noqa: E402
 from app.modules.final_defense.router import teacher_router as final_teacher  # noqa: E402
 from app.modules.material.router import admin_router as material_admin  # noqa: E402
 from app.modules.material.router import router as material_router  # noqa: E402
 from app.modules.material.router import teacher_router as material_teacher  # noqa: E402
-from app.modules.file.router import router as file_router  # noqa: E402
+from app.modules.midterm.router import admin_router as midterm_admin  # noqa: E402
+from app.modules.midterm.router import student_router as midterm_student  # noqa: E402
+from app.modules.midterm.router import teacher_router as midterm_teacher  # noqa: E402
+from app.modules.opening.router import admin_router as opening_admin  # noqa: E402
+from app.modules.opening.router import student_router as opening_student  # noqa: E402
+from app.modules.opening.router import teacher_router as opening_teacher  # noqa: E402
 from app.modules.progress.router import admin_router as progress_admin  # noqa: E402
 from app.modules.progress.router import router as progress_router  # noqa: E402
 from app.modules.progress.router import teacher_router as progress_teacher  # noqa: E402
-from app.modules.announcement.router import admin_router as ann_admin  # noqa: E402
-from app.modules.announcement.router import notification_router  # noqa: E402
-from app.modules.announcement.router import router as ann_router  # noqa: E402
-from app.modules.dashboard.router import router as dashboard_router  # noqa: E402
-from app.modules.ai.admin import router as ai_admin_router  # noqa: E402
-from app.modules.ai.router import defense as ai_defense_router  # noqa: E402
-from app.modules.ai.router import router as ai_router  # noqa: E402
-from app.modules.task.router import router as task_router  # noqa: E402
-from app.modules.defense.router import router as defense_router  # noqa: E402
-from app.modules.defense.router import rubric_router  # noqa: E402
-from app.modules.archive.router import router as archive_router  # noqa: E402
-from app.modules.audit.router import router as audit_router  # noqa: E402
-from app.modules.audit.router import ai_router as ai_usage_router  # noqa: E402
-from app.modules.sysconfig.router import router as sysconfig_router  # noqa: E402
-from app.modules.aiprompt.router import router as aiprompt_router  # noqa: E402
-from app.modules.schedule.router import router as schedule_router  # noqa: E402
 from app.modules.schedule.router import admin_router as schedule_admin_router  # noqa: E402
+from app.modules.schedule.router import router as schedule_router  # noqa: E402
+from app.modules.selection.router import admin_router as sel_admin_router  # noqa: E402
+from app.modules.selection.router import router as sel_router  # noqa: E402
+from app.modules.selection.router import teacher_router as sel_teacher_router  # noqa: E402
+from app.modules.sysconfig.router import router as sysconfig_router  # noqa: E402
+from app.modules.task.router import router as task_router  # noqa: E402
+from app.modules.topic.router import admin_router as topic_admin_router  # noqa: E402
+from app.modules.topic.router import router as topic_router  # noqa: E402
+from app.modules.topic.router import teacher_router as topic_teacher_router  # noqa: E402
+from app.modules.user.router import org_router  # noqa: E402
+from app.modules.user.router import router as user_router
 
 for r in (
     auth_router, user_router, org_router,

@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 from app.ai.rag.evaluation import (
     AIDocumentChunk_student_filter,
     _resolve_relevant,
-    reciprocal_rank,
     recall_at_k,
+    reciprocal_rank,
 )
 from app.db.base import Base
 from app.models import all as _all_models  # noqa: F401

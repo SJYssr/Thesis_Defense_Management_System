@@ -1,7 +1,7 @@
 """AI/RAG 模型: 知识文档/Chunk元数据/对话/答辩会话/用量."""
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, SmallInteger, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, SmallInteger, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, BigIntPK, TimestampMixin

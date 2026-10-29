@@ -10,11 +10,11 @@
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
-from unittest.mock import patch
 
 from app.db.base import Base
 from app.models import all as _all_models  # noqa: F401

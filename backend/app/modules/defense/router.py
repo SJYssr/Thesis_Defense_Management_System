@@ -27,29 +27,42 @@ from app.models.defense import (
 from app.models.enums import ResultStatus, ScoreStatus, SeatStatus, SessionStatus
 from app.models.system import OperationLog
 from app.models.user import StudentProfile, SysUser, TeacherProfile
-from app.shared.events import push_notification
 from app.modules.defense.seat_state import mark_seat
 from app.modules.defense.service import (
-    STAGE_CN,
     SCORE_STATUS_CN,
-    SEAT_STATUS_CN,
     SESSION_STATUS_CN,
+    STAGE_CN,
     _notify_session_members,
     assignment_item,
-    calculate_result as calculate_result_flow,
-    cancel_session as cancel_session_flow,
     compute_result,
-    finish_session as finish_session_flow,
     get_effective_score,
     get_rubric_for,
     mark_result_under_review,
-    publish_result as publish_result_flow,
-    publish_session as publish_session_flow,
-    start_session as start_session_flow,
     session_item,
     validate_session,
+)
+from app.modules.defense.service import (
+    calculate_result as calculate_result_flow,
+)
+from app.modules.defense.service import (
+    cancel_session as cancel_session_flow,
+)
+from app.modules.defense.service import (
+    finish_session as finish_session_flow,
+)
+from app.modules.defense.service import (
+    publish_result as publish_result_flow,
+)
+from app.modules.defense.service import (
+    publish_session as publish_session_flow,
+)
+from app.modules.defense.service import (
+    start_session as start_session_flow,
+)
+from app.modules.defense.service import (
     withdraw_result as withdraw_result_flow,
 )
+from app.shared.events import push_notification
 
 router = APIRouter(tags=["Defense"])
 rubric_router = APIRouter(prefix="/review-rubrics", tags=["Defense-Rubric"])

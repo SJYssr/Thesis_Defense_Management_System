@@ -64,11 +64,11 @@ class Actor:
     profile_id: int | None = None
 
     @classmethod
-    def student(cls, student_id: int, user_id: int | None = None) -> "Actor":
+    def student(cls, student_id: int, user_id: int | None = None) -> Actor:
         return cls(id=user_id, role="STUDENT", profile_id=student_id)
 
     @classmethod
-    def reviewer(cls, user_id: int | None, role: str, teacher_profile_id: int | None = None) -> "Actor":
+    def reviewer(cls, user_id: int | None, role: str, teacher_profile_id: int | None = None) -> Actor:
         return cls(id=user_id, role=role, profile_id=teacher_profile_id)
 
 

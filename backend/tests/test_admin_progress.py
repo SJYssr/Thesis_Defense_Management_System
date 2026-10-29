@@ -12,8 +12,7 @@ from app.models import all as _all_models  # noqa: F401
 from app.models.business import GraduationCycle, GraduationProcess
 from app.models.system import Notification, OperationLog
 from app.models.user import StudentProfile, SysUser
-from app.modules.progress.router import (AdminReminderRequest, admin_progress,
-                                         admin_progress_summary, admin_send_reminders)
+from app.modules.progress.router import AdminReminderRequest, admin_progress, admin_progress_summary, admin_send_reminders
 
 
 class AdminProgressTest(unittest.TestCase):

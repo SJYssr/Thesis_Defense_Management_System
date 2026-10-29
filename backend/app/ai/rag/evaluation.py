@@ -312,7 +312,7 @@ def summarize_rerank_comparison(report: dict) -> str:
     delta = report["delta"]
     rows.append(f"delta          | {delta['recall_at_k']:<8} | {delta['mrr']:<6} | "
                 f"{delta['hit_rate']:<6} | {delta['avg_latency_ms']}")
-    return "\n".join([head] + rows)
+    return "\n".join([head, *rows])
 
 
 def load_dataset_file(path: str) -> dict:

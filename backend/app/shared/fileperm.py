@@ -11,7 +11,6 @@ from app.models.business import GraduationMaterialFile
 from app.models.defense import ArchiveConsent, DefenseAssignment, DefenseExaminer
 from app.models.enums import ConsentVisibility
 from app.models.system import SysFile
-from app.models.user import StudentProfile
 
 
 def _student_profile_id(db: Session, user) -> int | None:

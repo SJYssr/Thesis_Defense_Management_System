@@ -14,8 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.ai import providers as svc
 from app.ai.embedding.factory import EmbeddingFactory, LocalHashEmbedding
-from app.ai.llm.factory import (AIServiceUnavailable, LLMFactory, MockLLM, OllamaLLM,
-                                reset_ollama_probe_cache)
+from app.ai.llm.factory import AIServiceUnavailable, LLMFactory, MockLLM, OllamaLLM, reset_ollama_probe_cache
 from app.ai.runtime_config import invalidate_ai_config, resolve_ai_config
 from app.core.config import settings
 from app.db.base import Base
@@ -248,8 +247,9 @@ class HealthTest(RuntimeTestBase):
         self.assertEqual(_health_status("ok", "degraded"), "degraded")
 
     def test_ai_model_info_exposes_bindings_and_hides_legacy_keys(self):
-        from app.modules.sysconfig.router import ai_model_info
         import json
+
+        from app.modules.sysconfig.router import ai_model_info
 
         provider = self.make()
         self.bind(chat={"provider_id": provider["id"], "model": "gpt-4o-mini"})

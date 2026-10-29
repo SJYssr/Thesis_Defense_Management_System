@@ -3,12 +3,13 @@ import json
 import unittest
 from datetime import datetime, timedelta
 
+from sqlalchemy.orm import Session
+
 from app.models.business import GraduationCycle, GraduationSchedule, TopicSelection
 from app.modules.selection.router import my_selections
 from app.shared.progress import ProgressService
 from app.shared.workflow import GraduationWorkflowService
 from tests.test_material_version import STUDENT, new_engine, seed
-from sqlalchemy.orm import Session
 
 
 class CrossYearWorkflowTest(unittest.TestCase):

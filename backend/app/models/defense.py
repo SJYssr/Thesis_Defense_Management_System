@@ -25,7 +25,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, BigIntPK, TimestampMixin
 
-
 # ============ P1 阶段任务 ============
 
 class StageTask(Base, TimestampMixin):

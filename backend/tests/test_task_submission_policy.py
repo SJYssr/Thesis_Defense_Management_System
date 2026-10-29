@@ -39,8 +39,8 @@ class TaskSubmissionPolicyTest(unittest.TestCase):
         return task
 
     def test_student_without_cycle_sees_published_selection_task(self):
-        from app.models.user import StudentProfile, SysUser
         from app.core.permissions import CurrentUser
+        from app.models.user import StudentProfile, SysUser
 
         self.db.add(SysUser(id=3, username="new", real_name="新学生", role="STUDENT", password_hash="x"))
         self.db.add(StudentProfile(id=2, user_id=3, student_no="new", college_id=1))

@@ -20,10 +20,9 @@ from app.models.business import (
     OpeningReport,
     TopicSelection,
 )
-from app.models.enums import ProcessStage
+from app.models.defense import DefenseExaminer, DefenseSession
 from app.models.system import Announcement, Notification, ReviewRecord
 from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
-from app.models.defense import DefenseExaminer, DefenseSession
 from app.shared.cycle import academic_year_for
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
@@ -609,7 +608,8 @@ def defense_stats(user: CurrentUser = Depends(get_current_user), db: Session = D
         DefenseSession,
         ExaminerScore,
     )
-    from app.models.enums import ArchiveStatus, ResultStatus, ScoreStatus, SeatStatus, SessionStatus as SS
+    from app.models.enums import ArchiveStatus, ResultStatus, ScoreStatus, SeatStatus
+    from app.models.enums import SessionStatus as SS
 
     if user.role != "ADMIN":
         from app.core.exceptions import PermissionDeniedException

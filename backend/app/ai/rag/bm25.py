@@ -87,7 +87,7 @@ class _IndexEntry:
 
 
 # 进程内 LRU: 8 个学生的 8 种文档类型组合已覆盖真实用量, 超出按最久未用淘汰
-_CACHE: "OrderedDict[tuple, _IndexEntry]" = OrderedDict()
+_CACHE: OrderedDict[tuple, _IndexEntry] = OrderedDict()
 _CACHE_LOCK = threading.RLock()
 
 

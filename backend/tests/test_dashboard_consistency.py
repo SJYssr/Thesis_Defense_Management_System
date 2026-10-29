@@ -14,8 +14,14 @@ from sqlalchemy.orm import Session
 from app.core.permissions import CurrentUser
 from app.db.base import Base
 from app.models import all as _all_models  # noqa: F401
-from app.models.business import (GraduationCycle, GraduationMaterial, GraduationProcess,
-                                 GraduationSchedule, OpeningReport, TopicSelection)
+from app.models.business import (
+    GraduationCycle,
+    GraduationMaterial,
+    GraduationProcess,
+    GraduationSchedule,
+    OpeningReport,
+    TopicSelection,
+)
 from app.models.defense import ArchivePackage, DefenseResult
 from app.models.user import StudentProfile, SysUser
 from app.modules.dashboard.router import admin_analytics, admin_stats, defense_stats, home

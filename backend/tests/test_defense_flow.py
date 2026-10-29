@@ -85,7 +85,7 @@ class ConflictScheduleTest(unittest.TestCase):
 
     def test_teacher_time_conflict_rejected(self):
         """同一教师时间重叠的两个场次必须冲突(roadmap P1 验收)."""
-        s1 = _session(self.db, 1, self.t0)
+        _session(self.db, 1, self.t0)
         s2 = _session(self.db, 2, self.t0 + timedelta(hours=1))
         self.db.add(DefenseExaminer(session_id=1, teacher_id=1, examiner_role="CHAIR"))
         self.db.add(DefenseExaminer(session_id=2, teacher_id=1, examiner_role="EXAMINER"))
@@ -94,7 +94,7 @@ class ConflictScheduleTest(unittest.TestCase):
         self.assertTrue(any(c["type"] == "TEACHER" for c in conflicts))
 
     def test_student_time_conflict_rejected(self):
-        s1 = _session(self.db, 1, self.t0)
+        _session(self.db, 1, self.t0)
         s2 = _session(self.db, 2, self.t0 + timedelta(hours=1))
         self.db.add(DefenseAssignment(session_id=1, cycle_id=self.c1.id, seat_status="SCHEDULED"))
         self.db.flush()
@@ -193,7 +193,6 @@ class ScoringTest(unittest.TestCase):
     def test_only_attended_can_publish(self):
         self.seat.seat_status = SeatStatus.ABSENT.value
         self.db.flush()
-        computed = compute_result(self.db, self.seat, self.rubric)
         self._submit(1, {"报告质量": 90, "答辩表现": 80})
         self._submit(2, {"报告质量": 90, "答辩表现": 80})
         self.db.flush()

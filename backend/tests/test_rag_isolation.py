@@ -7,6 +7,7 @@
 4. D45: 阶段报告按当前 cycle 取, 历史脏数据不再触发 MultipleResultsFound。
 """
 import unittest
+from typing import ClassVar
 from unittest import mock
 
 from sqlalchemy import create_engine, event, func, select
@@ -69,7 +70,7 @@ def _enable_sqlite_autoincrement(model) -> None:
 class RagIsolationTest(unittest.TestCase):
     # 本类只验证检索/隔离口径, 不该依赖任何真实模型服务: 用 AI_TEST_MODE 把
     # 会话与向量一起钉成离线替身(P11 起 AI 配置只读数据库, 测试替身是唯一的环境开关)。
-    OFFLINE_SETTINGS = {"ai_test_mode": "mock"}
+    OFFLINE_SETTINGS: ClassVar[dict[str, str]] = {"ai_test_mode": "mock"}
 
     def setUp(self):
         self._saved_settings = {k: getattr(settings, k) for k in self.OFFLINE_SETTINGS}

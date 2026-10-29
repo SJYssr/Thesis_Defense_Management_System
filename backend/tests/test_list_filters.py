@@ -14,7 +14,8 @@
 """
 import json
 import unittest
-from datetime import datetime as dt, timedelta
+from datetime import datetime as dt
+from datetime import timedelta
 
 from sqlalchemy import BigInteger, Integer, create_engine
 from sqlalchemy.orm import Session

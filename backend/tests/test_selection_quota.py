@@ -18,16 +18,16 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.exceptions import BusinessException, register_exception_handlers
 from app.core.permissions import CurrentUser, require_teacher
-from app.db.mysql import get_db
 from app.db.base import Base
+from app.db.mysql import get_db
 from app.models import all as _all_models  # noqa: F401
 from app.models.business import GraduationTopic, TopicSelection
 from app.models.user import StudentProfile, SysUser, TeacherProfile
 from app.modules.selection import router as selection_router
 from app.modules.selection.router import (
     ApplyRequest,
-    _review_selection,
     _approved_selection_ids,
+    _review_selection,
     apply_selection,
 )
 

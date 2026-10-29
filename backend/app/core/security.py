@@ -4,7 +4,7 @@ D14: payload 携带 token_version; 版本与 sys_user.token_version 不一致即
 改密/登出时 sys_user.token_version += 1, 旧 access token 立即失效(不依赖 Redis).
 """
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -28,7 +28,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 def _create_token(
     user_id: int, role: str, token_type: str, expires_delta: timedelta, token_version: int = 0
 ) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "role": role,

@@ -1,24 +1,32 @@
 """Progress 模块: 毕设进度时间轴/教师提醒/风险视图."""
 import logging
 from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import BusinessException, ResourceNotFoundException
+from app.core.exceptions import BusinessException
 from app.core.permissions import CurrentUser, PermissionService, require_admin, require_student, require_teacher
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
-from app.models.business import (FinalDefense, GraduationCycle, GraduationMaterial,
-                                 GraduationProcess, GraduationTopic, MidtermReport,
-                                 OpeningReport, TopicSelection)
+from app.models.business import (
+    FinalDefense,
+    GraduationCycle,
+    GraduationMaterial,
+    GraduationProcess,
+    GraduationTopic,
+    MidtermReport,
+    OpeningReport,
+    TopicSelection,
+)
 from app.models.enums import ProcessStage
-from app.models.system import OperationLog, Reminder, ReviewRecord
+from app.models.system import OperationLog, Reminder
 from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
-from app.shared.events import push_notification
 from app.shared.cycle import academic_year_for, formal_defense_snapshot
-from app.shared.progress import ProgressService, STAGE_LABELS
+from app.shared.events import push_notification
+from app.shared.progress import STAGE_LABELS, ProgressService
 from app.shared.workflow import GraduationWorkflowService
 
 logger = logging.getLogger(__name__)

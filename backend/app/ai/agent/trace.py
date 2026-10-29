@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import threading
 from collections import deque
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable
 
 from app.core.config import settings
 

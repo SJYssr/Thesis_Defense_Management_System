@@ -8,9 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import UploadFile
-from starlette.datastructures import Headers
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
+from starlette.datastructures import Headers
 
 from app.core.exceptions import FileException
 from app.core.permissions import CurrentUser

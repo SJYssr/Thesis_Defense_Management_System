@@ -4,8 +4,8 @@
 文件解析 → 文本清洗 → 章节识别 → Chunk → Embedding → Redis Vector / MySQL → 元数据落库.
 """
 import logging
+from collections.abc import Generator
 from datetime import datetime
-from typing import Generator
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -15,7 +15,7 @@ from app.ai.document.splitter import split_sections
 from app.ai.embedding.factory import EmbeddingFactory
 from app.ai.llm.factory import LLMFactory
 from app.ai.rag.retriever import HybridRetriever, RetrievedChunk
-from app.ai.vector.store import vector_store, vec_to_b64
+from app.ai.vector.store import vec_to_b64, vector_store
 from app.models.ai import AIDocument, AIDocumentChunk, AIUsageLog
 from app.shared.storage import storage
 
@@ -120,7 +120,7 @@ class RAGService:
 
     def index_stage_reports(self, student_id: int):
         """将学生的开题/中期/终期文本报告纳入私有知识库(无文件的文本型文档)."""
-        from app.models.business import FinalDefense, GraduationTopic, MidtermReport, OpeningReport
+        from app.models.business import FinalDefense, MidtermReport, OpeningReport
         from app.models.enums import AIDocumentType
 
         mapping = [

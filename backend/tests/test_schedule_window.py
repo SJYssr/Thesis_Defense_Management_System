@@ -17,8 +17,8 @@ from app.shared.progress import ProgressService
 
 class WindowValidationTest(unittest.TestCase):
     def test_year_options_follow_active_schedule_and_include_historical_business(self):
-        from app.modules.schedule.router import academic_year_options
         from app.models.defense import StageTask
+        from app.modules.schedule.router import academic_year_options
 
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)

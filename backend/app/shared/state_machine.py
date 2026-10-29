@@ -14,13 +14,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy import select
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, PermissionDeniedException
@@ -162,7 +162,7 @@ for _entity in STAGE_ENTITIES:
     ]
     _RULES = _RULES + tuple(_rules_list)
 
-_RULES = _RULES + (
+_RULES = _RULES + (  # noqa: RUF005 - 转移表分段追加, 保留元组拼接比展开更易读
     # --- 答辩场次 ---
     Rule(SESSION, "publish", frozenset({"DRAFT"}), "PUBLISHED", _ADMIN),
     Rule(SESSION, "start", frozenset({"PUBLISHED"}), SESSION_IN_PROGRESS, _ADMIN),

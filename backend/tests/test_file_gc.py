@@ -129,7 +129,7 @@ class FileGcTest(unittest.TestCase):
 
     def test_dry_run_lists_deletable_candidates(self):
         """dry_run 的核心用途: 能预览"将要删的清单", 而不是只看到"不删的原因"."""
-        a, b, c, d, e = self._seed()
+        a, _b, _c, _d, _e = self._seed()
 
         summary = file_gc.collect(self.db, retention_days=7, dry_run=True)
 
@@ -143,7 +143,7 @@ class FileGcTest(unittest.TestCase):
 
     def test_live_run_marks_candidate_deleted_not_duplicated(self):
         """实删路径: 可删候选以 deleted 出现, 同一条不得既是 deletable 又是 deleted."""
-        a, b, c, d, e = self._seed()
+        a, _b, _c, _d, _e = self._seed()
 
         summary = file_gc.collect(self.db, retention_days=7, dry_run=False)
 
@@ -180,7 +180,7 @@ class FileGcTest(unittest.TestCase):
     # ---------- 验收: retention_days=1 时 C 变可删 ----------
 
     def test_shorter_retention_makes_recent_candidate_deletable(self):
-        a, b, c, d, e = self._seed()
+        _a, b, c, d, e = self._seed()
 
         summary = file_gc.collect(self.db, retention_days=1, dry_run=True)
         self.assertEqual((summary["scanned"], summary["skipped_recent"], summary["skipped_referenced"]), (4, 0, 2))
@@ -227,7 +227,7 @@ class FileGcTest(unittest.TestCase):
     # ---------- 验收: admin 端点默认 dry_run=True 且与任务共用实现 ----------
 
     def test_endpoint_admin_defaults_to_dry_run_and_logs(self):
-        a, b, c, d, e = self._seed()
+        a, _b, _c, _d, _e = self._seed()
 
         response = self._client(ADMIN).post("/api/v1/admin/files/gc")
         self.assertEqual(response.status_code, 200)
@@ -246,7 +246,7 @@ class FileGcTest(unittest.TestCase):
         self.assertIn("deleted=0", log.detail)
 
     def test_endpoint_live_run_deletes_with_retention_override(self):
-        a, b, c, d, e = self._seed()
+        _a, b, _c, d, e = self._seed()
 
         response = self._client(ADMIN).post("/api/v1/admin/files/gc",
                                             params={"retention_days": 1, "dry_run": "false"})

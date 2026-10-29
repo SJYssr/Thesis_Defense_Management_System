@@ -11,7 +11,7 @@ from app.core.exceptions import PermissionDeniedException, ResourceNotFoundExcep
 from app.db.base import Base
 from app.models.defense import DefenseAssignment, DefenseExaminer
 from app.modules.defense.router import get_session, my_sessions
-from tests.test_defense_flow import _setup, _session
+from tests.test_defense_flow import _session, _setup
 
 
 class StudentSessionPrivacyTest(unittest.TestCase):

@@ -309,7 +309,7 @@ def update_provider(db: Session, provider_id: int, **fields) -> dict:
             raise BusinessException("供应商名称不能为空")
         _assert_name_free(db, clean_name, exclude_id=row.id)
         row.name = clean_name
-    if "kind" in fields and fields["kind"]:
+    if fields.get("kind"):
         clean_kind = str(fields["kind"]).strip().lower()
         if clean_kind not in KINDS:
             raise BusinessException(f"未知供应商类型: {fields['kind']}")

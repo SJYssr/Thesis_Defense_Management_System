@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, ResourceNotFoundException
-from app.core.permissions import CurrentUser, PermissionService, require_admin, require_student, require_teacher
+from app.core.permissions import CurrentUser, require_admin, require_student, require_teacher
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
 from app.models.business import GraduationTopic, TopicSelection

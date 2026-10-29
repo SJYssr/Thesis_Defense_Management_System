@@ -19,17 +19,31 @@ from app.db.base import Base
 from app.db.mysql import get_db
 from app.models import all as _all_models  # noqa: F401
 from app.models.business import (
-    FinalDefense, GraduationCycle, GraduationMaterial, GraduationTopic, TopicSelection,
+    FinalDefense,
+    GraduationCycle,
+    GraduationMaterial,
+    GraduationTopic,
+    TopicSelection,
 )
 from app.models.defense import (
-    ArchiveConsent, ArchiveFile, ArchivePackage, DefenseAssignment, DefenseExaminer,
-    DefenseResult, DefenseSession,
+    ArchiveConsent,
+    ArchiveFile,
+    ArchivePackage,
+    DefenseAssignment,
+    DefenseExaminer,
+    DefenseResult,
+    DefenseSession,
 )
 from app.models.system import ReviewRecord, SysFile
 from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
 from app.modules.archive import router as archive_router
 from app.modules.archive.router import (
-    ArchiveCreate, archive_transition, create_archive, package_detail, revoke_package, search_packages,
+    ArchiveCreate,
+    archive_transition,
+    create_archive,
+    package_detail,
+    revoke_package,
+    search_packages,
 )
 
 SENSITIVE_KEYS = ("student_name", "student_no", "result_score", "result_decision")
@@ -128,7 +142,7 @@ class ArchiveVisibilityTest(unittest.TestCase):
 
     def test_unrelated_teacher_response_has_no_identity_keys(self):
         data = self._detail(STRANGER_TEACHER)
-        for key in IDENTITY_KEYS + ("result_score", "result_decision"):
+        for key in (*IDENTITY_KEYS, "result_score", "result_decision"):
             self.assertNotIn(key, data, f"无关教师响应里不得出现 {key}")
         self.assertEqual(data["files"], [], "无权者不得拿到文件清单")
         self.assertEqual(data["visibility"], "PRIVATE")
@@ -136,7 +150,7 @@ class ArchiveVisibilityTest(unittest.TestCase):
 
     def test_other_student_response_has_no_identity_keys(self):
         data = self._detail(OTHER_STUDENT)
-        for key in SENSITIVE_KEYS + ("college", "major", "teacher_name"):
+        for key in (*SENSITIVE_KEYS, "college", "major", "teacher_name"):
             self.assertNotIn(key, data, f"其他学生响应里不得出现 {key}")
         self.assertEqual(data["files"], [])
         print(f"[D26] 其他学生可见键: {sorted(data.keys())}")
@@ -144,7 +158,7 @@ class ArchiveVisibilityTest(unittest.TestCase):
     def test_anonymous_builder_cannot_emit_identity_keys(self):
         """未登录(无 token)在权限依赖层就被拦; 即使直接调用构造器也拿不到敏感键."""
         data = body_json(package_detail(self.pkg.id, user=None, db=self.db))
-        for key in SENSITIVE_KEYS + ("college", "major", "teacher_name"):
+        for key in (*SENSITIVE_KEYS, "college", "major", "teacher_name"):
             self.assertNotIn(key, data, f"匿名响应里不得出现 {key}")
         print(f"[D26] 未登录(user=None)可见键: {sorted(data.keys())}")
 
@@ -177,7 +191,7 @@ class ArchiveVisibilityTest(unittest.TestCase):
         data = self._detail(STRANGER_TEACHER)
         self.assertEqual(data["visibility"], "METADATA")
         self.assertEqual(data["abstract"], "摘要内容")
-        for key in SENSITIVE_KEYS + ("college", "major", "teacher_name"):
+        for key in (*SENSITIVE_KEYS, "college", "major", "teacher_name"):
             self.assertNotIn(key, data, f"仅元数据授权时不得暴露 {key}")
         self.assertEqual(data["files"], [])
 

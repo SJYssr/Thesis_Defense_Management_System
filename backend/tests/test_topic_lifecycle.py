@@ -17,7 +17,11 @@ from app.models.business import GraduationTopic
 from app.models.system import OperationLog
 from app.models.user import SysUser, TeacherProfile
 from app.modules.topic.router import (
-    TopicCreateRequest, close_topic, create_topic, list_topics, publish_topic,
+    TopicCreateRequest,
+    close_topic,
+    create_topic,
+    list_topics,
+    publish_topic,
 )
 
 

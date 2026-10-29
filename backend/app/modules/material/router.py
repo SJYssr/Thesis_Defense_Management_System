@@ -2,9 +2,9 @@
 
 论文(THESIS)提交后自动创建 AI 知识文档记录并触发 RAG 入库(roadmap 三十二章).
 """
-import json
 import logging
-from datetime import date, datetime as dt, time, timedelta
+from datetime import date, time, timedelta
+from datetime import datetime as dt
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, UploadFile

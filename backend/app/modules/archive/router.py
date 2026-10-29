@@ -38,7 +38,6 @@ from app.models.defense import (
     DefenseAssignment,
     DefenseExaminer,
     DefenseResult,
-    DefenseSession,
 )
 from app.models.enums import ArchiveStatus, ConsentVisibility, ResultStatus
 from app.models.system import OperationLog, SysFile, TopicAttachment

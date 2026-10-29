@@ -97,6 +97,7 @@ class FormalDefenseSnapshotTest(unittest.TestCase):
 
     def test_published_session_without_result_is_scheduled(self):
         from datetime import datetime
+
         from app.models.defense import DefenseAssignment, DefenseSession
 
         with new_session() as db:

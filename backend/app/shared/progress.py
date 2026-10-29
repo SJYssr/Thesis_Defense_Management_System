@@ -7,7 +7,6 @@ AI 只负责解释风险, 不负责编造进度。
 材料齐全但答辩未过时 percent 封顶 90 且 blockers 含"答辩未通过"。
 """
 from dataclasses import dataclass, field
-from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session

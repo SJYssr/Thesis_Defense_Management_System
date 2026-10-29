@@ -8,27 +8,27 @@
 对外只暴露 AgentRunner / AgentContext / AgentToolbox / agent_trace;
 rag_service.answer_agent_stream 负责把事件流包装成 SSE 契约。
 """
+from app.ai.agent.loop import AgentRunner
 from app.ai.agent.tools import (
     RETRIEVAL_TOOLS,
+    TOOL_REGISTRY,
     AgentContext,
     AgentTool,
     AgentToolbox,
     AgentToolError,
-    TOOL_REGISTRY,
     tools_prompt,
 )
 from app.ai.agent.trace import AgentTrace, agent_trace
-from app.ai.agent.loop import AgentRunner
 
 __all__ = [
     "RETRIEVAL_TOOLS",
+    "TOOL_REGISTRY",
     "AgentContext",
     "AgentRunner",
     "AgentTool",
-    "AgentToolbox",
     "AgentToolError",
+    "AgentToolbox",
     "AgentTrace",
-    "TOOL_REGISTRY",
     "agent_trace",
     "tools_prompt",
 ]

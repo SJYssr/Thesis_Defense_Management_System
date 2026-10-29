@@ -6,7 +6,6 @@
 - 已被 graduation_cycle 引用的学年不可删除, 只能停用, 保证历史流程可追溯
 """
 from datetime import datetime
-
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query

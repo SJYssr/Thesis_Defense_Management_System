@@ -244,7 +244,7 @@ class RetrieveRerankPipelineTest(unittest.TestCase):
         """回表拿不到的 chunk(他人残留/已删)不进精排池 —— D44 裁剪必须保留."""
         self._add(999, "他人的答辩流程私有内容", student_id=99)
         fake = _KeywordReranker()
-        hits = [(999, 0.99)] + self.vector_hits
+        hits = [(999, 0.99), *self.vector_hits]
         with mock.patch.object(vector_store, "search", return_value=hits), \
                 mock.patch.object(HybridRetriever, "keyword_search", return_value=[]), \
                 mock.patch.object(retriever_module, "get_reranker", return_value=fake):

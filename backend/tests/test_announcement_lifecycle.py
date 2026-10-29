@@ -12,8 +12,14 @@ from app.db.base import Base
 from app.models import all as _all_models  # noqa: F401
 from app.models.system import Announcement, Notification, OperationLog
 from app.modules.announcement.router import (
-    AnnouncementRequest, create_announcement, delete_announcement, get_announcement,
-    list_announcements, mark_all_read, my_notifications, update_announcement,
+    AnnouncementRequest,
+    create_announcement,
+    delete_announcement,
+    get_announcement,
+    list_announcements,
+    mark_all_read,
+    my_notifications,
+    update_announcement,
 )
 
 ADMIN = CurrentUser(id=99, username="admin", real_name="管理员", role="ADMIN", profile_id=None)

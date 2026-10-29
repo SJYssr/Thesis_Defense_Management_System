@@ -9,8 +9,7 @@ from app.models.business import GraduationCycle, GraduationMaterial, GraduationM
 from app.models.defense import ArchiveConsent, DefenseAssignment
 from app.models.system import SysFile
 from app.shared.fileperm import ensure_file_access
-from tests.test_archive_access import (EXAMINER, OTHER_STUDENT, OWNER, SUPERVISOR,
-                                       make_package, new_engine, seed)
+from tests.test_archive_access import EXAMINER, OTHER_STUDENT, OWNER, SUPERVISOR, make_package, new_engine, seed
 
 
 class FileCyclePermissionTest(unittest.TestCase):

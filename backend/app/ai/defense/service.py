@@ -27,7 +27,7 @@ from app.models.ai import (
     AIUsageLog,
 )
 from app.models.business import GraduationTopic
-from app.models.enums import QuestionType, QUESTION_GENERATION_PLAN
+from app.models.enums import QUESTION_GENERATION_PLAN, QuestionType
 
 logger = logging.getLogger("app.ai.defense")
 

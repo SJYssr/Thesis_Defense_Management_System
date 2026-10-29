@@ -15,11 +15,14 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import BigInteger, Integer, create_engine, select
-from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
 from app.core.exceptions import (
-    BusinessException, PermissionDeniedException, ResourceNotFoundException, register_exception_handlers,
+    BusinessException,
+    PermissionDeniedException,
+    ResourceNotFoundException,
+    register_exception_handlers,
 )
 from app.core.permissions import CurrentUser, get_current_user
 from app.db.base import Base
@@ -32,8 +35,14 @@ from app.models.system import SysFile, TopicAttachment
 from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
 from app.modules.archive import router as archive_router
 from app.modules.archive.router import (
-    ArchiveApprove, StudentArchiveFile, StudentArchiveSubmit, approve_package, archive_transition,
-    search_packages, student_archive_eligibility, submit_archive_package,
+    ArchiveApprove,
+    StudentArchiveFile,
+    StudentArchiveSubmit,
+    approve_package,
+    archive_transition,
+    search_packages,
+    student_archive_eligibility,
+    submit_archive_package,
 )
 
 ADMIN = CurrentUser(id=5, username="admin", real_name="管理员", role="ADMIN", profile_id=None)

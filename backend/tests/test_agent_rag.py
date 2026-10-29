@@ -48,13 +48,13 @@ from app.core.permissions import CurrentUser, get_current_user, require_student
 from app.db.base import Base
 from app.db.mysql import get_db
 from app.models import all as _all_models  # noqa: F401
+from app.models.ai import AIUsageLog
 from app.models.business import (
     GraduationCycle,
     GraduationTopic,
     OpeningReport,
     TopicSelection,
 )
-from app.models.ai import AIUsageLog
 from app.models.defense import ReviewRubric
 from app.modules.ai import router as ai_router_module
 
@@ -412,7 +412,7 @@ class AgentFlowTest(_AgentTestBase):
 
         # 4) 检索下推的 student_id 只能是 ctx 本人
         box.execute("search_knowledge", self.db, ctx_a, {"query": "本人检索"})
-        args, kwargs = self.retrieve_calls[-1]
+        args, _kwargs = self.retrieve_calls[-1]
         self.assertEqual(args[1], STUDENT_A, "检索必须用 ctx.student_id 做归属过滤")
 
         # 5) loop 层同样拒绝: LLM 决策里带身份参数只能拿到 error observation

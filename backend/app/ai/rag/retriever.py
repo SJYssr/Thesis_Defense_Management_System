@@ -20,7 +20,7 @@ from app.ai.llm.factory import LLMFactory, extract_json
 from app.ai.prompts import resolve_system_prompt
 from app.ai.rag.bm25 import BM25Index
 from app.ai.rerank.factory import get_reranker
-from app.ai.vector.store import safe_document_types, student_scope_filter, vector_store
+from app.ai.vector.store import student_scope_filter, vector_store
 from app.models.ai import AIDocumentChunk
 
 logger = logging.getLogger("app.ai.rag")

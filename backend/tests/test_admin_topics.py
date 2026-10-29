@@ -5,18 +5,20 @@ import unittest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import BusinessException
+from app.core.permissions import CurrentUser
 from app.db.base import Base
 from app.models import all as _all_models  # noqa: F401
 from app.models.business import GraduationTopic, TopicSelection
 from app.models.system import OperationLog
 from app.models.user import SysUser, TeacherProfile
 from app.modules.topic.router import (
-    AdminTopicRequest, admin_create_topic, admin_delete_topic,
-    admin_list_topics, admin_publish_topic,
+    AdminTopicRequest,
+    admin_create_topic,
+    admin_delete_topic,
+    admin_list_topics,
+    admin_publish_topic,
 )
-from app.core.exceptions import BusinessException
-from app.core.permissions import CurrentUser
-
 
 ADMIN = CurrentUser(id=99, username="admin", real_name="管理员", role="ADMIN", profile_id=None)
 

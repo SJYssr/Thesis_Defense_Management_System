@@ -17,19 +17,26 @@ from sqlalchemy.pool import StaticPool
 from app.ai.vector.store import vector_store
 from app.core.exceptions import BusinessException, register_exception_handlers
 from app.core.permissions import CurrentUser, require_teacher
-from app.db.mysql import get_db
 from app.db.base import Base
+from app.db.mysql import get_db
 from app.models import all as _all_models  # noqa: F401
 from app.models.ai import AIDocument, AIDocumentChunk
 from app.models.business import (
-    FinalDefense, GraduationCycle, GraduationMaterial, GraduationProcess, GraduationTopic,
+    FinalDefense,
+    GraduationCycle,
+    GraduationMaterial,
+    GraduationProcess,
+    GraduationTopic,
     TopicSelection,
 )
 from app.models.system import ReviewRecord
 from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
 from app.modules.material import router as material_router
 from app.modules.material.router import (
-    ReviewRequest, _review_material, delete_material_file, upload_material_file,
+    ReviewRequest,
+    _review_material,
+    delete_material_file,
+    upload_material_file,
 )
 
 STUDENT = CurrentUser(id=2, username="s001", real_name="学生甲", role="STUDENT", profile_id=1)

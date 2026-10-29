@@ -1,0 +1,48 @@
+# 后端静态检查配置(ruff)。
+#
+# 只放 lint 配置, 不作为打包元数据 —— 项目依赖仍以 requirements.txt 为唯一来源
+# (生产镜像 `pip install -r requirements.txt`, CI 另装 ruff, 不把 lint 工具塞进运行时)。
+#
+# 规则集是**保守起步**的: 只启用能抓到真实缺陷、且与项目既定写法不冲突的规则。
+# 刻意没启用的部分(附理由):
+#   B008   FastAPI 的 `x: T = Depends(dep)` 是官方写法, 全项目 363 处, 属误报。
+#   DTZ    `datetime.now()` 全项目统一用本地时间(Asia/Shanghai), Celery 时区、模型
+#          server_default 同口径; 改 tz-aware 会牵动序列化与既有数据语义。
+#   RUF100 规则集裁剪后, noqa 注释与其覆盖的规则不再匹配, 自动修会误删有效 noqa。
+#   RUF001/2/3 中文全角标点(，。；：)被判为"歧义 unicode 字符", 对中文项目是噪音。
+#   E501   长行上限交给各编辑器; 代码里有意保留的宽表格/长字符串较多。
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+extend-exclude = [
+    ".venv",
+    "alembic/versions",  # 迁移文件由 alembic 生成, 不参与风格治理
+]
+
+[tool.ruff.lint]
+select = [
+    "F",    # pyflakes: 未定义名 / 未用变量与导入
+    "E9",   # 语法与运行期错误
+    "I",    # import 排序
+    "UP",   # pyupgrade: 旧语法升级
+    "PIE",  # 明显的逻辑瑕疵(如重复枚举值)
+    "RUF",  # ruff 自有规则
+]
+ignore = [
+    "RUF100",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # UP031 建议 `"%s" % x` 改 f-string。43 处全在诊断文案里, 纯风格; ruff 对该
+    # 规则的自动修复是 unsafe(会改求值顺序), 换来的可读性收益不足以承担改动风险。
+    "UP031",
+    # UP042 建议把 `class X(str, Enum)` 换成 StrEnum。这里**不能换**: 两者
+    # str() 语义不同 —— `str, Enum` 的 str(X.A) == "X.A", StrEnum 的 == "A"。
+    # 业务层多处 `str(getattr(user, "role", ""))` 依赖前者, 改了会让角色判断全线失配。
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试与冒烟脚本允许"为副作用导入"和宽断言写法
+"tests/*" = ["F401"]
+"smoke_test.py" = ["F401"]

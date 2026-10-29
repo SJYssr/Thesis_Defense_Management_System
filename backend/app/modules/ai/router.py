@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai.defense.service import DefenseService
+from app.ai.progress.service import ProgressAnalysisService
+from app.ai.rag.rag_service import RAGService
+from app.core.config import settings
 from app.core.exceptions import BusinessException, PermissionDeniedException
 from app.core.permissions import (
     CurrentUser,
@@ -20,10 +24,6 @@ from app.core.permissions import (
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
 from app.db.redis import RedisKeys, redis_client
-from app.ai.defense.service import DefenseService
-from app.ai.progress.service import ProgressAnalysisService
-from app.ai.rag.rag_service import RAGService
-from app.core.config import settings
 from app.models.ai import AIDocument
 from app.models.enums import AIDocumentType
 

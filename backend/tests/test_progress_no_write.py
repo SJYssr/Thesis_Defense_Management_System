@@ -15,14 +15,12 @@ from sqlalchemy.orm import Session
 from app.core.permissions import CurrentUser
 from app.db.base import Base
 from app.models import all as _all_models  # noqa: F401
-from app.models.business import (GraduationCycle, GraduationProcess,
-                                 GraduationSchedule)
+from app.models.business import GraduationCycle, GraduationProcess, GraduationSchedule
 from app.models.system import Notification, OperationLog
 from app.models.user import StudentProfile, SysUser
-from app.tasks import risk_scan as risk_scan_module
 from app.modules.progress import router as progress_router
-from app.modules.progress.router import (_run_overdue_scan_batched, admin_overdue_scan,
-                                         my_progress, student_progress_detail)
+from app.modules.progress.router import _run_overdue_scan_batched, admin_overdue_scan, my_progress, student_progress_detail
+from app.tasks import risk_scan as risk_scan_module
 
 FROZEN = datetime(2021, 1, 1, 8, 0, 0)
 ADMIN = CurrentUser(id=1, username="admin", real_name="管理员", role="ADMIN", profile_id=None)

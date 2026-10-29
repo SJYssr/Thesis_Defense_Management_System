@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
-from typing import Generator
+from collections.abc import Generator
 
 from app.ai.net import open_url, openai_http_client
 from app.ai.providers import openai_base_url
@@ -352,7 +352,7 @@ class MockLLM(BaseLLMService):
                 "summary": f"学生当前进度由规则引擎计算为 {ctx.get('progress_percent', 0)}%, 材料完整性总体{ctx.get('materials_summary', '一般')}。",
                 "problems": ["中期报告的测试部分内容偏少", "材料中数据库设计说明不够完整"],
                 "suggestions": ["补充系统测试用例与结果说明", "完善数据库ER图与表结构说明"],
-                "recommended_reminder": f"提醒: 请按计划推进当前阶段材料并尽快提交。",
+                "recommended_reminder": "提醒: 请按计划推进当前阶段材料并尽快提交。",
             }, ensure_ascii=False)
 
         if "standalone_query" in system:

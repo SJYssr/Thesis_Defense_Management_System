@@ -38,7 +38,7 @@ def http_status_for_code(code: int) -> int:
     return 400
 
 
-class PageData(BaseModel, Generic[T]):
+class PageData(BaseModel, Generic[T]):  # noqa: UP046 - pydantic 泛型基类保持 Generic[T] 写法
     items: list[T]
     page: int
     page_size: int
