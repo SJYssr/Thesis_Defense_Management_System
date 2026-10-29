@@ -49,6 +49,28 @@ def _completed_count(db: Session) -> int:
     )).scalar_one()
 
 
+def _batch_names_and_titles(db: Session, student_id_set, topic_id_set):
+    """批量取"学生姓名"与"题目名称"两张映射表(D76).
+
+    旧写法在 dashboard 的两个 activity 端点里逐行 ``db.get(StudentProfile)`` /
+    ``db.get(SysUser)`` / ``db.get(GraduationTopic)``, 5 类待办各 10 条时单次请求要打
+    116 条 SQL(SQL 次数随待办行数线性增长)。这里两个集合各一次 IN 查询取回,
+    与行数无关; 查不到的 id 由调用方回退成占位符, 口径与旧实现一致。
+    """
+    student_ids = {sid for sid in student_id_set if sid is not None}
+    topic_ids = {tid for tid in topic_id_set if tid is not None}
+    names = dict(db.execute(
+        select(StudentProfile.id, SysUser.real_name)
+        .join(SysUser, SysUser.id == StudentProfile.user_id)
+        .where(StudentProfile.id.in_(student_ids))
+    ).all()) if student_ids else {}
+    titles = dict(db.execute(
+        select(GraduationTopic.id, GraduationTopic.title)
+        .where(GraduationTopic.id.in_(topic_ids))
+    ).all()) if topic_ids else {}
+    return names, titles
+
+
 @router.get("/teacher-activity")
 def teacher_activity(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     """Teacher's own review queue, student stages and assigned defense sessions."""
@@ -82,21 +104,34 @@ def teacher_activity(user: CurrentUser = Depends(get_current_user), db: Session 
                   ("中期材料审核", MidtermReport, "SUBMITTED", "/teacher/midterm"),
                   ("终期材料审核", FinalDefense, "SUBMITTED", "/teacher/final"),
                   ("毕业材料审核", GraduationMaterial, "SUBMITTED", "/teacher/materials")]
-    pending = []
+    # 5 类待办与"已完成"两块的行先捞齐(每类 2 条 SQL: count + limit), 再统一批量取姓名/题目(D76)
+    pending_specs = []
     pending_count = 0
     for label, model, status, path in task_types:
         pending_count += db.execute(select(func.count(model.id)).where(
             model.teacher_id == user.profile_id, model.status == status)).scalar_one()
         rows = db.execute(select(model).where(model.teacher_id == user.profile_id, model.status == status)
                           .order_by(model.id.desc()).limit(10)).scalars().all()
-        for row in rows:
-            student = db.get(StudentProfile, row.student_id)
-            student_user = db.get(SysUser, student.user_id) if student else None
-            topic = db.get(GraduationTopic, row.topic_id) if row.topic_id else None
-            when = row.created_at if model is TopicSelection else row.submitted_at
-            pending.append({"type": label, "student": student_user.real_name if student_user else "学生",
-                            "topic": topic.title if topic else "—", "time": when.isoformat() if when else None,
-                            "status": "待审核", "path": path})
+        pending_specs.extend((label, path, model, row) for row in rows)
+
+    reviewed = db.execute(select(ReviewRecord).where(ReviewRecord.reviewer_id == user.id,
+                         ReviewRecord.action.in_(["APPROVE", "REJECT", "RETURN"]))
+                          .order_by(ReviewRecord.id.desc()).limit(10)).scalars().all()
+
+    name_by_student, title_by_topic = _batch_names_and_titles(
+        db,
+        {spec[3].student_id for spec in pending_specs} | {r.student_id for r in reviewed},
+        {spec[3].topic_id for spec in pending_specs if spec[3].topic_id}
+        | {topic_ids[r.student_id] for r in reviewed if r.student_id in topic_ids},
+    )
+
+    pending = []
+    for label, path, model, row in pending_specs:
+        when = row.created_at if model is TopicSelection else row.submitted_at
+        pending.append({"type": label, "student": name_by_student.get(row.student_id) or "学生",
+                        "topic": title_by_topic.get(row.topic_id) or "—",
+                        "time": when.isoformat() if when else None,
+                        "status": "待审核", "path": path})
     pending.sort(key=lambda row: row["time"] or "", reverse=True)
 
     doing = []
@@ -113,9 +148,6 @@ def teacher_activity(user: CurrentUser = Depends(get_current_user), db: Session 
     done_count = db.execute(select(func.count(ReviewRecord.id)).where(
         ReviewRecord.reviewer_id == user.id,
         ReviewRecord.action.in_(["APPROVE", "REJECT", "RETURN"]))).scalar_one()
-    reviewed = db.execute(select(ReviewRecord).where(ReviewRecord.reviewer_id == user.id,
-                         ReviewRecord.action.in_(["APPROVE", "REJECT", "RETURN"]))
-                          .order_by(ReviewRecord.id.desc()).limit(10)).scalars().all()
     done = []
     review_labels = {"TOPIC_SELECTION": ("选题审核", "/teacher/selections"),
                      "OPENING_REPORT": ("开题报告审核", "/teacher/opening"),
@@ -124,12 +156,8 @@ def teacher_activity(user: CurrentUser = Depends(get_current_user), db: Session 
                      "GRADUATION_MATERIAL": ("毕业材料审核", "/teacher/materials")}
     for row in reviewed:
         label, path = review_labels.get(row.business_type, ("材料审核", "/teacher/students"))
-        student = db.get(StudentProfile, row.student_id)
-        student_user = db.get(SysUser, student.user_id) if student else None
-        topic_id = topic_ids.get(row.student_id)
-        topic = db.get(GraduationTopic, topic_id) if topic_id else None
-        done.append({"type": label, "student": student_user.real_name if student_user else "学生",
-                     "topic": topic.title if topic else "—",
+        done.append({"type": label, "student": name_by_student.get(row.student_id) or "学生",
+                     "topic": title_by_topic.get(topic_ids.get(row.student_id)) or "—",
                      "time": row.created_at.isoformat() if row.created_at else None,
                      "status": "已完成", "path": path})
 
@@ -292,7 +320,7 @@ def admin_activity(user: CurrentUser = Depends(get_current_user), db: Session = 
         ("毕业材料", GraduationMaterial, "material"),
     ]
     counts = []
-    todos = []
+    todo_specs = []
     for label, model, kind in stage_models:
         conditions = [model.status == ("PENDING" if model is TopicSelection else "SUBMITTED")]
         if model is TopicSelection:
@@ -302,11 +330,23 @@ def admin_activity(user: CurrentUser = Depends(get_current_user), db: Session = 
         date_field = model.created_at if model is TopicSelection else model.submitted_at
         pending = db.execute(select(model.student_id, date_field).where(*conditions)
                              .order_by(date_field.desc()).limit(5)).all()
+        todo_specs.append((label, kind, pending))
+
+    recent = db.execute(select(ReviewRecord).where(ReviewRecord.action.in_(["SUBMIT", "RESUBMIT"]))
+                        .order_by(ReviewRecord.created_at.desc(), ReviewRecord.id.desc()).limit(5)).scalars().all()
+
+    # 待办与最近提交两块共用一次批量姓名查询(D76)
+    name_by_student, _ = _batch_names_and_titles(
+        db,
+        {student_id for _, _, pending in todo_specs for student_id, _ in pending}
+        | {record.student_id for record in recent},
+        (),
+    )
+
+    todos = []
+    for label, kind, pending in todo_specs:
         for student_id, date in pending:
-            name = db.execute(select(SysUser.real_name)
-                              .join(StudentProfile, StudentProfile.user_id == SysUser.id)
-                              .where(StudentProfile.id == student_id)).scalar_one_or_none()
-            todos.append({"text": f"{name or '学生'}的{label}待处理", "cat": label,
+            todos.append({"text": f"{name_by_student.get(student_id) or '学生'}的{label}待处理", "cat": label,
                           "date": date.isoformat()[:10] if date else "", "kind": kind,
                           "sort_date": date.isoformat() if date else ""})
     todos.sort(key=lambda item: item["sort_date"], reverse=True)
@@ -322,10 +362,8 @@ def admin_activity(user: CurrentUser = Depends(get_current_user), db: Session = 
                         .order_by(ReviewRecord.created_at.desc(), ReviewRecord.id.desc()).limit(5)).scalars().all()
     submissions = []
     for record in recent:
-        name = db.execute(select(SysUser.real_name)
-                          .join(StudentProfile, StudentProfile.user_id == SysUser.id)
-                          .where(StudentProfile.id == record.student_id)).scalar_one_or_none()
-        submissions.append({"name": name or "学生", "content": business_cn.get(record.business_type, record.business_type),
+        submissions.append({"name": name_by_student.get(record.student_id) or "学生",
+                            "content": business_cn.get(record.business_type, record.business_type),
                             "time": record.created_at.isoformat()[:16].replace("T", " ") if record.created_at else "",
                             "status": "待审核" if record.after_status in ("PENDING", "SUBMITTED") else record.after_status})
     return ResponseUtil.success({"counts": counts, "todos": todos[:8], "submissions": submissions})
