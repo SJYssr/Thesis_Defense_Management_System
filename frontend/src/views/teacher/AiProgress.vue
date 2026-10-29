@@ -181,7 +181,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import * as echarts from 'echarts'
+import echarts, { type ECharts } from '@/utils/echarts'
 import { ElMessage } from 'element-plus'
 import { MagicStick, Promotion } from '@element-plus/icons-vue'
 import { progressApi } from '@/api/business'
@@ -249,7 +249,7 @@ function riskClass(risk: string) {
 const stageBarRef = ref<HTMLElement>()
 const stagePieRef = ref<HTMLElement>()
 const riskPieRef = ref<HTMLElement>()
-let charts: echarts.ECharts[] = []
+let charts: ECharts[] = []
 let resizeHandler: (() => void) | undefined
 
 function renderCharts() {

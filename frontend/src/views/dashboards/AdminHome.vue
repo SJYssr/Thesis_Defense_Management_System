@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import * as echarts from 'echarts'
+import echarts, { type ECharts } from '@/utils/echarts'
 import { STAT_ICONS } from '@/components/statIcons'
 import { dashboardApi } from '@/api/common'
 import { scopeLabel, scopeLabelWithYear } from '@/utils/dashboardScope'
@@ -93,7 +93,7 @@ const statCards = computed(() => [
 const barRef = ref<HTMLElement>()
 const lineRef = ref<HTMLElement>()
 const pieRef = ref<HTMLElement>()
-let charts: echarts.ECharts[] = []
+let charts: ECharts[] = []
 function makeChart(el: HTMLElement | undefined) {
   if (!el) return null
   const chart = echarts.init(el)

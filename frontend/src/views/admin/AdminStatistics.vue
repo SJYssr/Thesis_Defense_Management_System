@@ -130,7 +130,7 @@
 
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, nextTick, computed, reactive, ref } from 'vue'
-import * as echarts from 'echarts'
+import echarts, { type ECharts } from '@/utils/echarts'
 import { STAT_ICONS } from '@/components/statIcons'
 import { dashboardApi } from '@/api/common'
 import { scopeLabel, scopeLabelWithYear } from '@/utils/dashboardScope'
@@ -209,7 +209,7 @@ const passChartRef = ref<HTMLElement>()
 const typeChartRef = ref<HTMLElement>()
 const monthChartRef = ref<HTMLElement>()
 const defenseChartRef = ref<HTMLElement>()
-let charts: echarts.ECharts[] = []
+let charts: ECharts[] = []
 function chartOn(el: HTMLElement | undefined) {
   if (!el) return null
   const chart = echarts.init(el)

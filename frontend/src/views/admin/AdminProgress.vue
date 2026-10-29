@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import * as echarts from 'echarts'
+import echarts, { type ECharts } from '@/utils/echarts'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { progressApi } from '@/api/business'
 import { materialApi } from '@/api/business'
@@ -51,7 +51,7 @@ const sending = ref(false)
 const stageChartRef = ref<HTMLElement>()
 const distChartRef = ref<HTMLElement>()
 const trendChartRef = ref<HTMLElement>()
-let charts: echarts.ECharts[] = []
+let charts: ECharts[] = []
 function drawCharts() {
   charts.forEach(chart => chart.dispose()); charts = []
   if (stageChartRef.value) {

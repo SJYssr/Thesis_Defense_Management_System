@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import * as echarts from 'echarts'
+import echarts, { type ECharts } from '@/utils/echarts'
 import { useUserStore } from '@/stores/user'
 import { dashboardApi } from '@/api/common'
 import { systemName } from '@/stores/app'
@@ -68,7 +68,7 @@ const taskRows = computed<TaskRow[]>(() => activity.value.tasks[taskTab.value] |
 
 /* ===== 我的学生情况（环形图） ===== */
 const donutRef = ref<HTMLDivElement>()
-let chart: echarts.ECharts | null = null
+let chart: ECharts | null = null
 const STAGE_DATA = computed(() => [
   { name: '选题中', value: activity.value.student_stages.SELECTION || 0, color: '#4a9eff' },
   { name: '开题阶段', value: activity.value.student_stages.OPENING || 0, color: '#34c77b' },
