@@ -1,0 +1,87 @@
+# 最小 CI: 把 AGENTS.md 里"提交前四套验收"中能脱离真实依赖跑的三套固化下来。
+#
+# 覆盖:
+#   1) 后端静态检查 ruff (backend/pyproject.toml)
+#   2) 后端全量单测 (565 个, 全部用 sqlite 内存库 + redis/AI 替身, 不需要 MySQL/Redis)
+#   3) 前端 build(含 vue-tsc 类型检查) + API 契约比对 + 401 恢复路径验证
+#
+# **不覆盖** smoke_test.py: 它要求真库 alembic 迁移 + seed 演示数据 + 真 Redis 向量索引,
+# 顺序还是"先 FLUSHDB 再 seed", 属于发布前的本地/预发步骤, 不适合塞进每次 push 的 CI。
+#
+# 说明: 单测刻意不启 mysql/redis service —— 本仓库测试全部把 redis_client 与 AI 客户端
+# 打成替身, 在无任何外部服务的环境下也能跑完(已用 REDIS_PORT=不存在的端口验证过 565 全绿)。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端 · ruff + 单测
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # ruff 只进 CI, 不进 requirements.txt: 生产镜像不需要 lint 工具
+          pip install ruff
+
+      - name: ruff 静态检查
+        run: ruff check .
+
+      - name: 单元测试
+        env:
+          # 与本地一致: 测试跑在 sqlite 内存库上, 不连任何外部服务
+          APP_ENV: test
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s tests -v
+
+  frontend:
+    name: 前端 · build + 契约 + 401
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      # build 里已含 `vue-tsc -b`, 类型错误会在这里就拦住
+      - name: 构建
+        run: npm run build
+
+      - name: API 契约比对
+        run: npm run check:contract
+
+      - name: 401 恢复路径验证
+        run: npm run verify:401
