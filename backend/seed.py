@@ -18,11 +18,10 @@ from sqlalchemy import select
 from app.core.security import hash_password
 from app.db.base import Base
 from app.db.mysql import SessionLocal, engine
-from app.models.all import *  # noqa: F401,F403
 from app.models.ai import AIDocument
+from app.models.all import *  # noqa: F401,F403
 from app.models.business import (
     FinalDefense,
-    GraduationCycle,
     GraduationMaterial,
     GraduationMaterialFile,
     GraduationProcess,

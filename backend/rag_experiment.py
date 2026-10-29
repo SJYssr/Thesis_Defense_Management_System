@@ -24,8 +24,8 @@ from sqlalchemy import select
 
 from app.ai.llm.factory import LLMFactory, extract_json
 from app.ai.rag.evaluation import STRATEGIES, evaluate_dataset, load_dataset_file, summarize_for_paper
-from app.ai.rag.retriever import HybridRetriever
 from app.ai.rag.rag_service import RAGService
+from app.ai.rag.retriever import HybridRetriever
 from app.db.mysql import SessionLocal
 from app.models.user import StudentProfile, SysUser
 
