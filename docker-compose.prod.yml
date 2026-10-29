@@ -82,6 +82,14 @@ services:
         condition: service_healthy
     # Celery Worker(内嵌 Beat): 文档解析/Embedding/索引等重任务 + 每日逾期风险扫描调度
     command: celery -A app.tasks.celery_app.celery_app worker -B --loglevel=info --concurrency=2
+    # backend 镜像里的 HEALTHCHECK 探的是 :8000 HTTP, worker 不跑 uvicorn, 会永久 unhealthy;
+    # 这里改成问 broker 自己: celery inspect ping 收到 pong 才算健康。
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app.celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
 
   frontend:
     build: ./frontend
