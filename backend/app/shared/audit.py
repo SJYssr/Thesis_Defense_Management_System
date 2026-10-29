@@ -50,6 +50,18 @@ def _client_ip(request: Request | None) -> str | None:
     return request.client.host[:64] if request.client else None
 
 
+def _request_id(request: Request | None) -> str | None:
+    """取请求追踪号: 优先用中间件落在 request.state 上的值, 其次用入站 header.
+
+    中间件会沿用客户端/网关传来的 x-request-id, 没有就新生成一个并回写响应头,
+    所以正常请求一定拿得到值; 这条链路断掉时才只剩 header 兜底。
+    """
+    if request is None:
+        return None
+    from_state = getattr(request.state, "request_id", None)
+    return from_state or request.headers.get("x-request-id")
+
+
 def _actor_ids(actor: Any) -> tuple[int | None, str | None]:
     if actor is None:
         return None, None
@@ -107,9 +119,7 @@ def record(
         result=result,
         method=(fields.pop("method", None) or (request.method if request is not None else None)),
         path=(fields.pop("path", None) or (request.url.path if request is not None else None)),
-        request_id=fields.pop("request_id", None) or (
-            request.headers.get("x-request-id") if request is not None else None
-        ),
+        request_id=fields.pop("request_id", None) or _request_id(request),
         ip=(fields.pop("ip", None) or _client_ip(request)),
         detail=_dump_detail(detail, fields),
     )

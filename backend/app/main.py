@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
+from app.core.middleware import attach_request_context
 from app.db.mysql import SessionLocal, engine
 from app.models import all as _all_models  # noqa: F401 — 保证建表前模型已注册
 
@@ -65,6 +66,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
+
+# 请求上下文: 生成/沿用 x-request-id 并绑定到 audit 的 ContextVar,
+# 让 operation_log 的 request_id 真正有值(见 app/core/middleware.py 的说明)。
+attach_request_context(app)
 
 app.add_middleware(
     CORSMiddleware,
