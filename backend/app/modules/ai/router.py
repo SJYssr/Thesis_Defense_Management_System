@@ -184,7 +184,6 @@ def chat_stream(body: ChatRequest, user: CurrentUser = Depends(require_student),
     多步路径内部任何异常都会先发 error 再回退单轮 answer_stream, 前端不会白屏。
     """
     _check_ai_rate(user, db)
-    rag = RAGService(db)
     use_agent = bool(settings.agent_enabled) if body.agent is None else bool(body.agent)
 
     def event_stream():

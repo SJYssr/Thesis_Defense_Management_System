@@ -64,11 +64,18 @@ class RiskLevel(str, Enum):
 
 
 class ReviewAction(str, Enum):
+    """审核记录动作.
+
+    实际落库取值由 app/shared/state_machine._RECORD_ACTIONS 决定, 只有
+    SUBMIT/APPROVE/REJECT/RETURN/REVOKE/REVIEW 六种。"重新提交"在库里同样记为
+    SUBMIT —— 版本差异由对象自身的 current_version 表达, action 不再细分,
+    因此这里不定义 RESUBMIT 别名(同值枚举会让两者在 Python 里相等, 反而误导读代码的人)。
+    """
+
     APPROVE = "APPROVE"
     REJECT = "REJECT"
     RETURN = "RETURN"
     SUBMIT = "SUBMIT"
-    RESUBMIT = "SUBMIT"
 
 
 class BusinessType(str, Enum):

@@ -40,7 +40,6 @@ class RAGService:
 
         try:
             # 1. 解析
-            text = None
             if doc.file_id:
                 from app.models.system import SysFile
 

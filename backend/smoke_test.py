@@ -144,6 +144,7 @@ first = r.json()["data"]
 check("开始答辩返回第一题", r.json()["code"] == 0 and first.get("question"), r.text[:200])
 print("    第一题:", first["question"][:60])
 
+nxt: dict = {}
 for i in range(6):
     q = first["question"] if i == 0 else nxt["question"]
     r = client.post(f"{BASE}/ai/defense/sessions/{session_id}/answer", headers=auth(s1),
