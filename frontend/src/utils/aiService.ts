@@ -17,7 +17,6 @@
  * 提供商/模型键, 那条口径连同 16 个旧键已被后端删除。
  */
 import request from '@/api/request'
-import { extractBackendMessage, resolveErrorMessage } from '@/utils/error'
 import type {
   AiChatStep,
   AiCitationSource,
@@ -261,20 +260,6 @@ export function aiAvailabilityNotice(health?: AiHealthSnapshot | null): AiNotice
     return { type: 'warning', title: 'AI 服务异常: ' + broken[0].label + ' ' + broken[0].detail }
   }
   return null
-}
-
-/** ------------------------------------------------------------ 错误文案 */
-
-/** 统一从请求异常里取 message: 后端 message > code 映射 > HTTP 状态 > 兜底(utils/error.ts 单源) */
-export function describeRequestError(error: unknown): string {
-  const err = error as { response?: { data?: unknown; status?: number }; message?: string } | null
-  const data = err?.response?.data as Record<string, unknown> | undefined
-  const code = typeof data?.code === 'number' ? data.code : null
-  const backendMessage = extractBackendMessage(data)
-  if (backendMessage || code != null) {
-    return resolveErrorMessage(code, backendMessage, err?.response?.status ?? null)
-  }
-  return resolveErrorMessage(null, err?.message ?? null, err?.response?.status ?? null)
 }
 
 /** ------------------------------------------------------------ AI 管理端(供应商 + 能力绑定) */
