@@ -72,7 +72,7 @@ async function recordingLimit(signal: AbortSignal) {
 async function ask(path: string, question: string, signal: AbortSignal) {
   const started = () => { stage.value = 'speaking' }
   try {
-    const options = { responseType: 'blob' as const, _silent: true, signal, timeout: 70000 }
+    const options = { responseType: 'blob' as const, _silent: true, _retryOralRateLimit: true, signal, timeout: 70000 }
     const audio = cachedSpeech || await request.get<Blob, Blob>(path + '/speech', options)
     signal.throwIfAborted()
     await playQuestionAudio(audio, signal, started)
@@ -90,7 +90,7 @@ async function ask(path: string, question: string, signal: AbortSignal) {
 async function transcribe(path: string, wav: Blob, signal: AbortSignal) {
   const form = new FormData()
   form.append('file', wav, 'answer.wav')
-  const options = { signal, _silent: true, timeout: 120000 }
+  const options = { signal, _silent: true, _retryOralRateLimit: true, timeout: 120000 }
   try {
     const { data } = await request.post<unknown, ApiEnvelope<{ text: string }>>(path + '/transcription', form, options)
     return data.text.trim()

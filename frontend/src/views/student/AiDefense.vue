@@ -28,6 +28,7 @@ const busy = ref(false)
 const parentError = ref('')
 const completionAudio = shallowRef<AbortController | null>(null)
 let pendingAnswer = ''
+let roomRequests: AbortController | null = null
 let generation = 0
 let deviceRequest = 0
 let mounted = true
@@ -78,6 +79,8 @@ function pauseRoom() {
 function visibilityChanged() { if (document.hidden) pauseRoom() }
 
 async function leaveRoom() {
+  roomRequests?.abort()
+  roomRequests = null
   generation++
   closeMedia()
   dialog.value?.close()
@@ -109,16 +112,17 @@ function complete() {
 // Always ask the server for the current unanswered turn. Retrying an acknowledged
 // answer or a lost "next" response therefore resumes the same session.
 async function advance() {
-  if (busy.value || !room.value || paused.value || finished.value || !stream.value) return
+  const signal = roomRequests?.signal
+  if (!signal || signal.aborted || busy.value || !room.value || paused.value || finished.value || !stream.value) return
   const run = generation
   const currentRun = () => mounted && room.value && run === generation
   busy.value = true
   parentError.value = ''
   try {
     if (sessionId.value === null) {
-      const bank = await aiApi.generateQuestions(8)
+      const bank = await aiApi.generateQuestions(8, signal)
       if (!currentRun()) return
-      const created = await aiApi.createSession(8, bank.data.questions.map((q: { id: number }) => q.id))
+      const created = await aiApi.createSession(8, bank.data.questions.map((q: { id: number }) => q.id), signal)
       if (!currentRun()) return
       sessionId.value = created.data.session_id
       await router.replace({ query: { session: String(sessionId.value) } })
@@ -126,21 +130,21 @@ async function advance() {
     const id = sessionId.value
     if (!id || !currentRun()) return
     if (!turn.value) {
-      const { data } = await aiApi.sessionDetail(id)
+      const { data } = await aiApi.sessionDetail(id, signal)
       if (!currentRun()) return
       if (data.status === 'FINISHED') { complete(); return }
       if (data.status === 'CREATED') {
-        const started = await aiApi.startSession(id)
+        const started = await aiApi.startSession(id, signal)
         if (currentRun()) turn.value = started.data
         return
       }
     }
     if (pendingAnswer && turn.value) {
-      await aiApi.answer(id, { question: turn.value.question, answer: pendingAnswer })
+      await aiApi.answer(id, { question: turn.value.question, answer: pendingAnswer }, signal)
       if (!currentRun()) return
       pendingAnswer = ''
     }
-    const { data } = await aiApi.next(id)
+    const { data } = await aiApi.next(id, signal)
     if (!currentRun()) return
     if (data.finished) complete()
     else turn.value = data
@@ -195,6 +199,7 @@ function enter(id: number | null = null) {
   sessionId.value = id
   turn.value = null
   pendingAnswer = parentError.value = lobbyError.value = ''
+  roomRequests = new AbortController()
   room.value = true
   generation++
   void nextTick(() => { if (room.value && !dialog.value?.open) dialog.value?.showModal() })
@@ -208,6 +213,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   mounted = false
+  roomRequests?.abort()
   generation++
   closeMedia()
   document.removeEventListener('visibilitychange', visibilityChanged)

@@ -527,6 +527,40 @@ process.stdout.write('===== D49 401 恢复路径验证 (真实 src/api/request.t
       && navigations[0] === '/login' && !tokenUtils.getAccessToken() && !tokenUtils.getRefreshToken() && !tokenUtils.readStoredUser())
   }
 }
+// The oral room waits through a rate window once, preserving the original turn and owner.
+for (const scenario of ['fallback', 'retry-after', 'repeated', 'leave', 'switch', 'outside', 'unavailable']) {
+  resetEnv('rate-test', 'rate-refresh')
+  const controller = new AbortController()
+  const originalTimer = globalThis.setTimeout
+  const waits = []
+  const attempts = []
+  const wav = new FormData()
+  wav.append('file', new Blob(['same answer']), 'answer.wav')
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    waits.push(delay)
+    if (scenario === 'leave') queueMicrotask(() => controller.abort())
+    if (scenario === 'switch') queueMicrotask(() => resetEnv('next-account', 'next-refresh'))
+    return originalTimer(callback, 0, ...args)
+  }
+  try {
+    axiosStub.setAdapter(async cfg => {
+      attempts.push(cfg)
+      if (attempts.length > 1 && scenario !== 'repeated') return okBody({ text: '同一段回答' })
+      const error = new Error('temporary')
+      error.response = { status: scenario === 'unavailable' ? 503 : 429,
+        headers: scenario === 'retry-after' ? { 'retry-after': '2' } : {}, data: { code: 42901 } }
+      throw error
+    })
+    const options = { signal: controller.signal, _silent: true, _retryOralRateLimit: scenario !== 'outside' }
+    const [result] = await Promise.allSettled([request.post('/ai/defense/sessions/1/turns/2/transcription', wav, options)])
+    const recovered = scenario === 'fallback' || scenario === 'retry-after'
+    const retried = recovered || scenario === 'repeated'
+    const expectedWaits = ['outside', 'unavailable'].includes(scenario) ? [] : [scenario === 'retry-after' ? 2000 : 60250]
+    check('视频答辩限流重试（' + scenario + '）', attempts.length === (retried ? 2 : 1) &&
+      attempts.every(cfg => cfg.data === wav && cfg.signal === controller.signal && cfg.headers.Authorization === 'Bearer rate-test') &&
+      JSON.stringify(waits) === JSON.stringify(expectedWaits) && (result.status === 'fulfilled') === recovered)
+  } finally { globalThis.setTimeout = originalTimer }
+}
 const failed = checks.filter((c) => !c.passed)
 process.stdout.write('\n共 ' + checks.length + ' 项断言, 通过 ' + (checks.length - failed.length) + ' 项, 失败 ' + failed.length + ' 项\n')
 if (failed.length) {
