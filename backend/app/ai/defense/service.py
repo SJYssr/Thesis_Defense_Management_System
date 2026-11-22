@@ -74,6 +74,23 @@ class _Report(BaseModel):
     suggestions: list[str]
 
 
+def _scored_report(turns: list[AIDefenseTurn]) -> dict:
+    """仅汇总实际逐题评分；旧记录缺失的维度不作推算。"""
+    dimensions = {}
+    for label, column, maximum in (("知识准确性", "accuracy_score", 35), ("逻辑完整性", "logic_score", 25),
+                                   ("表达清晰度", "clarity_score", 20), ("技术深度", "depth_score", 20)):
+        observed = [score for turn in turns if (score := getattr(turn, column)) is not None]
+        if observed:
+            dimensions[label] = round(sum(observed) * 100 / (maximum * len(observed)))
+    main = sum(not turn.is_follow_up for turn in turns)
+    return {
+        "summary_source": "scored_turns", "dimension_scores": dimensions,
+        "summary": f"AI 文字总评暂不可用。本次完成 {main} 道正题、{len(turns) - main} 道追问。"
+                   "综合分为已评分轮次的平均分，各维度按对应满分折算为百分制，可在逐题记录中核对。",
+        "strengths": [], "weaknesses": [], "risky_questions": [], "suggestions": [],
+    }
+
+
 def _source(hit: RetrievedChunk) -> dict:
     return {"chunk_id": hit.chunk_id, "document_id": hit.document_id, "document_type": hit.document_type,
             "document_name": hit.extra.get("document_name") or "", "section": hit.section_title or "",
@@ -447,12 +464,28 @@ class DefenseService:
                                "clarity": t.clarity_score, "depth": t.depth_score},
                     "sources": [{"document_name": s["document_name"], "section": s["section"]}
                                 for s in _stored_sources(t.reference_chunks)]} for t in turns]
-        raw = LLMFactory.get().complete(resolve_system_prompt(self.db, "DEFENSE_REPORT"),
-                                        defense_report_prompt(topic.title if topic else "", records, overall_score))
+        system = resolve_system_prompt(self.db, "DEFENSE_REPORT")
+        prompt = defense_report_prompt(topic.title if topic else "", records, overall_score)
+        started = datetime.now()
+        llm, raw = None, ""
         try:
+            llm = LLMFactory.get()
+            raw = llm.complete(system, prompt)
             data = _Report.model_validate(extract_json(raw)).model_dump()
-        except (ValueError, TypeError) as exc:
-            raise BusinessException("AI 练习报告格式不完整，已保留全部回答，请重新生成", 50302) from exc
+            data["summary_source"] = "model"
+        except (ValueError, TypeError):
+            logger.warning("模拟答辩文字总评格式无效，保留逐轮评分汇总 session_id=%s", session_id)
+            data = _scored_report(turns)
+        except BusinessException as exc:
+            if exc.code not in (50301, 50303):
+                raise
+            logger.warning("模拟答辩文字总评服务不可用 session_id=%s code=%s", session_id, exc.code)
+            data = _scored_report(turns)
+        if llm is not None:
+            user_id = self.db.scalar(select(StudentProfile.user_id).where(StudentProfile.id == student_id))
+            self.db.add(AIUsageLog(user_id=user_id, scene="DEFENSE_REPORT", model=llm.name,
+                                   input_tokens=len(prompt), output_tokens=len(raw),
+                                   latency_ms=int((datetime.now() - started).total_seconds() * 1000)))
         data["overall_score"] = overall_score
         session.finished_at = datetime.now()
         session.overall_score = overall_score

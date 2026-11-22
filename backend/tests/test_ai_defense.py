@@ -348,6 +348,41 @@ class AiDefenseBoundaryTest(unittest.TestCase):
 
         self.assertTrue(result.get("finished"))
         self.assertEqual(result["report"]["overall_score"], 57)
+        self.assertEqual(result["report"]["summary_source"], "model")
+
+    def test_report_failure_uses_only_recorded_round_scores(self):
+        for fail_provider in (False, True):
+            with self.subTest(provider=fail_provider):
+                session = self._session(question_count=1)
+                self.db.add(AIDefenseTurn(session_id=session.id, turn_no=1, question="解释设计",
+                                          student_answer="我先验证输入", accuracy_score=14, logic_score=15,
+                                          clarity_score=10, depth_score=15, total_score=54, is_follow_up=0))
+                self.db.add(AIDefenseTurn(session_id=session.id, turn_no=2, question="怎样验证",
+                                          student_answer="先测试边界再校验", accuracy_score=28, logic_score=20,
+                                          clarity_score=20, depth_score=5, total_score=73, is_follow_up=1))
+                self.db.commit()
+                llm = mock.Mock(name="report model")
+                llm.name = "report-test"
+                if fail_provider:
+                    llm.complete.side_effect = BusinessException("上游不可用", 50303)
+                else:
+                    llm.complete.return_value = '{"summary":"缺少得分字段"}'
+                with mock.patch.object(LLMFactory, "get", return_value=llm):
+                    svc = DefenseService(self.db)
+                    report = svc.next_question(STUDENT, session.id)["report"]
+                    self.assertEqual(report, svc.next_question(STUDENT, session.id)["report"])
+                    self.assertEqual(llm.complete.call_count, 1)
+                self.assertEqual(report["summary_source"], "scored_turns")
+                self.assertEqual(report["overall_score"], 64)
+                self.assertEqual(report["dimension_scores"],
+                                 {"知识准确性": 60, "逻辑完整性": 70, "表达清晰度": 75, "技术深度": 50})
+                self.assertIn("文字总评暂不可用", report["summary"])
+                self.assertEqual(report["strengths"], [])
+                stored = svc.get_report(STUDENT, session.id)
+                self.assertEqual(len(stored["turns"]), 2)
+                self.assertEqual(stored["summary_source"], "scored_turns")
+        self.assertEqual(self.db.scalar(select(func.count(AIUsageLog.id)).where(
+            AIUsageLog.scene == "DEFENSE_REPORT")), 2)
 
     # ---------- D51: 题面以 turn 为准 ----------
 

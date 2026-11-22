@@ -35,6 +35,7 @@ const query = reactive({ scene: '', keyword: '', dates: [] as string[] })
 const SCENES = [
   { label: '生成问题', value: 'GENERATE_QUESTIONS' },
   { label: '回答评价', value: 'DEFENSE_QA' },
+  { label: '练习报告', value: 'DEFENSE_REPORT' },
   { label: '进度分析', value: 'PROGRESS_ANALYSIS' },
   { label: 'PPT大纲', value: 'PPT_OUTLINE' },
   { label: '知识问答', value: 'QA' },

@@ -18,6 +18,7 @@ ai_router = APIRouter(prefix="/admin/ai-usage-logs", tags=["Audit-AI"])
 AI_SCENE_LABELS = {
     "GENERATE_QUESTIONS": "生成问题",
     "DEFENSE_QA": "回答评价",
+    "DEFENSE_REPORT": "练习报告",
     "FOLLOW_UP": "动态追问",
     "PROGRESS_ANALYSIS": "进度分析",
     "PPT_OUTLINE": "PPT大纲",
