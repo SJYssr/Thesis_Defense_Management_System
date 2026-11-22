@@ -1,10 +1,11 @@
 """AI 模块路由: 文档索引/RAG检索/AI模拟答辩/PPT大纲/进度分析/SSE流式问答(roadmap 六十五章)."""
 import json
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -295,6 +296,23 @@ def start_session(session_id: int, user: CurrentUser = Depends(require_student),
 class AnswerRequest(BaseModel):
     question: str = Field(min_length=2)
     answer: str = Field(min_length=5, max_length=8000)
+
+
+class PracticeObservations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    no_face: int = Field(ge=0, le=65535, strict=True)
+    multiple_faces: int = Field(ge=0, le=65535, strict=True)
+    tab_hidden: int = Field(ge=0, le=65535, strict=True)
+
+
+@defense.put("/sessions/{session_id}/observations")
+def save_observations(session_id: int, body: PracticeObservations, user: CurrentUser = Depends(require_student),
+                      db: Session = Depends(get_db)):
+    DefenseService(db).record_observations(user.profile_id, session_id, str(body.run_id),
+                                           body.no_face, body.multiple_faces, body.tab_hidden)
+    return ResponseUtil.success()
 
 
 @defense.post("/sessions/{session_id}/answer")

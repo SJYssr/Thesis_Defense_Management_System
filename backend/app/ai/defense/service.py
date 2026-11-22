@@ -24,6 +24,7 @@ from app.ai.rag.rag_service import RAGService
 from app.ai.rag.retriever import RetrievedChunk
 from app.core.exceptions import BusinessException, ResourceNotFoundException
 from app.models.ai import (
+    AIDefenseObservation,
     AIDefenseQuestion,
     AIDefenseSession,
     AIDefenseTurn,
@@ -303,6 +304,32 @@ class DefenseService:
             raise ResourceNotFoundException("答辩会话不存在")
         return session
 
+    def record_observations(self, student_id: int, session_id: int, run_id: str,
+                            no_face: int, multiple_faces: int, tab_hidden: int) -> None:
+        session = self._own_session(student_id, session_id, lock=True)
+        # Allow a browser to finish syncing its observations after the report has been generated.
+        if session.status not in ("RUNNING", "FINISHED"):
+            raise BusinessException("请在练习开始后启用观察", 40900)
+        row = self.db.get(AIDefenseObservation, (session_id, run_id), with_for_update=True)
+        if row is None:
+            row = AIDefenseObservation(session_id=session_id, run_id=run_id, no_face=no_face,
+                                       multiple_faces=multiple_faces, tab_hidden=tab_hidden)
+            self.db.add(row)
+        else:
+            # A delayed or replayed snapshot must never count twice or undo a newer observation.
+            row.no_face = max(no_face, row.no_face)
+            row.multiple_faces = max(multiple_faces, row.multiple_faces)
+            row.tab_hidden = max(tab_hidden, row.tab_hidden)
+        self.db.commit()
+
+    def _observation_counts(self, session_id: int) -> dict | None:
+        observation = AIDefenseObservation
+        totals = self.db.execute(select(func.sum(observation.no_face), func.sum(observation.multiple_faces),
+                                        func.sum(observation.tab_hidden)).where(observation.session_id == session_id)).one()
+        if totals[0] is None:
+            return None
+        return {"no_face": int(totals[0]), "multiple_faces": int(totals[1]), "tab_hidden": int(totals[2])}
+
     def _next_turn(self, db: Session, session: AIDefenseSession) -> AIDefenseTurn | None:
         """从未使用问题中选取下一题(D51): 两轮策略——先排已覆盖题型, 再按 id 顺序兜底."""
         reserved = db.scalar(select(AIDefenseQuestion.id).where(
@@ -504,6 +531,7 @@ class DefenseService:
         ).scalars().all()
         report = json.loads(session.summary)
         report["turns"] = [self._turn_item(t) for t in turns]
+        report["observation_counts"] = self._observation_counts(session.id)
         report["session_id"] = session.id
         report["overall_score"] = session.overall_score
         report["finished_at"] = session.finished_at.isoformat() if session.finished_at else None

@@ -1,6 +1,7 @@
 """导入全部模型, 保证 Base.metadata.create_all 能建齐所有表."""
 from app.models.ai import (  # noqa: F401
     AIConversation,
+    AIDefenseObservation,
     AIDefenseQuestion,
     AIDefenseSession,
     AIDefenseTurn,

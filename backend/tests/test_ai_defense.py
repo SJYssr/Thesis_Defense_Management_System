@@ -190,6 +190,35 @@ class AiDefenseBoundaryTest(unittest.TestCase):
         self.db.commit()
         return session
 
+    def test_observations_retry_and_multiple_tabs_leave_scores_unchanged(self):
+        service = DefenseService(self.db)
+        session = self._session(status="FINISHED")
+        session.summary, session.overall_score = "{}", 72
+        self.db.commit()
+        self.assertIsNone(service.get_report(STUDENT, session.id)["observation_counts"])
+        for snapshot in [(0, 0, 0), (3, 1, 2), (3, 1, 2), (1, 0, 0)]:
+            service.record_observations(STUDENT, session.id, "first", *snapshot)
+        service.record_observations(STUDENT, session.id, "second", 0, 1, 1)
+        report = service.get_report(STUDENT, session.id)
+        self.assertEqual(report["observation_counts"], {"no_face": 3, "multiple_faces": 2, "tab_hidden": 3})
+        self.assertEqual(report["overall_score"], 72)
+        self.assertEqual(session.summary, "{}")
+        with self.assertRaises(BusinessException) as forbidden:
+            service.record_observations(STUDENT + 1, session.id, "foreign", 1, 1, 1)
+        self.assertEqual(forbidden.exception.code, 40400)
+
+    def test_observation_contract_rejects_unstarted_session_and_unexpected_media(self):
+        from app.modules.ai.router import PracticeObservations
+
+        with self.assertRaises(BusinessException) as unstarted:
+            DefenseService(self.db).record_observations(STUDENT, self._session(status="CREATED").id, "run", 0, 0, 0)
+        self.assertEqual(unstarted.exception.code, 40900)
+        valid = dict(run_id="00000000-0000-4000-8000-000000000001", no_face=0, multiple_faces=1, tab_hidden=2)
+        self.assertEqual(PracticeObservations.model_validate(valid).multiple_faces, 1)
+        for invalid in ({"frame": "image"}, {"tab_hidden": -1}, {"no_face": True}, {"run_id": "invalid"}):
+            with self.assertRaises(ValueError):
+                PracticeObservations.model_validate({**valid, **invalid})
+
     def _question(self, qid, text, qtype, used=0):
         row = AIDefenseQuestion(id=qid, student_id=STUDENT, question=text, question_type=qtype,
                                 difficulty="MEDIUM", used=used)
