@@ -258,19 +258,31 @@ def agent_trace_recent(limit: int = Query(default=20, ge=1, le=200),
 defense = APIRouter(prefix="/ai/defense", tags=["AI-Defense"])
 
 
+class PracticeMaterials(BaseModel):
+    document_ids: list[int] | None = Field(default=None, min_length=1, max_length=30)
+    question_count: int | None = Field(default=None, ge=3, le=22)
+
+
+class PracticeQuestionBank(BaseModel):
+    question_ids: list[int] = Field(min_length=1, max_length=22)
+
+
 @defense.post("/questions/generate")
-def generate_questions(user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+def generate_questions(body: PracticeMaterials | None = None, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     _check_ai_rate(user, db)
     service = DefenseService(db)
-    items = service.generate_questions(user.profile_id, user.id)
+    items = service.generate_questions(user.profile_id, user.id, body.document_ids if body else None,
+                                       body.question_count if body else None)
     return ResponseUtil.success({"questions": items, "count": len(items)}, message="问题库已生成")
 
 
 @defense.post("/sessions")
-def create_session(question_count: int = Query(8, ge=3, le=22), user: CurrentUser = Depends(require_student),
+def create_session(body: PracticeQuestionBank | None = None, question_count: int = Query(8, ge=3, le=22),
+                   user: CurrentUser = Depends(require_student),
                    db: Session = Depends(get_db)):
     _check_ai_rate(user, db)
-    return ResponseUtil.success(DefenseService(db).create_session(user.profile_id, question_count))
+    return ResponseUtil.success(DefenseService(db).create_session(
+        user.profile_id, question_count, body.question_ids if body else None))
 
 
 @defense.post("/sessions/{session_id}/start")

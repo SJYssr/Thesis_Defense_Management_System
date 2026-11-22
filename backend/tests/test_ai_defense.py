@@ -16,8 +16,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.ai.defense.service import DefenseService
-from app.ai.llm.factory import LLMFactory
+from app.ai.llm.factory import LLMFactory, MockLLM
 from app.ai.rag.rag_service import RAGService
+from app.ai.rag.retriever import RetrievedChunk
 from app.core.exceptions import BusinessException
 from app.core.permissions import CurrentUser, require_student
 from app.db.base import Base
@@ -171,6 +172,16 @@ class AiDefenseBoundaryTest(unittest.TestCase):
                                     document_type="THESIS", chunk_index=0, section_title="第一章",
                                     content="本系统采用分层架构实现毕业设计答辩全流程管理。", token_count=20))
         self.db.commit()
+
+    @staticmethod
+    def _hit():
+        return RetrievedChunk(10, 1, "THESIS", "架构", "系统采用分层设计，接口层区分输入和存储。", 1,
+                              extra={"document_name": "论文.pdf"})
+
+    def _source(self):
+        hit = self._hit()
+        return {"chunk_id": hit.chunk_id, "document_id": hit.document_id, "document_type": hit.document_type,
+                "document_name": hit.extra["document_name"], "section": hit.section_title, "excerpt": hit.content}
 
     def _session(self, question_count=3, status="RUNNING"):
         session = AIDefenseSession(student_id=STUDENT, topic_id=1, status=status,
@@ -359,9 +370,9 @@ class AiDefenseBoundaryTest(unittest.TestCase):
                                   student_answer=None, is_follow_up=0))
         self.db.commit()
         payload = json.dumps({"accuracy": 20, "logic": 15, "clarity": 12, "depth": 10,
-                              "feedback": "结构清楚", "follow_up_needed": False})
+                              "feedback": "结构清楚", "follow_up_needed": False, "source_ids": [10]})
         with mock.patch.object(LLMFactory, "get", return_value=_FakeLLM(payload)), \
-                mock.patch.object(RAGService, "retrieve", return_value=[]):
+                mock.patch.object(RAGService, "retrieve_practice", return_value=[self._hit()]):
             result = DefenseService(self.db).evaluate_answer(
                 STUDENT, session.id, "请介绍 系统整体架构", "我先说分层再讲流转", USER_ID)
 
@@ -370,6 +381,55 @@ class AiDefenseBoundaryTest(unittest.TestCase):
         self.assertEqual(turn.question, "请介绍  系统整体架构", "落库题面必须取自轮次")
         self.assertEqual(turn.student_answer, "我先说分层再讲流转")
         self.assertEqual(result["scores"]["total"], 57)
+
+    def test_invalid_feedback_or_unknown_evidence_keeps_round_unanswered(self):
+        session = self._session()
+        row = AIDefenseTurn(session_id=session.id, turn_no=1, question="请说明架构")
+        self.db.add(row)
+        self.db.commit()
+        valid = {"accuracy": 20, "logic": 15, "clarity": 12, "depth": 10,
+                 "source_ids": [10], "feedback": "请给出接口层的一处校验", "follow_up_needed": False}
+        for raw in ("not JSON", json.dumps(valid | {"accuracy": 36}), json.dumps(valid | {"logic": True}),
+                    json.dumps(valid | {"source_ids": [999]}), json.dumps(valid | {"follow_up_needed": True})):
+            with self.subTest(raw=raw), \
+                    mock.patch.object(LLMFactory, "get", return_value=_FakeLLM(raw)), \
+                    mock.patch.object(RAGService, "retrieve_practice", return_value=[self._hit()]):
+                with self.assertRaises(BusinessException) as ctx:
+                    DefenseService(self.db).evaluate_answer(STUDENT, session.id, row.question, "入口必须校验输入", USER_ID)
+                self.assertEqual(ctx.exception.code, 50302)
+                self.assertIsNone(row.total_score)
+                self.assertIsNone(row.student_answer)
+                self.assertEqual(session.answered_count, 0)
+
+    def test_material_bank_reserved_across_regeneration_and_retry(self):
+        self._student_context()
+        svc = DefenseService(self.db)
+        sources = [self._source(), dict(self._source(), chunk_id=11, document_id=2, document_type="SOURCE_CODE",
+                                         section="src/main.py L4-12", document_name="工程.zip", excerpt="def parse(raw):")]
+        with mock.patch.object(DefenseService, "_generation_sources", return_value=sources), \
+                mock.patch.object(RAGService, "practice_documents", return_value=[
+                    AIDocument(id=1), AIDocument(id=2)]), mock.patch.object(LLMFactory, "get", return_value=MockLLM()):
+            bank = svc.generate_questions(STUDENT, USER_ID, question_count=3)
+            self.assertEqual({item["sources"][0]["chunk_id"] for item in bank}, {10, 11})
+            ids = [item["id"] for item in bank]
+            session_id = svc.create_session(STUDENT, 3, ids)["session_id"]
+            svc.generate_questions(STUDENT, USER_ID)
+            with self.assertRaisesRegex(BusinessException, "题库已"):
+                svc.create_session(STUDENT, 3, ids)
+            first = svc.start_session(STUDENT, session_id)
+            self.assertEqual(first["question"], svc.next_question(STUDENT, session_id)["question"])
+            answer = "我用接口层校验输入并把结果交给存储层"
+            with mock.patch.object(RAGService, "practice_chunks", return_value=[self._hit()]), \
+                    mock.patch.object(RAGService, "retrieve_practice", return_value=[]):
+                graded = svc.evaluate_answer(STUDENT, session_id, first["question"], answer, USER_ID)
+                retry = svc.evaluate_answer(STUDENT, session_id, first["question"], answer, USER_ID)
+                self.assertEqual(graded["scores"], retry["scores"])
+                self.assertEqual(svc.session_detail(STUDENT, session_id)["answered_count"], 1)
+            follow_up = svc.next_question(STUDENT, session_id)
+            self.assertTrue(follow_up["is_follow_up"])
+            self.assertIn(answer, follow_up["question"])
+            self.assertEqual(follow_up["sources"], graded["sources"])
+            self.assertEqual(self.db.scalar(select(func.count()).select_from(AIDefenseTurn)), 2)
 
     # ---------- D47: 流式异常与计费完整 ----------
 
@@ -404,12 +464,23 @@ class AiDefenseBoundaryTest(unittest.TestCase):
         """D48: 问题生成返回非 JSON 时回落固定模板, 不 500."""
         self._student_context()
         with mock.patch.object(LLMFactory, "get", return_value=_FakeLLM("抱歉, 这里不是 JSON")), \
-                mock.patch.object(RAGService, "retrieve", return_value=[]):
+                mock.patch.object(DefenseService, "_generation_sources", return_value=[self._source()]):
             items = DefenseService(self.db).generate_questions(STUDENT, USER_ID)
 
         self.assertEqual(len(items), 3, items)
-        self.assertIn("整体架构", items[0]["question"])
+        self.assertTrue(all("分层" in item["question"] and item["sources"] for item in items))
         self.assertTrue(all(i["question_type"] for i in items))
+
+    def test_requested_count_rejects_short_bank_and_preserves_existing_questions(self):
+        self._student_context()
+        old = self._question(1, "原题仍可继续", "DESIGN")
+        model_output = {"questions": [{"question": "请解释分层设计", "source_ids": [10]}] * 3}
+        with mock.patch.object(LLMFactory, "get", return_value=_FakeLLM(json.dumps(model_output))), \
+                mock.patch.object(DefenseService, "_generation_sources", return_value=[self._source()]):
+            with self.assertRaisesRegex(BusinessException, "1 道.*3 道") as ctx:
+                DefenseService(self.db).generate_questions(STUDENT, USER_ID, question_count=3)
+        self.assertEqual(ctx.exception.code, 50302)
+        self.assertIsNotNone(self.db.get(AIDefenseQuestion, old.id))
 
     def test_ppt_outline_falls_back_on_non_json(self):
         """D48: PPT 大纲非 JSON 时回落固定模板, 页面结构可直接展示."""

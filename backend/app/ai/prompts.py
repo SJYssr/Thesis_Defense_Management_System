@@ -61,40 +61,28 @@ _RAG_ANSWER_CORE = """你是毕业设计智能助手。
 4. 涉及答辩规范、写作要求等通用问题时, 结合上下文给出专业建议。
 """
 
-_DEFENSE_QUESTION_CORE = """你是毕业设计答辩委员会教师, 负责根据学生论文生成针对性答辩问题库。
-
-要求:
-1. 问题必须源于学生论文实际内容, 覆盖: 基础理解(BASIC×3)、技术选型(TECHNOLOGY×5)、系统设计(DESIGN×4)、
-   实现细节(IMPLEMENTATION×4)、创新点(INNOVATION×2)、不足(LIMITATION×2)、扩展(EXTENSION×2), 共约22题。
-2. 每个问题标注类型与难度(EASY/MEDIUM/HARD), 并给出参考答案要点(基于论文内容)。
-3. 不得虚构论文中不存在的内容。
-4. 只输出 JSON: {"questions": [{"question": "...", "question_type": "BASIC", "difficulty": "MEDIUM", "reference": "论文依据"}]}
+_DEFENSE_QUESTION_CORE = """你是毕业设计模拟答辩教师，负责根据学生上传的报告和源码生成问题库。
+从提供的材料中选择具体的设计主张、实验结果或代码行为提问。若有源码和报告，两类都须覆盖，
+并用一道题让学生对照文中设计和实现。材料只有设计设想时，不能假定已经实现。
+按输入 question_count 生成指定数量的不同问题，覆盖基础理解、技术选型、设计、实现、测试、局限与扩展。每题只问一个明确的问题。
+输出 JSON 对象 {"questions":[{"question":"问题","question_type":"DESIGN","difficulty":"MEDIUM",
+"reference":"依据材料可核对的要点","source_ids":[123]}]}。source_ids 必须选自输入 chunks 中的 chunk_id。
 """
 
-_DEFENSE_EVALUATE_CORE = """你是毕业设计模拟答辩教师, 评价学生的回答。
-
-评分标准(总分100):
-- 知识准确性 accuracy(满分35): 是否与论文实际内容一致
-- 逻辑完整性 logic(满分25): 结构是否完整有依据
-- 表达清晰度 clarity(满分20): 是否简洁清楚
-- 技术深度 depth(满分20): 是否有实现层面的细节
-
-要求:
-1. 必须结合论文原文依据评价, 不得仅给分数, 必须给出具体理由。
-2. 若学生回答模糊或过短(判定 follow_up_needed=true), 生成一个更具体的追问问题。
-3. 只输出 JSON:
-{"accuracy": int, "logic": int, "clarity": int, "depth": int,
- "feedback": "Markdown评价", "follow_up_needed": bool, "follow_up_question": "str|null"}
+_DEFENSE_EVALUATE_CORE = """你是毕业设计模拟答辩教师，结合当前题目的材料和学生本轮实际回答给出练习反馈。
+准确性 accuracy 为0至35，逻辑 logic 为0至25，表达 clarity 和深度 depth 分别为0至20，各项均为整数。
+指出答案中一个具体主张及其材料依据，描述缺失的信息和可操作的改进。材料不足时指出证据边界。
+回答与材料矛盾、含糊或缺少验证时，追问该回答中的具体说法，要求说明证据、取舍或验证方法。
+输出 JSON 对象 {"accuracy":0,"logic":0,"clarity":0,"depth":0,"feedback":"评价",
+"source_ids":[123],"follow_up_needed":true,"follow_up_question":"追问或null"}。
+引用的 source_ids 必须选自输入 chunks 中的 chunk_id，不能杜撰材料、路径或实验结果。
 """
 
-_DEFENSE_REPORT_CORE = """你是毕业设计答辩委员会主席, 基于整场模拟答辩记录生成答辩报告。
-
-要求:
-1. 报告帮助学生理解"论文哪部分需要重新理解", 而不是让其背诵标准答案。
-2. 只输出 JSON:
-{"overall_score": int, "dimension_scores": {"基础知识": int, "系统设计": int, "技术理解": int, "表达能力": int, "应变能力": int},
- "summary": "总体评价", "strengths": ["..."], "weaknesses": ["..."],
- "risky_questions": ["容易被真实答辩老师追问的问题"], "suggestions": ["复习建议"]}
+_DEFENSE_REPORT_CORE = """你是毕业设计模拟答辩教师，根据输入 turns 中已回答的正题和追问形成练习报告。
+结合真实回答、反馈和来源，指出具体薄弱环节，并给出可回到相关章节或代码路径落实的练习建议。
+overall_score 使用输入所给的各轮平均分。dimension_scores 中各维度为0至100的整数。
+只输出 JSON：{"overall_score":0,"dimension_scores":{"基础知识":0,"系统设计":0,"技术理解":0,"表达能力":0,"应变能力":0},
+"summary":"总体评价","strengths":["优点"],"weaknesses":["待改进"],"risky_questions":["可再练习的问题"],"suggestions":["建议"]}。
 """
 
 _PPT_OUTLINE_CORE = """你是答辩PPT策划专家, 根据学生论文与答辩表现为其生成答辩PPT大纲。
@@ -243,30 +231,19 @@ def invalidate_prompt_cache(code: str) -> None:
 
 # ---------- User Prompt 构建(数据组装逻辑, 不随模板配置) ----------
 
-def defense_question_prompt(topic_title: str, context: str) -> str:
-    return (
-        f"【学生毕业设计题目】{topic_title}\n\n"
-        f"【论文与材料节选】\n{context}\n\n"
-        f"请生成约22个分维度答辩问题, 输出 JSON。"
-    )
+def defense_question_prompt(topic_title: str, sources: list[dict], question_count: int) -> str:
+    return json.dumps({"topic_title": topic_title, "chunks": sources, "question_count": question_count}, ensure_ascii=False)
 
 
-def defense_evaluate_prompt(topic_title: str, question: str, student_answer: str, context: str,
+def defense_evaluate_prompt(topic_title: str, question: str, answer: str, sources: list[dict],
                             turns_summary: str = "") -> str:
-    return (
-        f"【学生毕业设计题目】{topic_title}\n"
-        f"【答辩问题】{question}\n"
-        f"【学生回答】{student_answer}\n\n"
-        f"【论文相关材料】\n{context}\n\n"
-        f"【之前问答概要】{turns_summary or '无'}\n\n请按要求输出评价 JSON。"
-    )
+    return json.dumps({"topic_title": topic_title, "question": question, "student_answer": answer,
+                       "chunks": sources, "previous_turns": turns_summary}, ensure_ascii=False)
 
 
-def defense_report_prompt(topic_title: str, turns: list[dict]) -> str:
-    lines = []
-    for t in turns:
-        lines.append(f"问: {t.get('question')}\n答: {t.get('student_answer', '(未回答)')}\n得分: {t.get('total_score')}")
-    return f"【学生毕业设计题目】{topic_title}\n\n【答辩记录】\n" + "\n---\n".join(lines) + "\n\n请生成答辩报告 JSON。"
+def defense_report_prompt(topic_title: str, turns: list[dict], overall_score: int) -> str:
+    return json.dumps({"topic_title": topic_title, "overall_score": overall_score, "turns": turns},
+                      ensure_ascii=False)
 
 
 def ppt_outline_prompt(topic_title: str, context: str, defense_summary: str = "") -> str:

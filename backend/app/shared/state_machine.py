@@ -46,6 +46,7 @@ CYCLE = "CYCLE"
 # 公告与阶段任务此前不在状态机内, 状态由路由直写(D53/D59); 纳入后与其它业务同源
 ANNOUNCEMENT = "ANNOUNCEMENT"
 STAGE_TASK = "STAGE_TASK"
+PRACTICE_SESSION = "PRACTICE_SESSION"
 
 STAGE_ENTITIES: tuple[str, ...] = (OPENING, MIDTERM, FINAL, MATERIAL)
 
@@ -163,6 +164,9 @@ for _entity in STAGE_ENTITIES:
     _RULES = _RULES + tuple(_rules_list)
 
 _RULES = _RULES + (  # noqa: RUF005 - 转移表分段追加, 保留元组拼接比展开更易读
+    # 模拟练习的写入口已校验学生本人；不会写入正式答辩的数据表。
+    Rule(PRACTICE_SESSION, "start", frozenset({"CREATED"}), "RUNNING", internal=True),
+    Rule(PRACTICE_SESSION, "finish", frozenset({"RUNNING"}), "FINISHED", internal=True),
     # --- 答辩场次 ---
     Rule(SESSION, "publish", frozenset({"DRAFT"}), "PUBLISHED", _ADMIN),
     Rule(SESSION, "start", frozenset({"PUBLISHED"}), SESSION_IN_PROGRESS, _ADMIN),
