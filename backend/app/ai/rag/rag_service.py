@@ -10,15 +10,18 @@ from datetime import datetime
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.ai.document.loader import parse_document
-from app.ai.document.source_archive import parse_source_archive
+from app.ai.document.loader import Section, clean_text, parse_document, split_by_headings
+from app.ai.document.source_archive import SourceArchiveError, parse_source_archive
 from app.ai.document.splitter import split_sections
 from app.ai.embedding.factory import EmbeddingFactory
-from app.ai.llm.factory import LLMFactory
+from app.ai.llm.factory import AIServiceUnavailable, LLMFactory
+from app.ai.rag.index_diagnostics import IndexIssue, public_index_error
 from app.ai.rag.practice_sources import REPORTS, material_files, practice_documents, report_text
 from app.ai.rag.retriever import HybridRetriever, RetrievedChunk
 from app.ai.vector.store import vec_to_b64, vector_store
+from app.core.exceptions import AIServiceException, BusinessException, FileException
 from app.models.ai import AIDocument, AIDocumentChunk, AIUsageLog
+from app.models.system import SysFile
 from app.shared.storage import storage
 
 logger = logging.getLogger("app.ai.rag")
@@ -40,43 +43,64 @@ class RAGService:
         doc.index_status = "PROCESSING"
         self.db.commit()
 
+        # Keep this outer lock across the savepoint rollback and the failure status write.
+        doc = self.db.get(AIDocument, document_id, with_for_update=True, populate_existing=True)
+        if doc is None:
+            raise FileException("文档已移除")
         try:
-            # Serialize replacement of the chunks even if two workers accept the same retry.
-            doc = self.db.get(AIDocument, document_id, with_for_update=True, populate_existing=True)
-            if doc is None:
-                raise ValueError("文档已移除")
-            # 1. 解析
-            if doc.file_id:
-                from app.models.system import SysFile
-
-                f = self.db.get(SysFile, doc.file_id)
-                if f is None or f.deleted_at is not None:
-                    raise ValueError("源文件不存在")
-                path = str(storage.abs_path(f.storage_path))
-                sections = parse_source_archive(path) if doc.document_type == "SOURCE_CODE" else parse_document(path)
-                preview = "\n\n".join(f"# {s.title}\n{s.content}" for s in sections)
-                doc.content_text = preview.encode("utf-8")[:65000].decode("utf-8", errors="ignore")
-            elif doc.content_text:
-                from app.ai.document.loader import Section, clean_text, split_by_headings
-
-                sections = [Section(title=t, content=c) for t, c in split_by_headings(clean_text(doc.content_text))]
+            with self.db.begin_nested():
+                old_ids, writes = self._replace_chunks(doc)
+                doc.index_status = "SUCCESS"
+                doc.indexed_at = datetime.now()
+                doc.chunk_count = len(writes)
+                doc.error_message = None
+        except Exception as exc:
+            if isinstance(exc, (FileException, AIServiceUnavailable)):
+                error = exc
             else:
-                raise ValueError("文档既无文件也无文本内容")
+                error = AIServiceException(IndexIssue.UNKNOWN.value)
+            doc.index_status = "FAILED"
+            doc.error_message = error.message
+            self.db.commit()
+            logger.warning("文档 %s 索引失败 (%s)", document_id, type(exc).__name__)
+            raise error from None
+        self.db.commit()
 
-            # 2. 分块
-            chunks = split_sections(sections)
-            if not chunks:
-                raise ValueError("未能从文档中提取有效内容")
+        # MySQL is now authoritative. Until its commit the old Redis keys remain usable.
+        try:
+            self._sync_vector_cache(document_id, old_ids, writes)
+        except Exception as exc:
+            self.db.rollback()
+            logger.warning("文档 %s 向量缓存同步失败 (%s)", document_id, type(exc).__name__)
+        try:
+            from app.ai.health import mark_embedding_indexed
+            mark_embedding_indexed(self.db)
+        except Exception:
+            logger.warning("embedding 指纹标记失败", exc_info=True)
+        return {"document_id": document_id, "chunk_count": len(writes), "status": "SUCCESS"}
 
-            # 3. 清理旧 chunk(重新索引场景)
-            old_ids = self.db.execute(
-                select(AIDocumentChunk.id).where(AIDocumentChunk.document_id == document_id)
-            ).scalars().all()
-            if old_ids:
-                vector_store.delete_chunks(list(old_ids))
-                self.db.execute(delete(AIDocumentChunk).where(AIDocumentChunk.document_id == document_id))
+    def _read_sections(self, doc: AIDocument) -> list[Section]:
+        if doc.file_id is None:
+            return [Section(title=t, content=c) for t, c in split_by_headings(clean_text(doc.content_text or ""))]
+        file = self.db.get(SysFile, doc.file_id)
+        if file is None or file.deleted_at is not None:
+            raise FileException(IndexIssue.FILE_MISSING.value)
+        try:
+            path = str(storage.abs_path(file.storage_path))
+            sections = parse_source_archive(path) if doc.document_type == "SOURCE_CODE" else parse_document(path)
+        except SourceArchiveError as exc:
+            raise FileException(str(exc)) from None
+        except Exception:
+            raise FileException(IndexIssue.FILE_UNREADABLE.value) from None
+        preview = "\n\n".join(f"# {section.title}\n{section.content}" for section in sections)
+        doc.content_text = preview.encode("utf-8")[:65000].decode("utf-8", errors="ignore")
+        return sections
 
-            # 4. Embedding(批量)
+    def _replace_chunks(self, doc: AIDocument):
+        chunks = split_sections(self._read_sections(doc))
+        if not chunks:
+            raise FileException(IndexIssue.NO_TEXT.value)
+        try:
             embedder = EmbeddingFactory.get()
             embeddings = []
             for start in range(0, len(chunks), 32):
@@ -84,50 +108,42 @@ class RAGService:
                 vectors = embedder.embed([chunk["content"] for chunk in batch])
                 dimension = len(embeddings[0]) if embeddings else embedder.dim
                 if not dimension or len(vectors) != len(batch) or any(len(v) != dimension for v in vectors):
-                    raise ValueError("向量服务返回的分块数量或维度不匹配，请检查模型后重试")
+                    raise ValueError("unexpected embedding shape")
                 embeddings.extend(vectors)
-
-            # 5. 落库 + 写向量
-            for chunk, emb in zip(chunks, embeddings):
-                row = AIDocumentChunk(
-                    document_id=document_id, student_id=doc.student_id, topic_id=doc.topic_id,
-                    scope=doc.scope, document_type=doc.document_type,
-                    chunk_index=chunk["chunk_index"], section_title=chunk["section_title"],
-                    content=chunk["content"], token_count=chunk["token_count"],
-                )
-                # D42: 无条件写 MySQL 降级副本 —— Redis 侧随时可能失效/换实例,
-                # 有副本才能"失败即降级", 否则降级路径召回恒空。
-                row.embedding = vec_to_b64(emb)
-                self.db.add(row)
-                self.db.flush()
-                vector_store.upsert_chunk(row.id, {
-                    "document_id": doc.id, "student_id": doc.student_id, "topic_id": doc.topic_id,
-                    "document_type": doc.document_type, "scope": doc.scope,
-                    "section_title": chunk["section_title"], "content": chunk["content"],
-                }, emb)
-
-            doc.chunk_count = len(chunks)
-            doc.index_status = "SUCCESS"
-            doc.indexed_at = datetime.now()
-            doc.error_message = None
-            self.db.commit()
-            logger.info("文档 %s 索引完成: %d chunks (mode=%s)", document_id, len(chunks), vector_store.mode)
-            # 记录本次索引用的 embedding 指纹, 供 /health/ai 判断"换模型后是否需重建知识库"
-            try:
-                from app.ai.health import mark_embedding_indexed
-                mark_embedding_indexed(self.db)
-            except Exception:  # noqa: BLE001 — 指纹标记失败不影响索引结果
-                logger.warning("embedding 指纹标记失败", exc_info=True)
-            return {"document_id": document_id, "chunk_count": len(chunks), "status": "SUCCESS"}
         except Exception as exc:
-            self.db.rollback()
-            doc = self.db.get(AIDocument, document_id)
-            if doc:
-                doc.index_status = "FAILED"
-                doc.error_message = str(exc)[:480]
-                self.db.commit()
-            logger.exception("文档 %s 索引失败", document_id)
-            raise
+            if isinstance(exc, BusinessException) and exc.code == 50303:
+                # The SDK adapter has already translated this into a provider-independent message.
+                raise AIServiceUnavailable(public_index_error(exc.message), exc.code) from None
+            raise AIServiceUnavailable(IndexIssue.EMBEDDING.value) from None
+
+        old_ids = list(self.db.scalars(select(AIDocumentChunk.id).where(AIDocumentChunk.document_id == doc.id)))
+        writes = []
+        for chunk, emb in zip(chunks, embeddings):
+            metadata = {
+                "document_id": doc.id, "student_id": doc.student_id, "topic_id": doc.topic_id,
+                "scope": doc.scope, "document_type": doc.document_type,
+                "section_title": chunk["section_title"], "content": chunk["content"],
+            }
+            row = AIDocumentChunk(**metadata, chunk_index=chunk["chunk_index"], token_count=chunk["token_count"],
+                                  embedding=vec_to_b64(emb))
+            self.db.add(row)
+            self.db.flush()
+            writes.append((row.id, metadata, emb))
+        if old_ids:
+            self.db.execute(delete(AIDocumentChunk).where(AIDocumentChunk.id.in_(old_ids)))
+        return old_ids, writes
+
+    def _sync_vector_cache(self, document_id, old_ids, writes):
+        # A second worker may have replaced these IDs since commit. Holding the same document
+        # lock and rechecking IDs stops a delayed cache writer from resurrecting retired chunks.
+        self.db.get(AIDocument, document_id, with_for_update=True, populate_existing=True)
+        current_ids = set(self.db.scalars(select(AIDocumentChunk.id).where(AIDocumentChunk.document_id == document_id)))
+        for chunk_id, metadata, embedding in writes:
+            if chunk_id in current_ids:
+                vector_store.upsert_chunk(chunk_id, metadata, embedding)
+        if old_ids:
+            vector_store.delete_chunks(old_ids)
+        self.db.commit()
 
     def index_stage_reports(self, student_id: int) -> dict:
         """Synchronize current uploads and approved stage reports; failed documents remain retryable."""

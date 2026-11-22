@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile, ZipInfo
 
 from app.ai.document.loader import Section
+from app.ai.rag.index_diagnostics import IndexIssue
 
 # These are extraction budgets, independent of the shared upload policy.
 _MAX_ARCHIVE = 32 << 20
@@ -18,6 +19,10 @@ _SOURCE_EXTS = frozenset((".py .java .kt .js .jsx .ts .tsx .vue .go .rs .c .cc .
 _SKIP_DIRS = frozenset("node_modules vendor vendors dist build target out bin obj coverage __pycache__ __macosx site-packages venv env generated third_party third-party secrets credentials migrations".split())
 _SENSITIVE_NAME = re.compile(r"(?:^|[._-])(?:secret[s]?|credential[s]?|password[s]?|private[_-]?key|keystore|config|settings)(?:[._-]|$)", re.I)
 _SENSITIVE_LINE = re.compile(r"""(?:password|passwd|api[_-]?key|secret|access[_-]?token|authorization)\s*["']?\s*[:=]\s*["'][^"']+|(?:sk-[a-zA-Z0-9_-]{12,}|gh[pousr]_[a-zA-Z0-9]{16,})|://[^/\s:]+:[^/\s@]+@""", re.I)
+
+
+class SourceArchiveError(ValueError):
+    """A student-facing explanation for an unsupported source archive."""
 
 
 def _source_path(info: ZipInfo) -> str | None:
@@ -60,24 +65,24 @@ def _sections(name: str, source: str) -> list[Section]:
 
 def parse_source_archive(path: str) -> list[Section]:
     if Path(path).suffix.lower() != ".zip":
-        raise ValueError("源码分析支持 ZIP，请将项目源码打包为 ZIP 后上传")
+        raise SourceArchiveError(IndexIssue.ARCHIVE_TYPE.value)
     # ZipFile builds an in-memory member list before returning. Bound the central
     # directory before opening, including archives containing millions of tiny entries.
     size = Path(path).stat().st_size
     if size > _MAX_ARCHIVE:
-        raise ValueError("源码分析支持 32 MiB 以内的 ZIP，请仅打包项目源文件")
+        raise SourceArchiveError(IndexIssue.ARCHIVE_SIZE.value)
     with open(path, "rb") as stream:
         stream.seek(max(0, size - 65557))
         trailer = stream.read()
     end = trailer.rfind(b"PK\x05\x06")
     if end < 0 or len(trailer) - end < 22:
-        raise ValueError("源码 ZIP 无法读取，请重新打包上传")
+        raise SourceArchiveError(IndexIssue.ARCHIVE_UNREADABLE.value)
     disk, cd_disk, count_disk, count, central_bytes, _, comment_len = struct.unpack_from("<4H2LH", trailer, end + 4)
     multipart = disk or cd_disk or count_disk != count
     zip64 = trailer[max(0, end - 20):end].startswith(b"PK\x06\x07")
     if (multipart or zip64 or count > 10000 or central_bytes > (2 << 20)
             or len(trailer) - end != 22 + comment_len):
-        raise ValueError("源码 ZIP 目录过大或格式不支持，请仅打包项目源文件")
+        raise SourceArchiveError(IndexIssue.ARCHIVE_DIRECTORY.value)
     remaining = _READ_BUDGET
     sections = []
     used = 0
@@ -108,7 +113,7 @@ def parse_source_archive(path: str) -> list[Section]:
                 if used >= _MAX_FILES or remaining <= 0 or len(sections) >= _MAX_EXCERPTS:
                     break
     except (BadZipFile, OSError, NotImplementedError) as exc:
-        raise ValueError("源码 ZIP 无法读取，请使用普通 ZIP 重新打包") from exc
+        raise SourceArchiveError(IndexIssue.ARCHIVE_UNREADABLE.value) from exc
     if not sections:
-        raise ValueError("源码 ZIP 没有可分析的 UTF-8 源文件，请检查项目目录、文件格式和大小")
+        raise SourceArchiveError(IndexIssue.ARCHIVE_CONTENT.value)
     return sections

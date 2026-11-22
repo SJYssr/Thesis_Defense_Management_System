@@ -8,17 +8,19 @@ from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
 
 from fastapi import BackgroundTasks
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
 from app.ai.document.source_archive import parse_source_archive
 from app.ai.embedding.factory import LocalHashEmbedding
+from app.ai.llm.factory import AIServiceUnavailable
 from app.ai.rag.rag_service import RAGService
 from app.models.ai import AIDocument, AIDocumentChunk
 from app.models.business import GraduationCycle, GraduationMaterialFile
 from app.models.system import SysFile
-from app.modules.ai.router import list_documents
+from app.modules.ai.router import document_status, list_documents
 from app.modules.material import router as materials
+from app.tasks.dispatcher import index_uploaded_material
 from tests.test_material_version import STUDENT, new_engine, seed
 
 
@@ -132,6 +134,62 @@ class PracticeSourcesTest(unittest.TestCase):
         self.assertEqual(self.rag.practice_documents(1), [])
         self.assertEqual(self.rag.index_stage_reports(1)["indexed"], 1)
         self.assertEqual(self.db.scalar(select(func.count(AIDocument.id))), 1)
+
+    def test_failed_rebuild_retains_cache_and_outer_transaction_until_failure_is_stored(self):
+        doc = self.upload()
+        self.rag.index_document(doc.id)
+        initial_ids = list(self.db.scalars(select(AIDocumentChunk.id)))
+        rollbacks = []
+        event.listen(self.db, "after_soft_rollback", lambda session, tx: rollbacks.append(tx.nested))
+        with patch("app.ai.rag.rag_service.EmbeddingFactory.get", side_effect=RuntimeError("private-provider-detail")), \
+                patch("app.ai.rag.rag_service.vector_store") as cache:
+            with self.assertRaises(AIServiceUnavailable) as caught:
+                self.rag.index_document(doc.id)
+            cache.delete_chunks.assert_not_called()
+        self.assertEqual(rollbacks, [True], "Only the savepoint may be rolled back before persisting the failure")
+        self.assertEqual(list(self.db.scalars(select(AIDocumentChunk.id))), initial_ids)
+        self.assertIn("重试", caught.exception.message)
+        self.assertNotIn("private-provider-detail", doc.error_message)
+        self.assertEqual(caught.exception.message, doc.error_message)
+
+    def test_legacy_index_errors_are_masked_in_both_read_endpoints(self):
+        doc = self.upload()
+        doc.index_status, doc.error_message = "FAILED", "private-provider-detail"
+        self.db.commit()
+        status = json.loads(document_status(doc.id, user=STUDENT, db=self.db).body)["data"]
+        listing = json.loads(list_documents(page=1, size=20, user=STUDENT, db=self.db).body)["data"]["items"][0]
+        self.assertEqual(status["error_message"], listing["error_message"])
+        self.assertNotIn("private-provider-detail", status["error_message"])
+        self.assertIn("重试", status["error_message"])
+
+    def test_old_cache_is_retired_after_sql_commit(self):
+        doc = self.upload()
+        self.rag.index_document(doc.id)
+        old_ids = list(self.db.scalars(select(AIDocumentChunk.id)))
+        committed = []
+
+        @event.listens_for(self.db, "after_commit")
+        def observe(session):
+            if not session.in_nested_transaction():
+                committed.append(True)
+
+        retired = []
+        with patch("app.ai.rag.rag_service.vector_store.delete_chunks",
+                   side_effect=lambda ids: retired.append((ids, len(committed)))):
+            self.rag.index_document(doc.id)
+        self.assertEqual(len(retired), 1)
+        self.assertEqual(retired[0][0], old_ids)
+        self.assertGreaterEqual(retired[0][1], 2)  # processing marker and replacement transaction
+
+    def test_late_dispatch_failure_cannot_overwrite_a_successful_retry(self):
+        doc = self.upload()
+        self.rag.index_document(doc.id)
+        with patch("app.tasks.dispatcher.dispatch_index_task", side_effect=RuntimeError("queue connection lost")), \
+                patch("app.db.mysql.SessionLocal", return_value=Session(self.engine)):
+            index_uploaded_material(doc.id)
+        self.db.refresh(doc)
+        self.assertEqual(doc.index_status, "SUCCESS")
+        self.assertIsNone(doc.error_message)
 
     def test_cross_cycle_same_topic_and_global_candidates_excluded(self):
         doc = self.upload()

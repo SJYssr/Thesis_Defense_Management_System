@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.defense.service import DefenseService
 from app.ai.progress.service import ProgressAnalysisService
+from app.ai.rag.index_diagnostics import public_index_error
 from app.ai.rag.practice_sources import practice_upload_filter
 from app.ai.rag.rag_service import RAGService
 from app.core.config import settings
@@ -95,7 +96,7 @@ def list_documents(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=10
         "practice_eligible": d.id in ready, "practice_upload": bool(uploaded),
         "id": d.id, "document_name": d.document_name, "document_type": d.document_type,
         "index_status": d.index_status, "status_cn": STATUS_CN.get(d.index_status, d.index_status),
-        "chunk_count": d.chunk_count, "version": d.version, "error_message": d.error_message,
+        "chunk_count": d.chunk_count, "version": d.version, "error_message": public_index_error(d.error_message),
         "file_size": file_size, "file_id": d.file_id,
         "indexed_at": d.indexed_at.isoformat() if d.indexed_at and d.index_status == "SUCCESS" else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
@@ -140,7 +141,7 @@ def document_status(document_id: int, user: CurrentUser = Depends(require_studen
         raise BusinessException("文档不存在")
     return ResponseUtil.success({"id": doc.id, "index_status": doc.index_status,
                                  "status_cn": STATUS_CN.get(doc.index_status, doc.index_status),
-                                 "chunk_count": doc.chunk_count, "error_message": doc.error_message})
+                                 "chunk_count": doc.chunk_count, "error_message": public_index_error(doc.error_message)})
 
 
 @router.post("/documents/index-reports")
