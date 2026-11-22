@@ -212,7 +212,27 @@ class FileGcTest(unittest.TestCase):
         summary = file_gc.collect(self.db, retention_days=7, dry_run=False)
 
         self.assertEqual(summary["deleted"], 1, "物理文件缺失不得阻断记录清理")
-        self.assertEqual(summary["freed_bytes"], a.size)
+        self.assertEqual(summary["freed_bytes"], 0)
+        self.assertEqual(self._ids(), set())
+
+    def test_failed_delete_is_retried_and_other_files_are_still_collected(self):
+        blocked = self._file("blocked.pdf", 30)
+        other = self._file("other.pdf", 30)
+        unlink = Path.unlink
+
+        def fail_one(path):
+            if path == self._path(blocked):
+                raise PermissionError("文件暂不可写")
+            return unlink(path)
+
+        with patch.object(Path, "unlink", fail_one):
+            summary = file_gc.collect(self.db, dry_run=False)
+        self.assertEqual((summary["failed"], summary["deleted"], summary["freed_bytes"]), (1, 1, other.size))
+        self.assertEqual(self._ids(), {blocked.id})
+        self.assertTrue(self._path(blocked).exists())
+        retry = file_gc.collect(self.db, dry_run=False)
+        self.assertEqual((retry["failed"], retry["deleted"], retry["freed_bytes"]), (0, 1, blocked.size))
+        self.assertFalse(self._path(blocked).exists())
         self.assertEqual(self._ids(), set())
 
     # ---------- 验收: 端点鉴权 403 ----------
@@ -233,7 +253,7 @@ class FileGcTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()["data"]
         self.assertEqual(set(data), {"dry_run", "retention_days", "scanned", "deleted", "deletable",
-                                     "skipped_referenced", "skipped_recent", "freed_bytes", "items"})
+                                     "skipped_referenced", "skipped_recent", "freed_bytes", "failed", "items"})
         self.assertIs(data["dry_run"], True, "默认 dry_run=True")
         self.assertEqual((data["retention_days"], data["scanned"], data["deleted"]), (7, 4, 0))
         self.assertEqual(data["deletable"], 1, "端点(dry_run)也能看到可删规模")

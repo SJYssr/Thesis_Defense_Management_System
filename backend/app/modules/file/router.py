@@ -108,6 +108,9 @@ def files_gc(retention_days: int = Query(7, ge=1, le=365, description="保留期
     data = collect(db, retention_days=retention_days, dry_run=dry_run)
     # 手动清理是写操作: 留一条 operation_log; 逐文件的留痕在 tasks/file_gc 里走 logger.info(避免刷表)
     db.add(OperationLog(user_id=user.id, username=user.username, module="FILE", action="GC",
-                        detail=f"retention_days={retention_days} dry_run={dry_run} deleted={data['deleted']}"))
+                        detail=f"retention_days={retention_days} dry_run={dry_run} deleted={data['deleted']} failed={data['failed']}"))
     db.commit()
-    return ResponseUtil.success(data, message="孤儿文件清理试运行完成" if dry_run else "孤儿文件清理完成")
+    message = "孤儿文件清理试运行完成" if dry_run else "孤儿文件清理完成"
+    if data["failed"]:
+        message = f"已清理 {data['deleted']} 条记录，{data['failed']} 个文件删除失败，已保留以供重试"
+    return ResponseUtil.success(data, message=message)
