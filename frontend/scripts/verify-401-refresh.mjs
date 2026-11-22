@@ -211,6 +211,30 @@ process.stdout.write('===== D49 401 恢复路径验证 (真实 src/api/request.t
   )
 }
 
+// 续期后业务失败属于当前操作；登录限流须显示服务端给出的等待时间。
+{
+  resetEnv('expired-token', 'refresh-ok')
+  axiosStub.setAdapter(async (cfg) => {
+    if (cfg.url === '/auth/refresh') return okBody({ access_token: 'fresh-token' })
+    if (cfg.url === '/auth/profile') return okBody({ role: 'TEACHER' })
+    if (!cfg._retried) throw fail401('令牌过期')
+    throw Object.assign(new Error('服务器内部错误'), {
+      response: { status: 500, data: { code: 50000, message: '服务器内部错误' } },
+    })
+  })
+  await Promise.allSettled([request.get('/topics')])
+  check('重试返回 500 后保留有效会话', localStorageStub.getItem('access_token') === 'fresh-token' && navigations.length === 0)
+  check('只提示重试的业务错误', epStub.notifyLog.length === 1 && epStub.notifyLog[0].message === '服务器内部错误')
+
+  resetEnv(null, null)
+  const message = '登录尝试过于频繁,请1分钟后再试'
+  axiosStub.setAdapter(async () => {
+    throw Object.assign(new Error(message), { response: { status: 429, data: { code: 42901, message } } })
+  })
+  await Promise.allSettled([request.post('/auth/login', {})])
+  check('登录频率超限时显示等待时间', epStub.notifyLog.length === 1 && epStub.notifyLog[0].message === message)
+}
+
 // ---------------------------------------------------------------- D: 错误文案优先级
 {
   check(
