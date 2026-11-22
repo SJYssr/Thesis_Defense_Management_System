@@ -26,5 +26,10 @@ def oral_question(value: object) -> bool:
                                r"请(?:你|解释|介绍|说明|谈|比较|描述|分析|列举|举例)|讲讲|谈谈", text)))
 
 
+def offers_choices(text: str) -> bool:
+    """Detect forced-choice wording in a main question; a precise follow-up may still use it."""
+    return bool(re.search(r"还是|对不对|是不是|会不会|是否", text)) and not re.search(r"为什么|为何|理由|依据|如何验证", text)
+
+
 def question_key(text: str) -> str:
     return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", text).casefold())

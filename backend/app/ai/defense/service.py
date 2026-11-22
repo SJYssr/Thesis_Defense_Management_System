@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.ai.defense.oral import oral_question, question_key
+from app.ai.defense.oral import offers_choices, oral_question, question_key
 from app.ai.defense.rubric import accuracy_from_evidence, assess_points, mark_snapshot, marking_points, snapshot
 from app.ai.llm.factory import LLMFactory, extract_json
 from app.ai.prompts import (
@@ -167,6 +167,7 @@ class DefenseService:
         required = available if count >= len(available) else set()
         representatives = {}
         rows = []
+        closed_count = 0
         seen = {question_key(q) for q in avoid or []}
         llm = LLMFactory.get()
         system = resolve_system_prompt(self.db, "DEFENSE_GENERATE_QUESTIONS")
@@ -193,9 +194,13 @@ class DefenseService:
                 key = question_key(question)
                 cited = _citations(item.get("source_ids"), by_id)
                 points = marking_points(item.get("rubric"), cited)
+                closed = offers_choices(question)
+                if count >= 3 and closed and closed_count >= max(1, count // 3):
+                    continue
                 if not points or key in seen:
                     continue
                 seen.add(key)
+                closed_count += int(closed)
                 qtype, difficulty = item.get("question_type"), item.get("difficulty")
                 row = AIDefenseQuestion(student_id=student_id, question=question,
                                         question_type=qtype if qtype in tuple(QuestionType) else "BASIC",

@@ -680,6 +680,25 @@ class AiDefenseBoundaryTest(unittest.TestCase):
         self.assertEqual(turn.question, good)
         self.assertIsNone(turn.student_answer)
 
+    def test_model_must_supplement_a_bank_of_only_binary_choices(self):
+        self._student_context()
+        def reply(questions):
+            return json.dumps({"questions": [{"question": q, "source_ids": [10],
+                              "rubric": [{"expectation": "分层设计", "source_ids": [10]}]} for q in questions]})
+        llm = mock.Mock(wraps=MockLLM())
+        llm.name = "test"
+        llm.complete.side_effect = [
+            reply(["输入异常时是否继续入库？", "接口层会不会校验编号？", "存储层取第一条还是最后一条？"]),
+            reply(["接口层如何判断温度记录可以入库？", "哪种输入能检验接口与存储之间的边界？"])]
+        with mock.patch.object(LLMFactory, "get", return_value=llm), \
+                mock.patch.object(DefenseService, "_generation_sources", return_value=[self._source()]):
+            bank = DefenseService(self.db).generate_questions(STUDENT, USER_ID, question_count=3)
+        second = json.loads(llm.complete.call_args.args[1])
+        self.assertEqual(second["question_count"], 2)
+        self.assertEqual(second["already_asked"], ["输入异常时是否继续入库？"])
+        self.assertEqual([q["question"] for q in bank], ["输入异常时是否继续入库？", "接口层如何判断温度记录可以入库？",
+                                                        "哪种输入能检验接口与存储之间的边界？"])
+
     def test_requested_count_rejects_short_bank_and_preserves_existing_questions(self):
         self._student_context()
         old = self._question(1, "原题仍可继续", "DESIGN")
