@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FileDownload from '@/components/FileDownload.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { reviewApi } from '@/api/defense'
@@ -129,7 +130,7 @@ onMounted(load)
           <div v-if="detail.materials.graduation_files?.length">
             <b>毕业材料文件</b>
             <div v-for="f in detail.materials.graduation_files" :key="f.file_id" class="field-row">
-              <el-link type="primary" :href="f.url" target="_blank">{{ f.original_name }}</el-link>
+              <FileDownload :file-id="f.file_id" :filename="f.original_name">{{ f.original_name }}</FileDownload>
             </div>
           </div>
         </div>
@@ -145,7 +146,8 @@ onMounted(load)
                     :disabled="detail.my_score?.status === 'SUBMITTED'" style="margin-top: 10px" />
           <div class="foot-actions" v-if="detail.my_score?.status !== 'SUBMITTED'">
             <el-button @click="saveDraft">暂存草稿</el-button>
-            <el-button type="primary" :loading="submitting" @click="submit">正式提交(锁定)</el-button>
+            <el-button type="primary" :loading="submitting"
+                       :disabled="!['IN_PROGRESS', 'FINISHED'].includes(detail.session.status)" @click="submit">正式提交(锁定)</el-button>
           </div>
           <div v-else class="locked-tip">评分已提交锁定。如需修改，请申请管理员复核重开。</div>
         </template>

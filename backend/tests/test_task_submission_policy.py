@@ -6,12 +6,12 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException
-from app.models.business import GraduationSchedule
+from app.models.business import GraduationSchedule, OpeningReport
 from app.models.defense import StageTask, StageTaskVersion
 from app.models.system import ReviewRecord
 from app.modules.opening.router import OPENING_CONFIG
 from app.modules.stages.engine import StageEngine
-from app.modules.task.router import TaskCreate, TaskPatch, create_task, my_tasks, update_task
+from app.modules.task.router import TaskCreate, TaskPatch, close_task, create_task, my_tasks, update_task
 from app.shared.task_policy import ensure_task_submission_open
 from tests.test_material_version import STUDENT, TEACHER, new_engine, seed
 
@@ -75,9 +75,39 @@ class TaskSubmissionPolicyTest(unittest.TestCase):
 
     def test_other_scope_year_stage_and_draft_do_not_block(self):
         for extra in ({"college_id": 99}, {"academic_year": "2025-2026"},
-                      {"stage": "MIDTERM"}, {"status": "DRAFT"}, {"status": "CLOSED"}):
+                      {"stage": "MIDTERM"}, {"status": "DRAFT"}):
             self.task(due_at=datetime.now() - timedelta(days=1), **extra)
         ensure_task_submission_open(self.db, 1, "OPENING")
+
+    def test_other_advisor_tasks_do_not_affect_my_deadline(self):
+        from app.models.user import SysUser, TeacherProfile
+        self.db.add(SysUser(id=9, username="other", real_name="其他教师", role="TEACHER", password_hash="x"))
+        self.db.add(TeacherProfile(id=9, user_id=9, teacher_no="T009"))
+        self.db.commit()
+        mine = self.task(created_by=TEACHER.id)
+        self.task(created_by=9, opens_at=datetime.now() + timedelta(days=1))
+        self.assertEqual([t["id"] for t in json.loads(my_tasks(STUDENT, self.db).body)["data"]["tasks"]],
+                         [mine.id])
+        ensure_task_submission_open(self.db, 1, "OPENING")
+
+    def test_closed_stage_stays_closed_until_replacement_is_published(self):
+        old = self.task(created_by=TEACHER.id)
+        close_task(old.id, TEACHER, self.db)
+        self.assertEqual(json.loads(my_tasks(STUDENT, self.db).body)["data"]["tasks"], [])
+        with self.assertRaisesRegex(BusinessException, "已关闭"):
+            ensure_task_submission_open(self.db, 1, "OPENING")
+        self.task(created_by=TEACHER.id)
+        ensure_task_submission_open(self.db, 1, "OPENING")
+
+    def test_on_time_pending_review_is_not_overdue(self):
+        deadline = datetime.now() - timedelta(days=1)
+        self.task(created_by=TEACHER.id, due_at=deadline)
+        self.db.add(OpeningReport(student_id=1, teacher_id=1, topic_id=1, cycle_id=1,
+                                  title="开题报告", status="SUBMITTED", submitted_at=deadline - timedelta(minutes=5)))
+        self.db.commit()
+        row = json.loads(my_tasks(STUDENT, self.db).body)["data"]["tasks"][0]
+        self.assertFalse(row["overdue"])
+        self.assertFalse(row["done"])
 
     def test_invalid_window_rejected_without_creating_task(self):
         with self.assertRaises(BusinessException):

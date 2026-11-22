@@ -61,8 +61,13 @@ function thirdParty(name: string) {
 }
 
 async function handleLogin() {
+  if (loading.value) return
   if (!form.username || !form.password) {
     ElMessage.warning('请输入账号和密码')
+    return
+  }
+  if ([...form.username].length > 64 || [...form.password].length > 64) {
+    ElMessage.warning([...form.username].length > 64 ? '账号最多 64 个字符' : '密码最多 64 个字符')
     return
   }
   loading.value = true
@@ -83,10 +88,17 @@ async function handleLogin() {
     }
 
     ElMessage.success(`欢迎回来, ${res.data.user.real_name}`)
-    // 被 401 拦下来登录时保留回跳地址(仅同角色前缀才回跳，避免越权)
-    const home = roleHome(res.data.user.role)
+    const role = res.data.user.role
     const redirect = route.query.redirect
-    const target = typeof redirect === 'string' && redirect.startsWith(home) ? redirect : home
+    let target = roleHome(role)
+    if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) {
+      const resolved = router.resolve(redirect)
+      const record = resolved.matched.at(-1)
+      const roles = resolved.meta.roles as string[] | undefined
+      if (record && !record.redirect && !resolved.meta.public && (!roles || roles.includes(role))) {
+        target = resolved.fullPath
+      }
+    }
     router.push(target)
   } catch {
     /* 错误提示由拦截器统一处理 */

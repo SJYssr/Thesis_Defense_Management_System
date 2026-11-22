@@ -11,11 +11,12 @@ app/models/defense.py 里正式声明 status = synonym("seat_status")(或给状�
 status_field 映射参数), 之后删除本模块的运行时注册即可, 业务代码无需改动.
 """
 from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import select
 from sqlalchemy.orm import Session, synonym
 
 from app.core.exceptions import BusinessException, ResourceNotFoundException
-from app.models.defense import DefenseAssignment, DefenseSession
-from app.models.enums import SessionStatus
+from app.models.defense import DefenseAssignment, DefenseResult, DefenseSession
+from app.models.enums import ResultStatus, SessionStatus
 from app.shared.state_machine import SEAT, transition
 
 INVALID_TRANSITION = 40003
@@ -59,14 +60,19 @@ def mark_seat(db: Session, assignment: DefenseAssignment, target_status: str, ac
             f"转移表未定义席位动作「{target_status}」, 待扩展 SEAT.{target_status.lower()} 后才能使用",
             INVALID_TRANSITION,
         )
-    session = db.get(DefenseSession, assignment.session_id)
+    session = db.get(DefenseSession, assignment.session_id, with_for_update=True)
     if session is None:
         raise ResourceNotFoundException("场次不存在")
     if session.status not in SEAT_LIVE_SESSION_STATES:
         raise BusinessException(
             f"场次状态「{session.status}」不允许登记出席情况, 请先发布场次", INVALID_TRANSITION)
+    if action == "attend" and session.status == SessionStatus.PUBLISHED.value:
+        raise BusinessException("请先开始答辩，再登记到场", INVALID_TRANSITION)
     if action == "absent" and session.status != SessionStatus.FINISHED.value:
         raise BusinessException("场次结束后才能标记学生缺席", INVALID_TRANSITION)
+    if db.scalar(select(DefenseResult.id).where(DefenseResult.assignment_id == assignment.id,
+                 DefenseResult.status == ResultStatus.PUBLISHED.value).limit(1).with_for_update()) is not None:
+        raise BusinessException("该席位已有发布的正式成绩，请先撤回成绩", INVALID_TRANSITION)
     transition(db, SEAT, assignment, action, actor)
     if remark is not None:
         assignment.remark = remark

@@ -1,7 +1,7 @@
 import axios from 'axios'
 import type { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
-import { extractBackendMessage, NETWORK_ERROR_MESSAGE, resolveErrorMessage, SILENT_CODES } from '@/utils/error'
+import { extractBackendMessage, NETWORK_ERROR_MESSAGE, resolveErrorMessage } from '@/utils/error'
 import { API_BASE, handleSessionExpired, refreshAccessToken } from './session'
 
 interface RetriableConfig extends InternalAxiosRequestConfig {
@@ -55,7 +55,7 @@ request.interceptors.response.use(
     // 后端已改用真实 HTTP 状态码，这里只兜底极少数 code 非 0 但状态 200 的情况
     if (body && typeof body.code === 'number' && body.code !== 0) {
       const message = resolveErrorMessage(body.code, body.message, response.status)
-      if (!SILENT_CODES.has(body.code)) notify(message, config)
+      notify(message, config)
       return Promise.reject(new Error(message)) as unknown as AxiosResponse
     }
     return body as unknown as AxiosResponse
@@ -75,19 +75,15 @@ request.interceptors.response.use(
         try {
           // 并发去重: 多个 401 共用同一个 refresh Promise
           await refreshAccessToken()
-          // 重放原请求一次(请求拦截器会带上新 token)
-          return await request(config)
         } catch {
           handleSessionExpired()
           return Promise.reject(error)
         }
+        // 续期已成功，重试后的业务错误交给对应状态码处理。
+        return request(config)
       }
       // 已经重放过仍然 401: 说明会话已彻底失效
       handleSessionExpired()
-      return Promise.reject(error)
-    }
-
-    if (code !== null && SILENT_CODES.has(code)) {
       return Promise.reject(error)
     }
 

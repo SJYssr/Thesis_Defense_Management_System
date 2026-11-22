@@ -188,6 +188,7 @@ onMounted(load)
       <el-form label-width="150px" label-position="left">
         <el-form-item label="学年" required>
           <el-input v-model="form.academic_year" placeholder="如 2025-2026" maxlength="32" style="max-width: 260px" />
+          <div v-if="editingId !== null" class="field-hint">已有业务记录的学年保留原名称，换届请新建学年配置。</div>
         </el-form-item>
         <el-form-item label="激活（立即生效）">
           <el-switch v-model="form.is_active" active-text="激活" inactive-text="停用" />

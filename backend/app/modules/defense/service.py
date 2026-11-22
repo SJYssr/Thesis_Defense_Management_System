@@ -32,7 +32,7 @@ from app.models.enums import (
 )
 from app.models.user import StudentProfile, SysUser, TeacherProfile
 from app.shared.events import push_notification
-from app.shared.state_machine import RESULT, SESSION, transition
+from app.shared.state_machine import RESULT, SEAT, SESSION, allowed_actions, transition
 
 SESSION_STATUS_CN = {
     "DRAFT": "草稿", "READY": "待发布", "PUBLISHED": "已发布", "IN_PROGRESS": "进行中",
@@ -193,6 +193,28 @@ def get_rubric_for(db: Session, session: DefenseSession, cycle: GraduationCycle 
         select(ReviewRubric).where(*conds, ReviewRubric.college_id.is_(None))
         .order_by(ReviewRubric.version.desc(), ReviewRubric.id.desc())
     ).scalars().first()
+
+
+def assignment_rubric(db: Session, assignment: DefenseAssignment, session: DefenseSession,
+                      result: DefenseResult | None = None) -> ReviewRubric | None:
+    """结论以留档规则复算；尚未生成结论的席位沿用首份评审绑定的版本。"""
+    if result is None:
+        result = db.scalar(select(DefenseResult).where(DefenseResult.assignment_id == assignment.id))
+    if result is not None and result.rubric_snapshot:
+        try:
+            saved = json.loads(result.rubric_snapshot)
+            return ReviewRubric(id=saved.get("rubric_id"), version=saved["version"],
+                                weights_json=json.dumps(saved["weights"], ensure_ascii=False),
+                                pass_line=saved["pass_line"], min_examiners=saved["min_examiners"])
+        except (TypeError, KeyError, ValueError, AttributeError) as exc:
+            raise BusinessException("留存的评分表快照不完整，请核对历史结论") from exc
+    pinned = db.scalar(select(ReviewRubric).join(ExaminerScore, ExaminerScore.rubric_id == ReviewRubric.id)
+                       .where(ExaminerScore.assignment_id == assignment.id)
+                       .order_by(ExaminerScore.id).limit(1))
+    return pinned or get_rubric_for(db, session, db.get(GraduationCycle, assignment.cycle_id))
+
+
+SCORING_SESSION_STATES = (SessionStatus.IN_PROGRESS.value, SessionStatus.FINISHED.value)
 
 
 # ============ D35 评分复算: 单轨 / 可复现 / 舍入确定 ============
@@ -380,7 +402,8 @@ def session_item(db: Session, s: DefenseSession, with_members: bool = True,
         "location": s.location, "online_link": s.online_link,
         "is_online": _is_online(s),
         "capacity": s.capacity, "status": s.status, "status_cn": SESSION_STATUS_CN.get(s.status, s.status),
-        "revision": s.revision,
+        "revision": s.revision, "allowed_actions": allowed_actions(SESSION, s.status),
+        "roster_editable": s.status not in (SessionStatus.CANCELLED.value, SessionStatus.FINISHED.value),
         "examiner_count": len(examiners),
         "assignment_count": len(assignments),
         "changes": [{
@@ -391,11 +414,16 @@ def session_item(db: Session, s: DefenseSession, with_members: bool = True,
         } for c in changes],
     }
     if with_members:
+        scored_examiners = set(db.scalars(select(ExaminerScore.examiner_id).join(DefenseAssignment)
+                               .where(DefenseAssignment.session_id == s.id).distinct()))
         item["examiners"] = [{
+            "removable": item["roster_editable"] and ex.examiner_role != "CHAIR" and ex.teacher_id not in scored_examiners,
             "id": ex.id, "teacher_id": ex.teacher_id, "teacher_name": u.real_name,
             "role": ex.examiner_role, "role_cn": {"CHAIR": "主席", "EXAMINER": "评委", "REVIEWER": "评阅人"}.get(ex.examiner_role, ex.examiner_role),
         } for ex, u in examiners]
         item["assignments"] = [assignment_item(db, a, cycle) for a, cycle in assignments]
+        if any(a["result_status"] == ResultStatus.PUBLISHED.value for a in item["assignments"]):
+            item["allowed_actions"] = [action for action in item["allowed_actions"] if action != "cancel"]
     return item
 
 
@@ -443,7 +471,8 @@ def assignment_item(db: Session, a: DefenseAssignment, cycle: GraduationCycle | 
         "seat_status": a.seat_status, "seat_status_cn": SEAT_STATUS_CN.get(a.seat_status, a.seat_status),
         "acknowledged_at": a.acknowledged_at.isoformat() if a.acknowledged_at else None,
         "remark": a.remark,
-        "score_count": len(submitted),
+        "score_count": len(submitted), "has_scores": bool(effective_scores),
+        "seat_actions": allowed_actions(SEAT, a.seat_status) if not result or result.status != ResultStatus.PUBLISHED.value else [],
         "has_result": result is not None,
         "result_status": result.status if result else None,
         "result_status_cn": RESULT_STATUS_CN.get(result.status) if result else None,
@@ -525,6 +554,12 @@ def cancel_session(db: Session, session_id: int, actor, reason: str | None) -> D
     if not reason:
         raise BusinessException("取消场次必须填写原因", INVALID_TRANSITION)
     s = load_session(db, session_id)
+    published_result = db.scalar(select(DefenseResult.id)
+                                 .join(DefenseAssignment, DefenseAssignment.id == DefenseResult.assignment_id)
+                                 .where(DefenseAssignment.session_id == s.id,
+                                        DefenseResult.status == ResultStatus.PUBLISHED.value).limit(1).with_for_update())
+    if published_result is not None:
+        raise BusinessException("本场次已有发布的正式成绩，请先撤回成绩", INVALID_TRANSITION)
     transition(db, SESSION, s, "cancel", actor, comment=reason)
     s.revision = (s.revision or 0) + 1
     return s
@@ -553,18 +588,17 @@ def _recompute_progress(db: Session, cycle_id: int | None) -> None:
 
 def load_result(db: Session, result_id: int, for_update: bool = True) -> tuple:
     """载入结论及其席位/场次/评分表(发布与撤回都取行锁, 挡住并发双击)."""
-    r = (db.get(DefenseResult, result_id, with_for_update=True) if for_update
-         else db.get(DefenseResult, result_id))
+    r = db.get(DefenseResult, result_id)
     if r is None:
         raise ResourceNotFoundException("结论不存在")
     a = db.get(DefenseAssignment, r.assignment_id)
     if a is None:
         raise ResourceNotFoundException("答辩席位不存在")
-    s = db.get(DefenseSession, a.session_id)
-    if s is None:
-        raise ResourceNotFoundException("答辩场次不存在")
+    s = load_session(db, a.session_id, for_update=for_update)
+    if for_update:
+        r = db.get(DefenseResult, result_id, with_for_update=True)
     cycle = db.get(GraduationCycle, a.cycle_id)
-    return r, a, s, cycle, get_rubric_for(db, s, cycle)
+    return r, a, s, cycle, assignment_rubric(db, a, s, r)
 
 
 def _apply_result_payload(r: DefenseResult, computed: dict) -> None:
@@ -610,7 +644,7 @@ def publish_result(db: Session, result_id: int, actor) -> tuple[DefenseResult, d
     r, a, s, _cycle, rubric = load_result(db, result_id)
     if rubric is None:
         raise BusinessException("未配置启用的评分表")
-    if s.status in (SessionStatus.DRAFT.value, SessionStatus.CANCELLED.value):
+    if s.status not in SCORING_SESSION_STATES:
         raise BusinessException(
             f"场次状态「{SESSION_STATUS_CN.get(s.status, s.status)}」不允许发布结论", INVALID_TRANSITION)
     computed = compute_result(db, a, rubric)

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FileDownload from '@/components/FileDownload.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { materialApi } from '@/api/business'
@@ -174,7 +175,7 @@ onMounted(async () => { await loadFilters(); await Promise.all([load(), loadStat
     </div>
     <el-dialog v-model="detailVisible" :title="`${detail?.student_name || '学生'}的毕业材料`" width="620px">
       <el-descriptions :column="1" border><el-descriptions-item label="学号">{{ detail?.student_no }}</el-descriptions-item><el-descriptions-item label="指导教师">{{ detail?.teacher_name || '—' }}</el-descriptions-item><el-descriptions-item label="状态">{{ detail?.status_cn }}</el-descriptions-item><el-descriptions-item label="审核意见">{{ detail?.review_comment || '—' }}</el-descriptions-item></el-descriptions>
-      <h4>材料文件</h4><div v-if="!detail?.files.length">暂无文件</div><div v-for="file in detail?.files || []" :key="file.id" class="detail-file"><span>{{ file.material_type_cn }} · {{ file.original_name }}</span><a :href="file.url" target="_blank" rel="noopener">下载</a></div>
+      <h4>材料文件</h4><div v-if="!detail?.files.length">暂无文件</div><div v-for="file in detail?.files || []" :key="file.id" class="detail-file"><span>{{ file.material_type_cn }} · {{ file.original_name }}</span><FileDownload :file-id="file.file_id" :filename="file.original_name" /></div>
     </el-dialog>
     <el-dialog v-model="reviewVisible" :title="`审核 ${reviewRow?.student_name || ''} 的毕业材料`" width="520px"><el-input v-model="comment" type="textarea" :rows="4" placeholder="审核意见（驳回时必填）" /><template #footer><el-button :loading="reviewing" @click="review(false)">驳回</el-button><el-button type="primary" :loading="reviewing" @click="review(true)">通过</el-button></template></el-dialog>
   </div>

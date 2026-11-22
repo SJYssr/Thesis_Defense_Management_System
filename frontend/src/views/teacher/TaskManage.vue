@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { taskApi } from '@/api/defense'
-import { academicYearApi } from '@/api/common'
+import { academicYearApi, userAdminApi } from '@/api/common'
 import type { StageTask, StageTaskAction, StageTaskVersion } from '@/types/api'
 
 const tasks = ref<StageTask[]>([])
@@ -18,6 +18,20 @@ const form = reactive({
   requirements: '', opens_at: '', due_at: '', late_policy: 'ALLOW', status: 'PUBLISHED',
   college_id: null as number | null, major_id: null as number | null, class_id: null as number | null,
 })
+
+interface SchoolUnit { id: number; name: string }
+const colleges = ref<SchoolUnit[]>([])
+const majors = ref<(SchoolUnit & { college_id: number })[]>([])
+const classes = ref<(SchoolUnit & { major_id: number })[]>([])
+const majorOptions = computed(() => majors.value.filter(m => !form.college_id || m.college_id === form.college_id))
+const classOptions = computed(() => classes.value.filter(c => form.major_id
+  ? c.major_id === form.major_id
+  : majorOptions.value.some(m => m.id === c.major_id)))
+
+function changeCollege() {
+  form.major_id = null
+  form.class_id = null
+}
 
 async function load() {
   const res = await taskApi.list({ ...query, page: 1, page_size: 50 })
@@ -110,7 +124,12 @@ onMounted(async () => {
   activeYear.value = data.active_year
   query.academic_year = data.active_year
   form.academic_year = data.active_year
-  await load()
+  const [collegeRes, majorRes, classRes] = await Promise.all([
+    userAdminApi.colleges(), userAdminApi.majors(), userAdminApi.classes(), load(),
+  ])
+  colleges.value = collegeRes.data
+  majors.value = majorRes.data
+  classes.value = classRes.data
 })
 </script>
 
@@ -184,6 +203,20 @@ onMounted(async () => {
             <el-option v-for="s in ['SELECTION', 'OPENING', 'MIDTERM', 'FINAL', 'MATERIAL']" :key="s" :label="s" :value="s" />
           </el-select>
         </el-form-item>
+        <el-form-item label="适用学生">
+          <div class="scope-fields">
+            <span>本人指导学生，可按学院、专业、班级进一步筛选</span>
+            <el-select v-model="form.college_id" clearable placeholder="全部学院" @change="changeCollege">
+              <el-option v-for="c in colleges" :key="c.id" :label="c.name" :value="c.id" />
+            </el-select>
+            <el-select v-model="form.major_id" clearable placeholder="全部专业" @change="form.class_id = null">
+              <el-option v-for="m in majorOptions" :key="m.id" :label="m.name" :value="m.id" />
+            </el-select>
+            <el-select v-model="form.class_id" clearable placeholder="全部班级">
+              <el-option v-for="c in classOptions" :key="c.id" :label="c.name" :value="c.id" />
+            </el-select>
+          </div>
+        </el-form-item>
         <el-form-item label="任务名称"><el-input v-model="form.title" /></el-form-item>
         <el-form-item label="任务说明"><el-input v-model="form.description" type="textarea" :rows="2" /></el-form-item>
         <el-form-item label="所需材料"><el-input v-model="form.requirements" placeholder="用顿号分隔：开题报告、文献综述" /></el-form-item>
@@ -219,6 +252,7 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.scope-fields { display: grid; gap: 6px; width: 100%; }
 .filter-row { display: flex; gap: 12px; margin-bottom: 16px; }
 .time-cell { font-size: 12px; color: #606266; line-height: 1.6; }
 .muted { color: #909399; font-size: 12px; }

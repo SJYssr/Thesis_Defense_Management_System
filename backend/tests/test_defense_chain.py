@@ -178,6 +178,23 @@ class SessionStateMachineTest(unittest.TestCase):
         self.assertIn("未到开始时间", ctx.exception.message)
         self.assertEqual(s.status, SessionStatus.PUBLISHED.value)
 
+    def test_reschedule_checks_conflicts_and_preserves_published_times(self):
+        from app.modules.defense.router import SessionPatch, patch_session
+
+        first = _session(self.db)
+        _examiners(self.db)
+        publish_session(self.db, first.id, ADMIN)
+        second = _session(self.db, sid=2, start=first.starts_at + timedelta(days=1))
+        _examiners(self.db, sid=2)
+        publish_session(self.db, second.id, ADMIN)
+        self.db.commit()
+        original_start = second.starts_at
+        with self.assertRaisesRegex(ConflictException, "排期冲突"):
+            patch_session(second.id, SessionPatch(revision=second.revision, starts_at=first.starts_at,
+                          ends_at=first.ends_at, change_reason="调课"), ADMIN, self.db)
+        self.db.rollback()
+        self.assertEqual(second.starts_at, original_start)
+
     def test_publish_twice_rejected(self):
         s = _session(self.db)
         _examiners(self.db)
@@ -256,8 +273,11 @@ class SeatStateMachineTest(unittest.TestCase):
         publish_session(self.db, self.session.id, ADMIN)
         self.db.flush()
 
-    def test_attend_from_published_session(self):
+    def test_attend_requires_started_session(self):
         self._published()
+        with self.assertRaisesRegex(BusinessException, "请先开始"):
+            mark_seat(self.db, self.assignment, SeatStatus.ATTENDED.value, ADMIN)
+        start_session(self.db, self.session.id, ADMIN)
         mark_seat(self.db, self.assignment, SeatStatus.ATTENDED.value, ADMIN)
         self.db.flush()
         self.assertEqual(self.assignment.seat_status, SeatStatus.ATTENDED.value)
@@ -270,6 +290,7 @@ class SeatStateMachineTest(unittest.TestCase):
 
     def test_attend_twice_rejected(self):
         self._published()
+        start_session(self.db, self.session.id, ADMIN)
         mark_seat(self.db, self.assignment, SeatStatus.ATTENDED.value, ADMIN)
         with self.assertRaises(BusinessException) as ctx:
             mark_seat(self.db, self.assignment, SeatStatus.ATTENDED.value, ADMIN)
@@ -315,6 +336,7 @@ class ResultStateMachineTest(unittest.TestCase):
         self.session = _session(self.db)
         _examiners(self.db)
         publish_session(self.db, self.session.id, ADMIN)
+        start_session(self.db, self.session.id, ADMIN)
         self.assignment = _assignment(self.db, seat_status=SeatStatus.ATTENDED.value)
         _submit(self.db, self.assignment.id, 1, {"报告质量": 80, "答辩表现": 80})
         _submit(self.db, self.assignment.id, 2, {"报告质量": 80, "答辩表现": 80})
@@ -374,6 +396,35 @@ class ResultStateMachineTest(unittest.TestCase):
         with self.assertRaises(BusinessException) as ctx:
             calculate_result(self.db, self.result.id, ADMIN)
         self.assertEqual(ctx.exception.code, INVALID)
+
+    def test_cancel_blocked_after_publication(self):
+        calculate_result(self.db, self.result.id, ADMIN)
+        publish_result(self.db, self.result.id, ADMIN)
+        with self.assertRaisesRegex(BusinessException, "先撤回成绩"):
+            cancel_session(self.db, self.session.id, ADMIN, "排期有误")
+
+    def test_rubric_change_keeps_published_and_reopened_scores(self):
+        from app.modules.defense.router import preview_result
+
+        scores = self.db.scalars(select(ExaminerScore)).all()
+        for score in scores:
+            score.scores_json = json.dumps({"报告质量": 100, "答辩表现": 20})
+        self.db.flush()
+        calculate_result(self.db, self.result.id, ADMIN)
+        publish_result(self.db, self.result.id, ADMIN)
+        self.assertEqual((self.result.score, self.result.decision), (60, "PASS"))
+        self.rubric.enabled = 0
+        self.db.add(ReviewRubric(id=2, academic_year=self.session.academic_year, stage="FINAL",
+                                 version=2, min_examiners=2, pass_line=60, enabled=1,
+                                 weights_json=json.dumps([{"name": "报告质量", "weight": 20},
+                                                          {"name": "答辩表现", "weight": 80}])))
+        self.db.flush()
+        preview = json.loads(preview_result(self.result.id, ADMIN, self.db).body)["data"]
+        self.assertEqual((preview["score"], preview["decision"]), (60, "PASS"))
+        withdraw_result(self.db, self.result.id, ADMIN, "重新核对")
+        calculate_result(self.db, self.result.id, ADMIN)
+        publish_result(self.db, self.result.id, ADMIN)
+        self.assertEqual((self.result.score, self.result.decision), (60, "PASS"))
 
     def test_publish_twice_rejected(self):
         calculate_result(self.db, self.result.id, ADMIN)
@@ -508,6 +559,7 @@ class ConcurrentPublishTest(unittest.TestCase):
             s = _session(db)
             _examiners(db, s.id)
             publish_session(db, s.id, ADMIN)
+            start_session(db, s.id, ADMIN)
             a = _assignment(db, s.id, seat_status=SeatStatus.ATTENDED.value)
             _submit(db, a.id, 1, {"报告质量": 82, "答辩表现": 88})
             _submit(db, a.id, 2, {"报告质量": 84, "答辩表现": 86})

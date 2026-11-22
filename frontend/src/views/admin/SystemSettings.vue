@@ -15,7 +15,6 @@ import { sysConfigApi } from '@/api/common'
 import {
   aiAdminApi,
   aiHealthFixHint,
-  describeRequestError,
   healthRows,
   normalizeConfigValues,
   overviewProbe,
@@ -166,8 +165,8 @@ async function loadAi(): Promise<void> {
     providers.value = providerBody.data ?? []
     overview.value = overviewBody.data ?? null
     applyBindings(bindingBody.data ?? overviewBody.data ?? null)
-  } catch (e) {
-    ElMessage.error(describeRequestError(e))
+  } catch {
+    // 请求层已显示服务端原因。
   } finally {
     aiLoading.value = false
   }
@@ -182,8 +181,7 @@ async function onToggleAi(value: string | number | boolean): Promise<void> {
     applyBindings(res.data ?? null)
     ElMessage.success(next ? 'AI 功能已开启' : 'AI 功能已关闭, 学生端 AI 接口统一停用')
     await loadAi()
-  } catch (e) {
-    ElMessage.error(describeRequestError(e))
+  } catch {
     await loadAi()
   } finally {
     masterSaving.value = false
@@ -279,8 +277,8 @@ async function submitProvider(): Promise<void> {
     }
     editor.visible = false
     await loadAi()
-  } catch (e) {
-    ElMessage.error(describeRequestError(e))
+  } catch {
+    // 请求层已显示服务端原因。
   } finally {
     savingProvider.value = false
   }
@@ -299,8 +297,8 @@ async function onRefreshModels(row: AiProvider): Promise<void> {
       ElMessage.warning('刷新失败(' + providerStatusMeta(result?.status).label + '): ' + (result?.detail || '后端未给原因'))
     }
     await loadAi()
-  } catch (e) {
-    ElMessage.error(describeRequestError(e))
+  } catch {
+    // 请求层已显示服务端原因。
   } finally {
     busyProviderId.value = null
   }
@@ -312,8 +310,7 @@ async function onToggleProvider(row: AiProvider, enabled: boolean): Promise<void
     await aiAdminApi.updateProvider(row.id, { enabled })
     ElMessage.success(enabled ? '已启用供应商' : '已停用供应商')
     await loadAi()
-  } catch (e) {
-    ElMessage.error(describeRequestError(e))
+  } catch {
     await loadAi()
   } finally {
     busyProviderId.value = null
@@ -335,9 +332,8 @@ async function onDeleteProvider(row: AiProvider): Promise<void> {
     await aiAdminApi.deleteProvider(row.id)
     ElMessage.success('已删除供应商')
     await loadAi()
-  } catch (e) {
-    // 400 的中文原因(被绑定/不存在)原样展示, 不要吞成"操作失败"
-    ElMessage.error(describeRequestError(e))
+  } catch {
+    // 请求层已显示服务端原因。
   } finally {
     busyProviderId.value = null
   }
@@ -370,8 +366,8 @@ async function saveBindings(): Promise<void> {
     applyBindings(res.data ?? null)
     await loadAi()
     ElMessage.success('绑定已保存, 立即生效')
-  } catch (e) {
-    ElMessage.error(describeRequestError(e))
+  } catch {
+    // 请求层已显示服务端原因。
   } finally {
     bindingSaving.value = false
   }
@@ -397,8 +393,8 @@ async function load(): Promise<void> {
       else (form as Record<string, string | number>)[key] = raw ?? ''
     }
     legacyBaseline.value = Object.fromEntries(Object.entries(form).map(([key, value]) => [key, String(value)]))
-  } catch (e) {
-    ElMessage.error(describeRequestError(e))
+  } catch {
+    // 请求层已显示服务端原因。
   } finally {
     loading.value = false
   }
@@ -432,8 +428,8 @@ async function save(): Promise<void> {
     await refreshPublicConfig()
     ElMessage.success('已保存, 立即生效')
     await load()
-  } catch (e) {
-    ElMessage.error(describeRequestError(e))
+  } catch {
+    // 请求层已显示服务端原因。
   } finally {
     saving.value = false
   }

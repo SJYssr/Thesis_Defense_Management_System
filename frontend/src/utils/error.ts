@@ -45,13 +45,6 @@ export const HTTP_STATUS_MESSAGE: Record<number, string> = {
 export const NETWORK_ERROR_MESSAGE = '网络异常，请检查网络后重试'
 export const DEFAULT_ERROR_MESSAGE = '请求失败，请稍后重试'
 
-/**
- * 静默码: 不弹全局提示，由调用方按业务文案自行提示。
- * 42901(AI 限流) 现在走真实 HTTP 429，若每个并发请求都弹一次会刷屏，
- * 具体页面已有自己的提示，这里只负责静默。
- */
-export const SILENT_CODES: ReadonlySet<number> = new Set<number>([42901])
-
 /** 从后端响应体里取最具体的 message(兼容 FastAPI 的 detail 结构) */
 export function extractBackendMessage(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return ''

@@ -142,9 +142,9 @@
                   <div class="file-name" :title="f.original_name">{{ f.original_name }}</div>
                   <div class="file-meta">{{ f.material_type_cn || '附件' }} · {{ fmtSize(f.size) }}</div>
                 </div>
-                <el-link type="primary" :href="f.url" target="_blank" class="file-dl">
+                <FileDownload :file-id="f.file_id" :filename="f.original_name" class="file-dl">
                   <el-icon><Download /></el-icon>&nbsp;下载
-                </el-link>
+                </FileDownload>
               </div>
             </div>
             <el-empty v-else description="未上传材料文件" :image-size="55" />
@@ -168,6 +168,7 @@
 </template>
 
 <script setup lang="ts">
+import FileDownload from '@/components/FileDownload.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, Select, CloseBold, Download } from '@element-plus/icons-vue'

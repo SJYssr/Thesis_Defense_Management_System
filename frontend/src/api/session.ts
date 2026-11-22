@@ -137,8 +137,8 @@ export function handleSessionExpired(): void {
   if (sessionDropped) return
   dropSession()
   if (typeof window === 'undefined') return
-  const { pathname, search } = window.location
+  const { pathname, search, hash } = window.location
   if (pathname === '/login') return
-  const redirect = encodeURIComponent(pathname + search)
+  const redirect = encodeURIComponent(pathname + search + (hash || ''))
   window.location.replace('/login?redirect=' + redirect)
 }

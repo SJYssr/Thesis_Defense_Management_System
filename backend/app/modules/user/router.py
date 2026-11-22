@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, ResourceNotFoundException
-from app.core.permissions import CurrentUser, get_current_user, require_admin
+from app.core.permissions import CurrentUser, get_current_user, require_admin, require_teacher_or_admin
 from app.core.response import ResponseUtil
 from app.core.security import hash_password
 from app.db.mysql import get_db
@@ -89,7 +89,10 @@ def _user_conditions(role: str, keyword: str | None, status: int | None) -> list
     """D25: 列表 items 与 total 的唯一条件来源, 避免两处条件漂移."""
     conds = [SysUser.role == role, SysUser.deleted_at.is_(None)]
     if keyword:
-        conds.append(or_(SysUser.username.contains(keyword), SysUser.real_name.contains(keyword)))
+        fields = [SysUser.username.contains(keyword), SysUser.real_name.contains(keyword)]
+        if role == "TEACHER":
+            fields.append(SysUser.id.in_(select(TeacherProfile.user_id).where(TeacherProfile.teacher_no.contains(keyword))))
+        conds.append(or_(*fields))
     if status is not None:
         conds.append(SysUser.status == status)
     return conds
@@ -269,8 +272,17 @@ def list_majors(college_id: int | None = None, _: CurrentUser = Depends(get_curr
 
 
 @org_router.get("/classes")
-def list_classes(major_id: int | None = None, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+def list_classes(major_id: int | None = None, user: CurrentUser = Depends(require_teacher_or_admin),
+                 db: Session = Depends(get_db)):
+    from app.models.business import GraduationCycle
+
     conds = []
+    if user.role == "TEACHER":
+        taught_classes = select(StudentProfile.class_id).join(
+            GraduationCycle, GraduationCycle.student_id == StudentProfile.id
+        ).join(TeacherProfile, TeacherProfile.id == GraduationCycle.teacher_id).where(
+            TeacherProfile.user_id == user.id, GraduationCycle.status == "ACTIVE")
+        conds.append(ClassInfo.id.in_(taught_classes))
     if major_id:
         conds.append(ClassInfo.major_id == major_id)
     rows = db.execute(select(ClassInfo).where(*conds).order_by(ClassInfo.id)).scalars().all()

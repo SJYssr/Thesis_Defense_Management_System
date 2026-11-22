@@ -65,16 +65,17 @@ def _base_condition():
     return and_(SysFile.business_type.is_(None), SysFile.deleted_at.is_(None))
 
 
-def _remove_physical(record) -> None:
-    """删物理文件; 文件已丢失/非法路径/OSError 只记日志, 绝不影响记录清理."""
+def _remove_physical(record) -> int | None:
+    """返回本次删除的字节数；文件缺失为 0，删除出错为 None 以便下次重试。"""
     try:
-        storage.abs_path(record.storage_path).unlink(missing_ok=True)
+        storage.abs_path(record.storage_path).unlink()
+        return int(record.size or 0)
     except FileNotFoundError:
-        logger.warning("物理文件不存在, 仅清理记录 file_id=%s storage_path=%s",
-                       record.id, record.storage_path)
-    except Exception:  # noqa: BLE001 — 任何物理删除故障都不得中断记录清理
+        return 0
+    except Exception:  # 单个文件的存储故障不影响本批其余文件
         logger.warning("删除物理文件失败 file_id=%s storage_path=%s",
                        record.id, record.storage_path, exc_info=True)
+        return None
 
 
 def _append_item(items: list[dict], record, reason: str) -> None:
@@ -112,7 +113,7 @@ def collect(db, retention_days: int = DEFAULT_RETENTION_DAYS, dry_run: bool = Tr
     summary = {
         "dry_run": bool(dry_run), "retention_days": days, "scanned": int(scanned), "deleted": 0,
         "skipped_referenced": int(skipped_referenced), "skipped_recent": int(skipped_recent),
-        "deletable": int(deletable), "freed_bytes": 0, "items": [],
+        "deletable": int(deletable), "freed_bytes": 0, "failed": 0, "items": [],
     }
 
     # 明细: 一条 SELECT 内完成三段分类(未到期 / 被引用 / 可删), 引用判定走选出的 EXISTS 列, 不做 N+1
@@ -150,15 +151,18 @@ def collect(db, retention_days: int = DEFAULT_RETENTION_DAYS, dry_run: bool = Tr
         batch = db.execute(
             select(SysFile)
             .where(base, SysFile.created_at < cutoff, ~referenced_exists(), SysFile.id > last_id)
-            .order_by(SysFile.id).limit(GC_BATCH_SIZE)
+            .order_by(SysFile.id).limit(GC_BATCH_SIZE).with_for_update()
         ).scalars().all()
         if not batch:
             break
         for record in batch:
-            # 先删物理文件: 失败只记日志, 记录清理照常进行
-            _remove_physical(record)
+            freed = _remove_physical(record)
+            if freed is None:
+                summary["failed"] += 1
+                _append_item(summary["items"], record, "delete_failed")
+                continue
             _append_item(summary["items"], record, "deleted")
-            summary["freed_bytes"] += int(record.size or 0)
+            summary["freed_bytes"] += freed
             summary["deleted"] += 1
             # 写操作留痕: 每条一条 logger.info, 不进 operation_log(避免刷表)
             logger.info("孤儿文件已清理 file_id=%s original_name=%s size=%s storage_path=%s",
@@ -170,7 +174,7 @@ def collect(db, retention_days: int = DEFAULT_RETENTION_DAYS, dry_run: bool = Tr
             break
 
     logger.info("孤儿文件清理完成: %s", {k: summary[k] for k in
-                                       ("retention_days", "scanned", "deleted", "freed_bytes")})
+                                       ("retention_days", "scanned", "deleted", "failed", "freed_bytes")})
     return summary
 
 

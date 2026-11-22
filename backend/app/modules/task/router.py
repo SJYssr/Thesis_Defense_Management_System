@@ -103,6 +103,8 @@ def list_tasks(academic_year: str | None = None, stage: str | None = None, statu
                user: CurrentUser = Depends(require_teacher_or_admin), db: Session = Depends(get_db)):
     """教师与管理员查看任务配置; require_teacher 放行 TEACHER/ADMIN."""
     conds = []
+    if user.role == "TEACHER":
+        conds.append(StageTask.created_by == user.id)
     if academic_year:
         conds.append(StageTask.academic_year == academic_year)
     if stage:
@@ -293,7 +295,9 @@ def my_tasks(user: CurrentUser = Depends(require_student), db: Session = Depends
             m_comment = m.review_comment if m else None
             done = bool(m and m.status == "APPROVED")
 
-        overdue = bool(t.due_at and current > t.due_at and not done)
+        submitted_for_review = m_status in ("SUBMITTED", "PENDING") and m_submitted is not None
+        due_check_at = m_submitted if submitted_for_review else current
+        overdue = bool(t.due_at and due_check_at > t.due_at and not done)
         not_opened = bool(t.opens_at and current < t.opens_at)
         tasks.append({
             "id": t.id, "stage": t.stage, "stage_cn": STAGE_CN.get(t.stage, t.stage),

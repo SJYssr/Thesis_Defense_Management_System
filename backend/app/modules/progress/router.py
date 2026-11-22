@@ -27,6 +27,7 @@ from app.models.user import College, Major, StudentProfile, SysUser, TeacherProf
 from app.shared.cycle import academic_year_for, formal_defense_snapshot
 from app.shared.events import push_notification
 from app.shared.progress import STAGE_LABELS, ProgressService
+from app.shared.query import paginate
 from app.shared.workflow import GraduationWorkflowService
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,7 @@ def _progress_item(db: Session, process: GraduationProcess, student_id: int) -> 
         "college_name": college.name if college else None,
         "major_name": major.name if major else None,
         "academic_year": cycle.academic_year if cycle else None,
+        "cycle_id": process.cycle_id,
         "teacher_id": process.teacher_id,
         "current_stage": process.current_stage,
         "current_stage_cn": STAGE_LABELS.get(ProcessStage(process.current_stage), process.current_stage),
@@ -200,7 +202,7 @@ def send_reminder(student_id: int, body: ReminderRequest, user: CurrentUser = De
 def admin_progress(risk_level: str | None = None, stage: str | None = None,
                    academic_year: str | None = None, college_id: int | None = None,
                    major_id: int | None = None, teacher_id: int | None = None,
-                   student: str | None = None,
+                   student: str | None = None, active_cycles_only: bool = False,
                    page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                    _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
     conds = []
@@ -212,9 +214,13 @@ def admin_progress(risk_level: str | None = None, stage: str | None = None,
                           GraduationProcess.current_stage != "COMPLETED"])
     if stage:
         conds.append(GraduationProcess.current_stage == stage)
-    if academic_year:
-        conds.append(GraduationProcess.cycle_id.in_(select(GraduationCycle.id).where(
-            GraduationCycle.academic_year == academic_year)))
+    if academic_year or active_cycles_only:
+        cycles = select(GraduationCycle.id)
+        if academic_year:
+            cycles = cycles.where(GraduationCycle.academic_year == academic_year)
+        if active_cycles_only:
+            cycles = cycles.where(GraduationCycle.status == "ACTIVE")
+        conds.append(GraduationProcess.cycle_id.in_(cycles))
     if teacher_id:
         conds.append(GraduationProcess.teacher_id == teacher_id)
     if college_id or major_id or student:
@@ -227,11 +233,8 @@ def admin_progress(risk_level: str | None = None, stage: str | None = None,
             students = students.where(or_(SysUser.real_name.contains(student),
                                           StudentProfile.student_no.contains(student)))
         conds.append(GraduationProcess.student_id.in_(students))
-    total = db.execute(select(func.count(GraduationProcess.id)).where(*conds)).scalar()
-    processes = db.execute(
-        select(GraduationProcess).where(*conds).order_by(GraduationProcess.risk_level.desc())
-        .offset((page - 1) * page_size).limit(page_size)
-    ).scalars().all()
+    processes, total = paginate(db, select(GraduationProcess).order_by(
+        GraduationProcess.risk_level.desc(), GraduationProcess.id), page=page, size=page_size, filters=conds)
     return ResponseUtil.page([_progress_item(db, p, p.student_id) for p in processes], total, page, page_size)
 
 
