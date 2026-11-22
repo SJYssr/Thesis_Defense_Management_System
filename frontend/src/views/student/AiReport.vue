@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { aiApi } from '@/api/common'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
+import PracticeAssessment from '@/components/PracticeAssessment.vue'
 import PracticeSources from '@/components/PracticeSources.vue'
 const route = useRoute()
 const DIM_CN: Record<string, string> = { accuracy: '知识准确性', logic: '逻辑完整性', clarity: '表达清晰度', depth: '技术深度' }
@@ -75,6 +76,7 @@ onMounted(async () => {
         <el-collapse-item v-for="t in report.turns" :key="t.turn_no" :title="`第 ${t.turn_no} 轮 · ${t.is_follow_up ? '追问 · ' : ''}${t.question}`">
           <b>你的回答</b><p class="answer">{{ t.student_answer }}</p>
           <b>本轮反馈<span v-if="t.total_score != null"> · {{ t.total_score }} 分</span></b>
+          <PracticeAssessment :assessment="t.assessment" :sources="t.sources" />
           <MarkdownViewer :content="t.ai_feedback || ''" />
           <PracticeSources :sources="t.sources" />
         </el-collapse-item>

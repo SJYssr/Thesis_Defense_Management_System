@@ -19,7 +19,7 @@ from app.ai.defense.service import DefenseService
 from app.ai.llm.factory import LLMFactory, MockLLM
 from app.ai.rag.rag_service import RAGService
 from app.ai.rag.retriever import RetrievedChunk
-from app.core.exceptions import BusinessException
+from app.core.exceptions import BusinessException, register_exception_handlers
 from app.core.permissions import CurrentUser, require_student
 from app.db.base import Base
 from app.db.mysql import get_db
@@ -228,7 +228,9 @@ class AiDefenseBoundaryTest(unittest.TestCase):
 
     def _client(self):
         app = FastAPI()
+        register_exception_handlers(app)
         app.include_router(ai_router.router, prefix="/api/v1")
+        app.include_router(ai_router.defense, prefix="/api/v1")
         app.dependency_overrides[require_student] = _fake_user
         app.dependency_overrides[get_db] = lambda: self.db
         return TestClient(app, raise_server_exceptions=False)
@@ -475,12 +477,14 @@ class AiDefenseBoundaryTest(unittest.TestCase):
                     AIDocument(id=1), AIDocument(id=2)]), mock.patch.object(LLMFactory, "get", return_value=MockLLM()):
             bank = svc.generate_questions(STUDENT, USER_ID, question_count=3)
             self.assertEqual({item["sources"][0]["chunk_id"] for item in bank}, {10, 11})
+            self.assertTrue(all("rubric" not in item and "assessment" not in item for item in bank))
             ids = [item["id"] for item in bank]
             session_id = svc.create_session(STUDENT, 3, ids)["session_id"]
             svc.generate_questions(STUDENT, USER_ID)
             with self.assertRaisesRegex(BusinessException, "题库已"):
                 svc.create_session(STUDENT, 3, ids)
             first = svc.start_session(STUDENT, session_id)
+            self.assertEqual(first["assessment"], [])
             self.assertEqual(first["question"], svc.next_question(STUDENT, session_id)["question"])
             answer = "我用接口层校验输入并把结果交给存储层"
             with mock.patch.object(RAGService, "practice_chunks", return_value=[self._hit()]), \
@@ -488,12 +492,87 @@ class AiDefenseBoundaryTest(unittest.TestCase):
                 graded = svc.evaluate_answer(STUDENT, session_id, first["question"], answer, USER_ID)
                 retry = svc.evaluate_answer(STUDENT, session_id, first["question"], answer, USER_ID)
                 self.assertEqual(graded["scores"], retry["scores"])
+                self.assertTrue(graded["assessment"])
+                self.assertEqual(graded["assessment"], retry["assessment"])
+                self.assertEqual(graded["assessment"], svc.session_detail(STUDENT, session_id)["turns"][0]["assessment"])
                 self.assertEqual(svc.session_detail(STUDENT, session_id)["answered_count"], 1)
             follow_up = svc.next_question(STUDENT, session_id)
             self.assertTrue(follow_up["is_follow_up"])
+            self.assertEqual(follow_up["assessment"], [])
             self.assertIn(answer, follow_up["question"])
             self.assertEqual(follow_up["sources"], graded["sources"])
             self.assertEqual(self.db.scalar(select(func.count()).select_from(AIDefenseTurn)), 2)
+
+    def test_marking_points_reject_fabricated_references_quotes_and_verdicts(self):
+        from app.ai.defense.rubric import accuracy_from_evidence, assess_points, marking_points
+
+        point = {"expectation": "接口层区分输入和存储", "source_ids": [10]}
+        rubric = marking_points([point, {"expectation": "使用分布式缓存", "source_ids": [10]},
+                                 dict(point, source_ids=[999]), dict(point, source_ids=[True])], [self._source()])
+        self.assertEqual(rubric, [dict(point, id=1)])
+        answer = "接口层区分输入和存储"
+        valid = {"id": 1, "verdict": "supported", "answer_quote": answer, "reason": "与原文一致"}
+        self.assertEqual(assess_points([valid], rubric, answer)[0]["source_ids"], [10])
+        for invalid in ([], [valid, valid], [dict(valid, id=77)], [dict(valid, answer_quote="我已经做过压力测试")],
+                        [dict(valid, expectation="使用分布式缓存")], [dict(valid, source_ids=[999])]):
+            with self.assertRaises(BusinessException):
+                assess_points(invalid, rubric, answer)
+        for state, score in (("supported", 35), ("partial", 18), ("missing", 0), ("contradicted", 0)):
+            self.assertEqual(accuracy_from_evidence([{"verdict": state}, {"verdict": "insufficient_evidence"}]), score)
+        with self.assertRaisesRegex(BusinessException, "本轮未评分"):
+            accuracy_from_evidence([{"verdict": "insufficient_evidence"}])
+
+    def test_unverifiable_grading_can_retry_and_followup_uses_its_own_material_point(self):
+        from app.ai.defense.rubric import mark_snapshot, snapshot
+
+        session = self._session()
+        point = {"id": 1, "expectation": "分层设计", "source_ids": [10]}
+        followup_point = dict(point, expectation="接口层区分输入和存储")
+        turn = AIDefenseTurn(session_id=session.id, turn_no=1, question="这份报告采用什么设计？",
+                             reference_chunks=mark_snapshot([self._source()], [point]))
+        self.db.add(turn)
+        self.db.commit()
+        answer = "我采用分层设计"
+        verdict = {"id": 1, "verdict": "supported", "answer_quote": "分层设计", "reason": "答句与报告原文一致"}
+        grade = {"accuracy": 1, "logic": 18, "clarity": 14, "depth": 12, "source_ids": [10],
+                 "assessment": [verdict], "feedback": "已说出分层设计。",
+                 "follow_up_needed": True, "follow_up_question": "具体怎样划分接口层？", "follow_up_rubric": [followup_point]}
+        client = self._client()
+        llm = _FakeLLM()
+        with mock.patch.object(LLMFactory, "get", return_value=llm), \
+                mock.patch.object(RAGService, "practice_chunks", return_value=[self._hit()]), \
+                mock.patch.object(RAGService, "retrieve_practice", return_value=[]), \
+                mock.patch("app.modules.ai.router._check_ai_rate"):
+            url = f"/api/v1/ai/defense/sessions/{session.id}"
+            submission = {"question": turn.question, "answer": answer}
+            for invalid in ({"assessment": [dict(verdict, verdict="insufficient_evidence")]},
+                            {"follow_up_rubric": [dict(followup_point, source_ids=[999])]},
+                            {"follow_up_rubric": [dict(followup_point, expectation="接口层使用分布式缓存")]}):
+                llm.payload = json.dumps(grade | invalid)
+                response = client.post(url + "/answer", json=submission)
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(response.json()["code"], 50302)
+                self.db.expire_all()
+                self.assertIsNone(turn.student_answer)
+                self.assertIsNone(turn.total_score)
+                self.assertEqual(session.answered_count, 0)
+            llm.payload = json.dumps(grade)
+            result = client.post(url + "/answer", json=submission)
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(result.json()["data"]["scores"]["accuracy"], 35)
+            self.assertEqual(result.json()["data"]["assessment"][0]["expectation"], point["expectation"])
+            next_turn = client.post(url + "/next").json()["data"]
+            self.assertTrue(next_turn["is_follow_up"])
+            self.assertEqual(next_turn["assessment"], [])
+            persisted = self.db.scalar(select(AIDefenseTurn).where(AIDefenseTurn.session_id == session.id,
+                                                                    AIDefenseTurn.turn_no == 2))
+            self.assertEqual(snapshot(persisted.reference_chunks)["rubric"], [followup_point])
+            llm.payload = json.dumps(grade | {"follow_up_needed": False, "assessment": [
+                dict(verdict, answer_quote="划分输入与存储", verdict="partial", reason="回答涉及划分，尚未解释接口层作用")]})
+            result = client.post(url + "/answer", json={"question": next_turn["question"], "answer": "按照功能划分输入与存储"})
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(result.json()["data"]["scores"]["accuracy"], 18)
+            self.assertEqual(result.json()["data"]["assessment"][0]["expectation"], followup_point["expectation"])
 
     # ---------- D47: 流式异常与计费完整 ----------
 
@@ -532,13 +611,15 @@ class AiDefenseBoundaryTest(unittest.TestCase):
             items = DefenseService(self.db).generate_questions(STUDENT, USER_ID)
 
         self.assertEqual(len(items), 3, items)
-        self.assertTrue(all("分层" in item["question"] and item["sources"] for item in items))
+        self.assertTrue(all("架构" in item["question"] and item["sources"] for item in items))
+        self.assertTrue(all(self._source()["excerpt"] not in item["question"] for item in items))
         self.assertTrue(all(i["question_type"] for i in items))
 
     def test_requested_count_rejects_short_bank_and_preserves_existing_questions(self):
         self._student_context()
         old = self._question(1, "原题仍可继续", "DESIGN")
-        model_output = {"questions": [{"question": "请解释分层设计", "source_ids": [10]}] * 3}
+        model_output = {"questions": [{"question": "请解释分层设计", "source_ids": [10],
+                                          "rubric": [{"expectation": "分层", "source_ids": [10]}]}] * 3}
         with mock.patch.object(LLMFactory, "get", return_value=_FakeLLM(json.dumps(model_output))), \
                 mock.patch.object(DefenseService, "_generation_sources", return_value=[self._source()]):
             with self.assertRaisesRegex(BusinessException, "1 道.*3 道") as ctx:

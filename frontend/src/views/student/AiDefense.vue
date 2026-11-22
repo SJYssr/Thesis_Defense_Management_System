@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { aiApi, listKnowledgeMaterials, uploadApi } from '@/api/common'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
 import PracticeMedia from '@/components/PracticeMedia.vue'
+import PracticeAssessment from '@/components/PracticeAssessment.vue'
 import PracticeSources from '@/components/PracticeSources.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import type { AiDocument, PracticeMaterialKind, UploadPolicy, PracticeQuestion, PracticeSession, PracticeTurn } from '@/types/api'
@@ -196,6 +197,7 @@ async function submitAnswer() {
     turn.scores = data.scores
     turn.total_score = data.scores.total
     turn.sources = data.sources
+    turn.assessment = data.assessment
     phase.value = 'feedback'
   } catch { /* 评价失败时保留回答，允许重试。 */ } finally { busy.value = false }
 }
@@ -327,6 +329,7 @@ onMounted(() => {
           <div class="feedback">
             <h3>你的回答</h3><p class="answer">{{ current.student_answer }}</p>
             <h3>本轮反馈</h3>
+            <PracticeAssessment :assessment="current.assessment" :sources="current.sources" />
             <MarkdownViewer :content="current.ai_feedback || ''" />
           </div>
           <div class="actions"><el-button type="primary" :loading="busy" @click="next">继续答辩</el-button></div>
