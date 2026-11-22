@@ -33,6 +33,10 @@ FIELDS: dict[str, tuple[str, str, str]] = {
     "ai_embedding_dim": ("", "向量维度(由模型实际输出自动写入; 改动会要求重建知识库)", "str"),
     "ai_rerank_provider_id": ("", "精排模型来源供应商 id(ai_provider.id; 空 = 关闭精排)", "str"),
     "ai_rerank_model": ("", "精排模型名", "str"),
+    "ai_speech_provider_id": ("", "答辩语音来源供应商 id", "str"),
+    "ai_speech_model": ("", "答辩语音模型名", "str"),
+    "ai_transcription_provider_id": ("", "回答转写来源供应商 id", "str"),
+    "ai_transcription_model": ("", "回答转写模型名", "str"),
 }
 
 # 本表不再保存任何密钥: AI 凭证加密落在 ai_provider.api_key_enc, GET 只回掩码提示。
