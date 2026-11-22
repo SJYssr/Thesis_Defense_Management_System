@@ -367,27 +367,29 @@ class ExaminerAdd(BaseModel):
     examiner_role: str = Field(default="EXAMINER", pattern="^(CHAIR|EXAMINER|REVIEWER)$")
 
 
+def _editable_roster(db: Session, session_id: int) -> DefenseSession:
+    session = load_session(db, session_id)
+    if session.status in (SessionStatus.CANCELLED.value, SessionStatus.FINISHED.value):
+        raise BusinessException("场次已取消或结束，不能调整名单")
+    return session
+
+
 @router.post("/defense-sessions/{session_id}/assignments")
 def add_assignments(session_id: int, body: AssignmentAdd, user: CurrentUser = Depends(require_admin),
                     db: Session = Depends(get_db)):
-    s = db.get(DefenseSession, session_id)
-    if s is None:
-        raise ResourceNotFoundException("场次不存在")
-    if s.status in (SessionStatus.CANCELLED.value, SessionStatus.FINISHED.value):
-        raise BusinessException("该场次已取消或结束, 不能排期")
-    assigned = db.execute(select(func.count(DefenseAssignment.id)).where(
-        DefenseAssignment.session_id == s.id)).scalar()
-    if assigned + len(body.cycle_ids) > s.capacity:
-        raise BusinessException(f"超出场次容量: 已排{assigned}, 容量{s.capacity}")
+    s = _editable_roster(db, session_id)
+    assigned = set(db.scalars(select(DefenseAssignment.cycle_id)
+                              .where(DefenseAssignment.session_id == s.id).with_for_update()))
+    new_ids = [cid for cid in dict.fromkeys(body.cycle_ids) if cid not in assigned]
+    if len(assigned) + len(new_ids) > s.capacity:
+        raise BusinessException(f"超出场次容量: 已排{len(assigned)}, 容量{s.capacity}")
     added = []
-    for cycle_id in body.cycle_ids:
+    for cycle_id in new_ids:
         cycle = db.get(GraduationCycle, cycle_id)
         if cycle is None:
             raise ResourceNotFoundException(f"流程实例#{cycle_id}不存在")
-        exists = db.execute(select(DefenseAssignment.id).where(
-            DefenseAssignment.session_id == s.id, DefenseAssignment.cycle_id == cycle_id)).scalar_one_or_none()
-        if exists:
-            continue
+        if cycle.academic_year != s.academic_year or cycle.status != "ACTIVE":
+            raise BusinessException("仅可排入本场次学年的在读学生")
         # 快速失败: 学生与其他有效场次时间冲突时直接拒绝(发布前仍会整体复检)
         student_conflicts = [c for c in _student_conflicts(db, s, cycle_id)]
         if student_conflicts:
@@ -427,8 +429,11 @@ def remove_assignment(session_id: int, assignment_id: int, user: CurrentUser = D
     a = _get_assignment_or_404(db, assignment_id)
     if a.session_id != session_id:
         raise ResourceNotFoundException("席位不属于该场次")
-    if a.seat_status == SeatStatus.ATTENDED.value:
-        raise BusinessException("已到场席位不能移除")
+    _editable_roster(db, session_id)
+    if (a.seat_status != SeatStatus.SCHEDULED.value or
+            db.scalar(select(ExaminerScore.id).where(ExaminerScore.assignment_id == a.id).limit(1)) is not None or
+            db.scalar(select(DefenseResult.id).where(DefenseResult.assignment_id == a.id)) is not None):
+        raise BusinessException("该席位已有出席、评审或结论记录，不能移除")
     db.delete(a)
     db.commit()
     return ResponseUtil.success(message="已移出该场次")
@@ -456,9 +461,7 @@ def patch_seat(assignment_id: int, body: SeatPatch, user: CurrentUser = Depends(
 @router.post("/defense-sessions/{session_id}/examiners")
 def add_examiner(session_id: int, body: ExaminerAdd, user: CurrentUser = Depends(require_admin),
                  db: Session = Depends(get_db)):
-    s = db.get(DefenseSession, session_id)
-    if s is None:
-        raise ResourceNotFoundException("场次不存在")
+    s = _editable_roster(db, session_id)
     tp = db.get(TeacherProfile, body.teacher_id)
     if tp is None:
         raise ResourceNotFoundException("教师不存在")
@@ -471,6 +474,14 @@ def add_examiner(session_id: int, body: ExaminerAdd, user: CurrentUser = Depends
             DefenseExaminer.session_id == s.id, DefenseExaminer.examiner_role == "CHAIR")).scalar_one_or_none()
         if chair:
             raise BusinessException("每场次只能有一名主席")
+    if s.status in (SessionStatus.PUBLISHED.value, SessionStatus.IN_PROGRESS.value):
+        conflict = db.scalar(select(DefenseSession).join(DefenseExaminer)
+                             .where(DefenseExaminer.teacher_id == body.teacher_id, DefenseSession.id != s.id,
+                                    DefenseSession.status != SessionStatus.CANCELLED.value,
+                                    DefenseSession.starts_at < s.ends_at, DefenseSession.ends_at > s.starts_at)
+                             .limit(1))
+        if conflict is not None:
+            raise ConflictException(f"该教师在场次「{conflict.title or conflict.id}」已有评审安排")
     db.add(DefenseExaminer(session_id=s.id, teacher_id=body.teacher_id, examiner_role=body.examiner_role))
     db.commit()
     return ResponseUtil.success(session_item(db, s), message="评委已加入")
@@ -479,11 +490,16 @@ def add_examiner(session_id: int, body: ExaminerAdd, user: CurrentUser = Depends
 @router.delete("/defense-sessions/{session_id}/examiners/{examiner_id}")
 def remove_examiner(session_id: int, examiner_id: int, user: CurrentUser = Depends(require_admin),
                     db: Session = Depends(get_db)):
+    _editable_roster(db, session_id)
     ex = db.get(DefenseExaminer, examiner_id)
     if ex is None or ex.session_id != session_id:
         raise ResourceNotFoundException("评委记录不存在")
     if ex.examiner_role == "CHAIR":
         raise BusinessException("主席需先移交或整场调整, 不能直接移除")
+    if db.scalar(select(ExaminerScore.id).join(DefenseAssignment)
+                 .where(DefenseAssignment.session_id == session_id, ExaminerScore.examiner_id == ex.teacher_id)
+                 .limit(1)) is not None:
+        raise BusinessException("该评委已有评审记录，不能移除")
     db.delete(ex)
     db.commit()
     return ResponseUtil.success(message="评委已移除")

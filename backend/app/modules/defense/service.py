@@ -32,7 +32,7 @@ from app.models.enums import (
 )
 from app.models.user import StudentProfile, SysUser, TeacherProfile
 from app.shared.events import push_notification
-from app.shared.state_machine import RESULT, SESSION, transition
+from app.shared.state_machine import RESULT, SEAT, SESSION, allowed_actions, transition
 
 SESSION_STATUS_CN = {
     "DRAFT": "草稿", "READY": "待发布", "PUBLISHED": "已发布", "IN_PROGRESS": "进行中",
@@ -402,7 +402,8 @@ def session_item(db: Session, s: DefenseSession, with_members: bool = True,
         "location": s.location, "online_link": s.online_link,
         "is_online": _is_online(s),
         "capacity": s.capacity, "status": s.status, "status_cn": SESSION_STATUS_CN.get(s.status, s.status),
-        "revision": s.revision,
+        "revision": s.revision, "allowed_actions": allowed_actions(SESSION, s.status),
+        "roster_editable": s.status not in (SessionStatus.CANCELLED.value, SessionStatus.FINISHED.value),
         "examiner_count": len(examiners),
         "assignment_count": len(assignments),
         "changes": [{
@@ -413,11 +414,16 @@ def session_item(db: Session, s: DefenseSession, with_members: bool = True,
         } for c in changes],
     }
     if with_members:
+        scored_examiners = set(db.scalars(select(ExaminerScore.examiner_id).join(DefenseAssignment)
+                               .where(DefenseAssignment.session_id == s.id).distinct()))
         item["examiners"] = [{
+            "removable": item["roster_editable"] and ex.examiner_role != "CHAIR" and ex.teacher_id not in scored_examiners,
             "id": ex.id, "teacher_id": ex.teacher_id, "teacher_name": u.real_name,
             "role": ex.examiner_role, "role_cn": {"CHAIR": "主席", "EXAMINER": "评委", "REVIEWER": "评阅人"}.get(ex.examiner_role, ex.examiner_role),
         } for ex, u in examiners]
         item["assignments"] = [assignment_item(db, a, cycle) for a, cycle in assignments]
+        if any(a["result_status"] == ResultStatus.PUBLISHED.value for a in item["assignments"]):
+            item["allowed_actions"] = [action for action in item["allowed_actions"] if action != "cancel"]
     return item
 
 
@@ -465,7 +471,8 @@ def assignment_item(db: Session, a: DefenseAssignment, cycle: GraduationCycle | 
         "seat_status": a.seat_status, "seat_status_cn": SEAT_STATUS_CN.get(a.seat_status, a.seat_status),
         "acknowledged_at": a.acknowledged_at.isoformat() if a.acknowledged_at else None,
         "remark": a.remark,
-        "score_count": len(submitted),
+        "score_count": len(submitted), "has_scores": bool(effective_scores),
+        "seat_actions": allowed_actions(SEAT, a.seat_status) if not result or result.status != ResultStatus.PUBLISHED.value else [],
         "has_result": result is not None,
         "result_status": result.status if result else None,
         "result_status_cn": RESULT_STATUS_CN.get(result.status) if result else None,

@@ -89,7 +89,10 @@ def _user_conditions(role: str, keyword: str | None, status: int | None) -> list
     """D25: 列表 items 与 total 的唯一条件来源, 避免两处条件漂移."""
     conds = [SysUser.role == role, SysUser.deleted_at.is_(None)]
     if keyword:
-        conds.append(or_(SysUser.username.contains(keyword), SysUser.real_name.contains(keyword)))
+        fields = [SysUser.username.contains(keyword), SysUser.real_name.contains(keyword)]
+        if role == "TEACHER":
+            fields.append(SysUser.id.in_(select(TeacherProfile.user_id).where(TeacherProfile.teacher_no.contains(keyword))))
+        conds.append(or_(*fields))
     if status is not None:
         conds.append(SysUser.status == status)
     return conds

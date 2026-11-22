@@ -2,7 +2,8 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { defenseApi } from '@/api/defense'
-import { academicYearApi } from '@/api/common'
+import { academicYearApi, userAdminApi } from '@/api/common'
+import { progressApi } from '@/api/business'
 
 const sessions = ref<any[]>([])
 const page = ref(1)
@@ -121,22 +122,81 @@ async function cancelSession(s: any) {
   refreshDetailAndList(s.id)
 }
 
-async function addExaminer() {
-  const { value } = await ElMessageBox.prompt('输入教师工号ID(teacher_profile.id)', '添加评委', { inputPattern: /^\d+$/ })
-  const { value: role } = await ElMessageBox.prompt('角色: CHAIR / EXAMINER / REVIEWER', '评委角色', { inputValue: 'EXAMINER' })
-  await defenseApi.addExaminer(detail.value.id, { teacher_id: Number(value), examiner_role: role.trim().toUpperCase() })
-  refreshDetailAndList(detail.value.id)
+const picker = ref<'students' | 'examiner' | null>(null)
+const keyword = ref('')
+const candidatePage = ref(1)
+const candidateSize = 8
+const candidateTotal = ref(0)
+type Candidate = { id: number; name: string; number: string; alreadyAdded: boolean }
+const candidates = ref<Candidate[]>([])
+const candidateLoading = ref(false)
+const savingMembers = ref(false)
+const selectedCycles = ref<number[]>([])
+const selectedTeacher = ref<number | null>(null)
+const examinerRole = ref('EXAMINER')
+let candidateRequest = 0
+
+async function loadCandidates() {
+  const mode = picker.value
+  if (!mode || !detail.value) return
+  const request = ++candidateRequest
+  const session = detail.value
+  const paging = { page: candidatePage.value, page_size: candidateSize }
+  candidateLoading.value = true
+  candidates.value = []
+  try {
+    const res = mode === 'students'
+      ? await progressApi.adminList({ ...paging, academic_year: session.academic_year, active_cycles_only: true, student: keyword.value.trim() })
+      : await userAdminApi.list('TEACHER', { ...paging, status: 1, keyword: keyword.value.trim() })
+    if (request !== candidateRequest) return
+    candidateTotal.value = res.data.total
+    candidates.value = res.data.items.map((row: any) => mode === 'students'
+      ? { id: row.cycle_id, name: row.student_name, number: row.student_no, alreadyAdded: session.assignments.some((a: any) => a.cycle_id === row.cycle_id) }
+      : { id: row.profile_id, name: row.real_name, number: row.teacher_no, alreadyAdded: session.examiners.some((e: any) => e.teacher_id === row.profile_id) })
+  } finally {
+    if (request === candidateRequest) candidateLoading.value = false
+  }
+}
+
+function openPicker(mode: 'students' | 'examiner') {
+  picker.value = mode
+  keyword.value = ''
+  candidatePage.value = 1
+  candidateTotal.value = 0
+  selectedCycles.value = []
+  selectedTeacher.value = null
+  examinerRole.value = detail.value.examiners.some((e: any) => e.role === 'CHAIR') ? 'EXAMINER' : 'CHAIR'
+  loadCandidates()
+}
+
+function searchCandidates() {
+  candidatePage.value = 1
+  loadCandidates()
+}
+
+async function saveMembers() {
+  if (savingMembers.value) return
+  const mode = picker.value
+  const sessionId = detail.value.id
+  savingMembers.value = true
+  try {
+    if (mode === 'students' && selectedCycles.value.length) {
+      await defenseApi.addAssignments(sessionId, selectedCycles.value)
+      ElMessage.success('学生已排入场次')
+    } else if (mode === 'examiner' && selectedTeacher.value) {
+      await defenseApi.addExaminer(sessionId, { teacher_id: selectedTeacher.value, examiner_role: examinerRole.value })
+      ElMessage.success('评委已加入场次')
+    } else return
+    picker.value = null
+    await refreshDetailAndList(sessionId)
+  } finally {
+    savingMembers.value = false
+  }
 }
 
 async function removeExaminer(ex: any) {
-  await defenseApi.removeExaminer(detail.value.id, ex.id ?? ex.teacher_id)
-  refreshDetailAndList(detail.value.id)
-}
-
-async function assignStudents() {
-  const { value } = await ElMessageBox.prompt('输入流程实例ID(cycle_id), 逗号分隔', '排入学生', { inputPattern: /^[\d,]+$/ })
-  const ids = value.split(',').map((x: string) => Number(x.trim())).filter(Boolean)
-  await defenseApi.addAssignments(detail.value.id, ids)
+  await ElMessageBox.confirm(`确认移除评委「${ex.teacher_name}」？`, '移除评委')
+  await defenseApi.removeExaminer(detail.value.id, ex.id)
   refreshDetailAndList(detail.value.id)
 }
 
@@ -252,7 +312,7 @@ onMounted(async () => {
             </div>
           </div>
           <el-button size="small" text type="primary" @click.stop="validate(s)">校验</el-button>
-          <el-button v-if="['DRAFT', 'READY'].includes(s.status)" size="small" type="primary" @click.stop="publish(s)">发布</el-button>
+          <el-button v-if="s.allowed_actions.includes('publish')" size="small" type="primary" @click.stop="publish(s)">发布</el-button>
           <el-button v-if="s.status === 'PUBLISHED'" size="small" type="success" @click.stop="startSession(s)">开始</el-button>
           <el-button v-if="s.status === 'IN_PROGRESS'" size="small" @click.stop="finishSession(s)">结束</el-button>
         </div>
@@ -277,7 +337,7 @@ onMounted(async () => {
         <div class="member-rows">
           <span v-for="e in detail.examiners" :key="e.teacher_id" class="ex-item">
             <el-tag effect="plain">{{ e.teacher_name }}（{{ e.role_cn }}）</el-tag>
-            <el-button v-if="e.role !== 'CHAIR'" size="small" text type="danger" @click="removeExaminer(e)">移除</el-button>
+            <el-button v-if="e.removable" size="small" text type="danger" @click="removeExaminer(e)">移除</el-button>
           </span>
           <span v-if="!detail.examiners?.length" class="muted">未分配评委</span>
         </div>
@@ -295,9 +355,10 @@ onMounted(async () => {
           </el-table-column>
           <el-table-column label="操作" width="150">
             <template #default="{ row }">
-              <el-button v-if="['IN_PROGRESS', 'FINISHED'].includes(detail.status) && row.seat_status === 'SCHEDULED'" size="small" text type="success" @click="markSeat(row, 'ATTENDED')">到场</el-button>
-              <el-button v-if="detail.status === 'FINISHED' && row.seat_status === 'SCHEDULED'" size="small" text type="danger" @click="markSeat(row, 'ABSENT')">缺席</el-button>
-              <el-button size="small" text type="warning" @click="markSeat(row, 'POSTPONED')">延期</el-button>
+              <el-button v-if="['IN_PROGRESS', 'FINISHED'].includes(detail.status) && row.seat_actions.includes('attend')" size="small" text type="success" @click="markSeat(row, 'ATTENDED')">到场</el-button>
+              <el-button v-if="detail.status === 'FINISHED' && row.seat_actions.includes('absent')" size="small" text type="danger" @click="markSeat(row, 'ABSENT')">缺席</el-button>
+              <el-button v-if="['PUBLISHED', 'IN_PROGRESS', 'FINISHED'].includes(detail.status) && row.seat_actions.includes('postpone')" size="small" text type="warning" @click="markSeat(row, 'POSTPONED')">延期</el-button>
+              <el-button v-if="['PUBLISHED', 'IN_PROGRESS', 'FINISHED'].includes(detail.status) && row.seat_actions.includes('reset')" size="small" text @click="markSeat(row, 'SCHEDULED')">恢复排期</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -312,16 +373,49 @@ onMounted(async () => {
 
         <div class="drawer-actions">
           <el-button @click="validate()">校验冲突</el-button>
-          <el-button @click="addExaminer">添加评委</el-button>
-          <el-button @click="assignStudents">排入学生</el-button>
+          <el-button v-if="detail.roster_editable" @click="openPicker('examiner')">添加评委</el-button>
+          <el-button v-if="detail.roster_editable" :disabled="detail.assignment_count >= detail.capacity" @click="openPicker('students')">排入学生</el-button>
           <el-button v-if="detail.status === 'PUBLISHED'" type="warning" @click="openReschedule">改期</el-button>
-          <el-button v-if="['DRAFT', 'READY'].includes(detail.status)" type="primary" @click="publish()">发布场次</el-button>
+          <el-button v-if="detail.allowed_actions.includes('publish')" type="primary" @click="publish()">发布场次</el-button>
           <el-button v-if="detail.status === 'PUBLISHED'" type="success" @click="startSession()">开始答辩</el-button>
           <el-button v-if="detail.status === 'IN_PROGRESS'" @click="finishSession()">结束答辩</el-button>
-          <el-button v-if="!['CANCELLED', 'FINISHED'].includes(detail.status)" type="danger" plain @click="cancelSession(detail)">取消场次</el-button>
+          <el-button v-if="detail.allowed_actions.includes('cancel')" type="danger" plain @click="cancelSession(detail)">取消场次</el-button>
         </div>
       </template>
     </el-drawer>
+
+    <el-dialog :model-value="!!picker" :title="picker === 'students' ? '排入学生' : '添加评委'"
+               width="min(480px, 94vw)" @close="picker = null">
+      <div class="person-search">
+        <el-input v-model="keyword" clearable :placeholder="picker === 'students' ? '输入姓名或学号' : '输入姓名或工号'"
+                  @keyup.enter="searchCandidates" @clear="searchCandidates" />
+        <el-button @click="searchCandidates">查询</el-button>
+      </div>
+      <div v-loading="candidateLoading" class="person-list">
+        <label v-for="person in candidates" :key="person.id || person.number" class="person-option">
+          <input v-if="picker === 'students'" v-model="selectedCycles" type="checkbox" :value="person.id"
+                 :disabled="!person.id || person.alreadyAdded || (!selectedCycles.includes(person.id) && selectedCycles.length >= detail.capacity - detail.assignment_count)" />
+          <input v-else v-model="selectedTeacher" type="radio" :value="person.id" :disabled="!person.id || person.alreadyAdded" />
+          <span>{{ person.name }}（{{ person.number }}）</span><small v-if="person.alreadyAdded">已加入</small>
+        </label>
+        <el-empty v-if="!candidateLoading && !candidates.length" description="未找到匹配人员" :image-size="42" />
+      </div>
+      <el-pagination v-if="candidateTotal > candidateSize" v-model:current-page="candidatePage" :page-size="candidateSize"
+                     :total="candidateTotal" layout="prev, pager, next" :pager-count="5" @current-change="loadCandidates" />
+      <div v-if="picker === 'examiner' && detail" class="role-select">
+        <span>评委角色</span>
+        <el-select v-model="examinerRole" aria-label="评委角色" style="width: 150px">
+          <el-option label="主席" value="CHAIR" :disabled="detail.examiners.some((e: any) => e.role === 'CHAIR')" />
+          <el-option label="评委" value="EXAMINER" /><el-option label="评阅人" value="REVIEWER" />
+        </el-select>
+      </div>
+      <template #footer>
+        <el-button @click="picker = null">取消</el-button>
+        <el-button type="primary" :loading="savingMembers"
+                   :disabled="picker === 'students' ? !selectedCycles.length : !selectedTeacher"
+                   @click="saveMembers">{{ picker === 'students' ? '确认排入' : '确认添加' }}</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog v-model="rescheduleVisible" title="答辩改期" width="min(520px, 94vw)">
       <el-form label-width="90px">
@@ -386,6 +480,11 @@ onMounted(async () => {
 .member-rows { font-size: 13px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .ex-item { display: inline-flex; align-items: center; gap: 4px; }
 .muted { color: #909399; font-size: 12px; }
+.person-search, .role-select { display: flex; align-items: center; gap: 10px; }
+.person-list { min-height: 78px; margin: 12px 0; }
+.person-option { display: flex; align-items: center; gap: 8px; padding: 7px 0; cursor: pointer; }
+.person-option small { color: var(--el-text-color-secondary); }
+.role-select { margin-top: 12px; }
 .drawer-actions { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 6px; }
 @media (max-width: 900px) { .stat-cards { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 640px) { .stat-cards { grid-template-columns: repeat(2, 1fr); } }
