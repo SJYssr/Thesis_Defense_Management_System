@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.ai.rag.practice_sources import FILE_TYPES
 from app.core.exceptions import BusinessException, PermissionDeniedException, ResourceNotFoundException
 from app.core.permissions import CurrentUser, require_admin, require_student, require_teacher
 from app.core.response import ResponseUtil
@@ -33,31 +34,13 @@ from app.shared.query import paginate, time_range_conditions
 from app.shared.storage import read_upload, storage
 from app.shared.upload_policy import ensure_daily_quota, max_upload_size_mb, normalize_business
 from app.shared.workflow import GraduationWorkflowService
+from app.tasks.dispatcher import index_uploaded_material
 
 router = APIRouter(prefix="/student/material", tags=["Material-Student"])
 teacher_router = APIRouter(prefix="/teacher/materials", tags=["Material-Teacher"])
 admin_router = APIRouter(prefix="/admin/materials", tags=["Material-Admin"])
 logger = logging.getLogger("app.material")
 
-
-def _index_uploaded_thesis(document_id: int) -> None:
-    """材料已提交后独立索引; 模型或队列故障不影响上传, 并允许从知识库重试。"""
-    from app.db.mysql import SessionLocal
-    from app.tasks.dispatcher import dispatch_index_task
-
-    try:
-        dispatch_index_task(document_id)
-    except Exception:
-        logger.exception("论文 %s 自动索引失败", document_id)
-        try:
-            with SessionLocal() as session:
-                doc = session.get(AIDocument, document_id)
-                if doc is not None and doc.index_status != "FAILED":
-                    doc.index_status = "FAILED"
-                    doc.error_message = "自动索引未完成，请检查 AI 服务与任务队列后重试"
-                    session.commit()
-        except Exception:
-            logger.exception("论文 %s 索引失败状态记录失败", document_id)
 
 MATERIAL_TYPE_CN = {t.value: t.name for t in MaterialType}
 STATUS_CN = {
@@ -98,7 +81,7 @@ def _get_or_create(db: Session, student_id: int) -> GraduationMaterial:
     return m
 
 
-def _purge_thesis_documents(db: Session, student_id: int, *, file_id: int | None = None) -> list[int]:
+def _purge_documents(db: Session, student_id: int, cycle_id: int, doc_type: str, *, file_id: int | None = None) -> list[int]:
     """作废该学生旧版论文的 AI 知识文档(D40).
 
     论文每次重传都新建 AIDocument; 若不作废旧文档, RAG 会同时召回新旧两版。
@@ -109,7 +92,7 @@ def _purge_thesis_documents(db: Session, student_id: int, *, file_id: int | None
 
     conds = [
         AIDocument.student_id == student_id,
-        AIDocument.document_type == AIDocumentType.THESIS.value,
+        AIDocument.document_type == doc_type, AIDocument.cycle_id == cycle_id,
         AIDocument.scope == "STUDENT",
     ]
     if file_id is not None:
@@ -244,12 +227,12 @@ def upload_material_file(file: UploadFile,
     content, original_name, mime, size, sha256 = read_upload(file, max_upload_size_mb(db))
     ensure_daily_quota(db, user.id, size)
 
+    business_type, business_id = normalize_business(business_type, business_id or m.id)
     if m.status == "NOT_SUBMITTED":
         # 首次落草稿走 MATERIAL 转移表(save: {NOT_SUBMITTED,DRAFT,REJECTED,RESUBMIT_REQUIRED}→DRAFT)
         sm.transition(db, sm.MATERIAL, m, "save", user)
 
     stored_name, storage_path = storage.save(content, original_name)
-    business_type, business_id = normalize_business(business_type, business_id or m.id)
     f = SysFile(original_name=original_name, stored_name=stored_name,
                 extension=original_name.rsplit(".", 1)[-1].lower() if "." in original_name else None,
                 mime_type=mime, size=size, storage_type="LOCAL", storage_path=storage_path,
@@ -263,11 +246,13 @@ def upload_material_file(file: UploadFile,
 
     # 论文文件 → 自动进入 AI 知识库待索引队列; 重传时先作废旧版, 保证 RAG 只命中最新一版(D40)
     document = None
-    if material_type == MaterialType.THESIS.value:
-        version = _next_thesis_version(db, m.student_id)
-        _purge_thesis_documents(db, m.student_id)
+    if material_type in FILE_TYPES:
+        version = 1
+        if material_type == MaterialType.THESIS.value:
+            version = _next_thesis_version(db, m.student_id)
+            _purge_documents(db, m.student_id, m.cycle_id, material_type)
         document = AIDocument(
-            student_id=m.student_id, topic_id=m.topic_id, document_type=AIDocumentType.THESIS.value,
+            student_id=m.student_id, topic_id=m.topic_id, cycle_id=m.cycle_id, document_type=material_type,
             document_name=original_name, file_id=f.id, scope="STUDENT",
             index_status="WAITING", version=version,
         )
@@ -275,7 +260,7 @@ def upload_material_file(file: UploadFile,
     db.commit()
     if document is not None:
         tasks = background_tasks if background_tasks is not None else BackgroundTasks()
-        tasks.add_task(_index_uploaded_thesis, document.id)
+        tasks.add_task(index_uploaded_material, document.id)
     return ResponseUtil.success(_material_item(db, m))
 
 
@@ -290,8 +275,8 @@ def delete_material_file(mf_id: int, user: CurrentUser = Depends(require_student
     if m.status not in ("NOT_SUBMITTED", "DRAFT", "REJECTED", "RESUBMIT_REQUIRED"):
         raise BusinessException("当前状态不允许修改材料")
     db.delete(mf)
-    if mf.material_type == MaterialType.THESIS.value:  # 删除论文文件同步作废其 AI 文档(D40)
-        _purge_thesis_documents(db, m.student_id, file_id=mf.file_id)
+    if mf.material_type in FILE_TYPES:
+        _purge_documents(db, m.student_id, m.cycle_id, mf.material_type, file_id=mf.file_id)
     db.commit()
     return ResponseUtil.success(_material_item(db, m))
 

@@ -12,6 +12,7 @@ class AIDocument(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     student_id: Mapped[int | None] = mapped_column(BigInteger, index=True, comment="学生私有库归属, 全局知识库为 NULL")
+    cycle_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("graduation_cycle.id"), index=True)
     topic_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     document_type: Mapped[str] = mapped_column(String(32), index=True, comment="THESIS/OPENING_REPORT/.../DEFENSE_RULE")
     document_name: Mapped[str] = mapped_column(String(255))

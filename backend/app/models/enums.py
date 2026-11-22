@@ -177,6 +177,10 @@ class NotificationType(str, Enum):
 # ============ AI 部分 ============
 
 class AIDocumentType(str, Enum):
+    PRACTICE_REPORT = "PRACTICE_REPORT"
+    SOURCE_CODE = "SOURCE_CODE"
+    DESIGN = "DESIGN"
+    MANUAL = "MANUAL"
     THESIS = "THESIS"
     OPENING_REPORT = "OPENING_REPORT"
     MIDTERM_REPORT = "MIDTERM_REPORT"

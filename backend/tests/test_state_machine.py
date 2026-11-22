@@ -53,7 +53,7 @@ class TransitionTableTest(unittest.TestCase):
             set(sm.TRANSITIONS),
             {sm.TOPIC, sm.SELECTION, sm.OPENING, sm.MIDTERM, sm.FINAL, sm.MATERIAL,
              sm.SESSION, sm.SEAT, sm.RESULT, sm.ARCHIVE, sm.CYCLE,
-             sm.ANNOUNCEMENT, sm.STAGE_TASK},
+             sm.ANNOUNCEMENT, sm.STAGE_TASK, sm.PRACTICE_SESSION},
         )
         # 不锁规则总数(每次扩表都会变), 只要求每个实体都有规则、且关键动作在表内
         described = {row["entity"] for row in sm.describe()}

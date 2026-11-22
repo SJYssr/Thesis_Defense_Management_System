@@ -1,5 +1,5 @@
 import request from './request'
-import { clampPageSize, type AiDocument, type AiDocumentType, type ApiEnvelope, type PageResult, type UploadPolicy, type UploadResult } from '@/types/api'
+import { clampPageSize, type AiDocument, type AiDocumentType, type ApiEnvelope, type PageResult, type PracticeMaterialKind, type UploadPolicy, type UploadResult } from '@/types/api'
 
 export const aiApi = {
   /**
@@ -13,15 +13,22 @@ export const aiApi = {
   ragConfig: () => request.get('/ai/rag/config'),
   indexDocument: (id: number) => request.post(`/ai/documents/${id}/index`),
   documentStatus: (id: number) => request.get(`/ai/documents/${id}/status`),
-  indexReports: () => request.post('/ai/documents/index-reports'),
+  indexReports: () => request.post<unknown, ApiEnvelope<{ indexed: number; failed_document_ids: number[] }>>('/ai/documents/index-reports'),
   /**
    * document_types 在后端是枚举强校验(list[AIDocumentType])，传非法值直接 42200，
    * 所以这里只允许枚举值；undefined 表示不过滤。
    */
   ragQuery: (data: { query: string; top_k?: number; document_types?: AiDocumentType[] }) =>
     request.post('/ai/rag/query', data),
-  generateQuestions: () => request.post('/ai/defense/questions/generate'),
-  createSession: (questionCount: number) => request.post(`/ai/defense/sessions?question_count=${questionCount}`),
+  uploadPracticeMaterial: (kind: PracticeMaterialKind, file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return request.post('/ai/defense/materials', body, { params: { kind } })
+  },
+  generateQuestions: (documentIds: number[], questionCount: number) =>
+    request.post('/ai/defense/questions/generate', { document_ids: documentIds, question_count: questionCount }),
+  createSession: (questionCount: number, questionIds?: number[]) =>
+    request.post(`/ai/defense/sessions?question_count=${questionCount}`, questionIds ? { question_ids: questionIds } : undefined),
   startSession: (id: number) => request.post(`/ai/defense/sessions/${id}/start`),
   answer: (id: number, data: { question: string; answer: string }) =>
     request.post(`/ai/defense/sessions/${id}/answer`, data),
@@ -32,6 +39,16 @@ export const aiApi = {
   pptOutline: () => request.post('/ai/ppt-outline/generate'),
   exportPptx: (data: unknown) => request.post('/ai/ppt-outline/export', data, { responseType: 'blob' }),
   analyseProgress: (studentId: number) => request.post(`/ai/progress/student/${studentId}/analyse`),
+}
+
+/** 知识准备和练习选材都需要遍历本人的全部分页。 */
+export async function listKnowledgeMaterials(): Promise<AiDocument[]> {
+  const all: AiDocument[] = []
+  for (let page = 1; ; page++) {
+    const { data } = await aiApi.listDocuments(page, 100)
+    all.push(...data.items)
+    if (all.length >= data.total || !data.items.length) return all
+  }
 }
 
 export const dashboardApi = {

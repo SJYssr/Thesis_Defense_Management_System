@@ -21,7 +21,7 @@ import urllib.request
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 
-from app.ai.net import open_url, openai_http_client
+from app.ai.net import open_url, openai_http_client, provider_errors
 from app.ai.providers import openai_base_url
 from app.ai.runtime_config import resolve_ai_config
 from app.core.exceptions import BusinessException
@@ -206,7 +206,7 @@ class OpenAICompatibleLLM(BaseLLMService):
         self.name = f"openai:{model}"
 
     @staticmethod
-    def _messages(system: str, user: str, history: list[dict] | None):
+    def _messages(system: str, user: str, history: list[dict] | None = None):
         messages = [{"role": "system", "content": system}]
         for h in (history or [])[-10:]:
             if h.get("role") in ("user", "assistant") and h.get("content"):
@@ -215,19 +215,21 @@ class OpenAICompatibleLLM(BaseLLMService):
         return messages
 
     def complete(self, system: str, user: str, temperature: float = 0.3) -> str:
-        resp = self.client.chat.completions.create(
-            model=self.model, messages=self._messages(system, user), temperature=temperature,
-        )
-        return resp.choices[0].message.content or ""
+        with provider_errors("对话模型"):
+            resp = self.client.chat.completions.create(
+                model=self.model, messages=self._messages(system, user), temperature=temperature,
+            )
+            return resp.choices[0].message.content or ""
 
     def stream(self, system: str, user: str, history: list[dict] | None = None, temperature: float = 0.5):
-        resp = self.client.chat.completions.create(
-            model=self.model, messages=self._messages(system, user, history),
-            temperature=temperature, stream=True,
-        )
-        for chunk in resp:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        with provider_errors("对话模型"):
+            resp = self.client.chat.completions.create(
+                model=self.model, messages=self._messages(system, user, history),
+                temperature=temperature, stream=True,
+            )
+            for chunk in resp:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
 
 
 class OllamaLLM(OpenAICompatibleLLM):
@@ -284,46 +286,59 @@ class MockLLM(BaseLLMService):
             return json.dumps({
                 "accuracy": int(base * 0.35), "logic": int(base * 0.25),
                 "clarity": int(base * 0.2), "depth": int(max(50, base - 12) * 0.2),
-                "feedback": f"你的回答围绕「{topic}」进行了阐述, 覆盖了主要方面。\n\n"
-                            f"**优点**: 表达较为清晰, 提到了与题目相关的内容。\n\n"
-                            f"**不足**: 回答深度有限, 建议结合论文中的具体设计与数据进一步展开, "
-                            f"例如说明技术选型理由、实现细节或测试结果。\n\n"
-                            f"**建议**: 回答时先给出结论, 再分点展开依据, 最后补充实例。",
+                "feedback": f"练习反馈：你的回答提到“{answer[:48]}”。请用材料中具体的实现或测试结果支撑这个说法。",
+                "source_ids": [c["chunk_id"] for c in chunks[:1] if "chunk_id" in c],
                 "follow_up_needed": length < 120,
-                "follow_up_question": f"请进一步说明「{topic}」中该方案的实现细节与遇到的问题是如何解决的?" if length < 120 else None,
+                "follow_up_question": f"你刚才提到“{answer[:48]}”，材料中的哪处实现或测试能验证这个说法？" if length < 120 else None,
             }, ensure_ascii=False)
 
         if "dimension_scores" in system:  # 答辩报告
             turns = ctx.get("turns") or []
-            if not turns:
-                turns = [{"total": 78}]
-            avg = int(sum(t.get("total", t.get("total_score", 78)) for t in turns) / len(turns))
+            avg = ctx.get("overall_score", 0)
+            strongest = max(turns, key=lambda t: t["total_score"], default={})
+            weakest = min(turns, key=lambda t: t["total_score"], default={})
+            sources = weakest.get("sources") or []
+            section = "、".join(s.get("section") or s.get("document_name", "") for s in sources)
+            dimensions = {}
+            for label, field, limit in (("知识准确性", "accuracy", 35), ("逻辑完整性", "logic", 25),
+                                        ("表达清晰度", "clarity", 20), ("技术深度", "depth", 20)):
+                observed = [t["scores"][field] for t in turns if (t.get("scores") or {}).get(field) is not None]
+                if observed:
+                    dimensions[label] = round(100 * sum(observed) / (limit * len(observed)))
             return json.dumps({
                 "overall_score": avg,
-                "dimension_scores": {"基础知识": avg, "系统设计": max(50, avg - 3), "技术理解": max(50, avg - 5),
-                                     "表达能力": min(95, avg + 3), "应变能力": max(50, avg - 6)},
-                "summary": f"本次模拟答辩共完成 {len(turns)} 个问题的回答, 综合表现{'良好' if avg >= 75 else '一般'}。",
-                "strengths": ["对系统整体功能较熟悉", "能围绕题目组织回答"],
-                "weaknesses": ["部分技术细节阐述不够深入", "缺少对设计方案取舍的论证"],
-                "risky_questions": ["为什么选择当前技术栈而非其他方案?", "系统在高并发场景下的表现如何?"],
-                "suggestions": ["重读论文第三章系统设计与第五章测试章节", "为每个核心技术准备一个具体例子"],
+                "dimension_scores": dimensions,
+                "summary": f"本次模拟练习完成 {len(turns)} 轮问答，逐轮练习评分的平均分为 {avg}。",
+                "strengths": [f"第{strongest.get('turn_no')}轮回答获得 {strongest.get('total_score')} 分。"],
+                "weaknesses": [weakest.get("feedback", "")],
+                "risky_questions": [weakest.get("question", "")],
+                "suggestions": [f"重读{section or '本轮引用材料'}，用一处材料依据重新回答第{weakest.get('turn_no')}轮的问题。"],
             }, ensure_ascii=False)
 
         if "questions" in system and "问题库" in system:  # 问题生成
-            plan = {"BASIC": 3, "TECHNOLOGY": 5, "DESIGN": 4, "IMPLEMENTATION": 4, "INNOVATION": 2, "LIMITATION": 2, "EXTENSION": 2}
-            keywords = ["系统整体架构", "核心技术选型", "数据库设计", "关键功能实现", "测试方案", "创新点", "系统不足", "后续扩展"]
+            angles = [
+                ("BASIC", "这部分解决了什么问题"), ("DESIGN", "该设计依赖什么前提"),
+                ("IMPLEMENTATION", "数据从哪里进入、如何处理"), ("TEST", "你如何验证该行为"),
+                ("TECHNOLOGY", "为何采用这种实现"), ("LIMITATION", "何种输入会暴露它的局限"),
+                ("EXTENSION", "如果需求变化，哪部分必须先改"), ("INNOVATION", "相对基线改进在哪里"),
+                ("BASIC", "如何判断这项需求已经满足"), ("DESIGN", "这一部分与其他模块如何交互"),
+                ("TEST", "哪一个反例最值得加入测试"), ("IMPLEMENTATION", "实现中最重要的约束是什么"),
+                ("TECHNOLOGY", "替代方案会带来什么代价"), ("LIMITATION", "现有证据还不能说明什么"),
+                ("TEST", "若实验结果与预期不同，如何排查"), ("DESIGN", "它在整个流程中承担什么职责"),
+                ("BASIC", "你会用哪个具体场景说明它的作用"), ("EXTENSION", "怎样逐步扩大适用范围"),
+                ("IMPLEMENTATION", "如何确保错误能够被发现"), ("TECHNOLOGY", "哪些条件会改变技术选择"),
+                ("INNOVATION", "比较方案时应用什么指标"), ("LIMITATION", "优先改进的细节是什么"),
+            ]
             questions = []
-            i = 0
-            for qt, count in plan.items():
-                for n in range(count):
-                    kw = keywords[i % len(keywords)]
-                    i += 1
-                    questions.append({
-                        "question": f"请结合「{topic}」介绍{kw}方面的设计与考虑。",
-                        "question_type": qt,
-                        "difficulty": "MEDIUM",
-                        "reference": (chunks[0].get("content", "")[:80] if chunks else "依据论文对应章节内容作答"),
-                    })
+            for i, (kind, angle) in enumerate(angles[:ctx.get("question_count", 22)]):
+                if not chunks:
+                    break
+                chunk = chunks[i % len(chunks)]
+                name = chunk.get("section") or chunk.get("document_name", "材料")
+                quote = chunk.get("excerpt", "")[:40].strip()
+                questions.append({"question": f"结合《{name}》中的“{quote}”，{angle}？",
+                                  "question_type": kind, "difficulty": "MEDIUM",
+                                  "source_ids": [chunk.get("chunk_id")], "reference": quote})
             return json.dumps({"questions": questions[:22]}, ensure_ascii=False)
 
         if "follow_up_question" in system and "追问" in system:
@@ -370,6 +385,13 @@ class MockLLM(BaseLLMService):
     @staticmethod
     def _extract_context(user: str) -> dict:
         """从 prompt 的【标签】段落或内嵌 JSON 中提取上下文."""
+        if user.startswith("{"):
+            try:
+                fields = json.loads(user)
+                if isinstance(fields, dict):
+                    return fields
+            except ValueError:
+                pass
         ctx: dict = {}
         for label in ("学生毕业设计题目", "答辩问题", "学生回答", "学生问题", "之前问答概要",
                       "规则引擎结果", "学生材料文本", "论文材料节选", "模拟答辩表现摘要", "历史对话"):

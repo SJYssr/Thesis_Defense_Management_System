@@ -26,6 +26,9 @@ def ensure_file_access(db: Session, user, file: SysFile) -> None:
     if file.uploader_id == user.id:
         return
 
+    if file.business_type == "AI_PRACTICE":
+        raise PermissionDeniedException("练习材料只对上传学生开放")
+
     # 文件归属学生(材料文件 / AI 知识文档)
     owner_student_id: int | None = None
     owner_cycle_ids: set[int] = set()

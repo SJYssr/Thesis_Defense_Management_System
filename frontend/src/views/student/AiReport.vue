@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { aiApi } from '@/api/common'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
+import PracticeSources from '@/components/PracticeSources.vue'
 const route = useRoute()
 const DIM_CN: Record<string, string> = { accuracy: '知识准确性', logic: '逻辑完整性', clarity: '表达清晰度', depth: '技术深度' }
 const sessions = ref<any[]>([])
@@ -14,8 +15,27 @@ const weakest = computed(() => {
   const dims = dimensions.value
   return dims.length ? dims.reduce((min, d) => (d.value < min.value ? d : min)).key : null
 })
-async function loadReport() { if (!selected.value) return; loading.value = true; try { report.value = (await aiApi.report(selected.value)).data } finally { loading.value = false } }
-onMounted(async () => { sessions.value = (await aiApi.sessions()).data.filter((s: any) => s.status === 'FINISHED'); selected.value = route.query.session ? Number(route.query.session) : sessions.value[0]?.id; await loadReport() })
+let requestId = 0
+const loadFailed = ref(false)
+async function loadReport() {
+  if (!selected.value) return
+  const id = ++requestId
+  report.value = null
+  loading.value = true
+  loadFailed.value = false
+  try {
+    const { data } = await aiApi.report(selected.value)
+    if (id === requestId) report.value = data
+  } catch {
+    if (id === requestId) loadFailed.value = true
+  } finally { if (id === requestId) loading.value = false }
+}
+onMounted(async () => {
+  sessions.value = (await aiApi.sessions()).data.filter((s: any) => s.status === 'FINISHED')
+  const requested = Number(route.query.session)
+  selected.value = sessions.value.find(s => s.id === requested)?.id || sessions.value[0]?.id
+  await loadReport()
+})
 </script>
 <template>
   <header class="student-heading report-heading"><div><h1>AI 模拟答辩报告</h1><p>基于答辩表现整理能力评估与复习建议（练习结果，不计入正式成绩）</p></div><el-select v-if="sessions.length" v-model="selected" style="width:230px" @change="loadReport"><el-option v-for="s in sessions" :key="s.id" :value="s.id" :label="`答辩 #${s.id} · ${(s.finished_at || '').slice(0, 10)}`" /></el-select></header>
@@ -35,19 +55,36 @@ onMounted(async () => { sessions.value = (await aiApi.sessions()).data.filter((s
     </div>
     <div class="report-bottom">
       <section class="page-card">
-        <h3 class="block-title">薄弱点与建议</h3>
-        <div v-for="(text, i) in report.weaknesses" :key="i" class="advice"><strong>{{ Number(i) + 1 }}. {{ text }}</strong><p>{{ report.suggestions?.[i] || '结合论文中的实现细节继续复习。' }}</p></div>
-        <h3 class="block-title">优势表现</h3><div v-for="(text, i) in report.strengths" :key="i" class="muted-row">{{ text }}</div>
+        <h3 v-if="report.weaknesses?.length" class="block-title">需要补强</h3>
+        <p v-for="(text, i) in report.weaknesses" :key="i" class="advice">{{ text }}</p>
+        <h3 v-if="report.suggestions?.length" class="block-title">复习建议</h3>
+        <p v-for="(text, i) in report.suggestions" :key="i" class="muted-row">{{ text }}</p>
+        <h3 v-if="report.strengths?.length" class="block-title">优势表现</h3>
+        <p v-for="(text, i) in report.strengths" :key="i" class="muted-row">{{ text }}</p>
       </section>
       <section class="page-card">
-        <h3 class="block-title">高频追问题库</h3>
+        <h3 class="block-title">建议再练的问题</h3>
         <div v-for="(text, i) in report.risky_questions" :key="i" class="muted-row">{{ Number(i) + 1 }}. {{ text }}</div>
         <el-button type="primary" class="report-action" @click="$router.push('/student/ai-defense')">继续模拟答辩</el-button>
         <el-button @click="$router.push('/student/ai-ppt')">生成 PPT 大纲</el-button>
       </section>
     </div>
-    <section class="page-card review-turns"><h3 class="block-title">逐题回顾</h3><el-collapse><el-collapse-item v-for="t in report.turns" :key="t.turn_no" :title="`第 ${t.turn_no} 题 · ${t.question}`"><p>{{ t.student_answer }}</p><MarkdownViewer :content="t.ai_feedback || ''" /></el-collapse-item></el-collapse></section>
+    <section class="page-card review-turns">
+      <h3 class="block-title">逐轮回顾</h3>
+      <el-collapse>
+        <el-collapse-item v-for="t in report.turns" :key="t.turn_no" :title="`第 ${t.turn_no} 轮 · ${t.is_follow_up ? '追问 · ' : ''}${t.question}`">
+          <b>你的回答</b><p class="answer">{{ t.student_answer }}</p>
+          <b>本轮反馈<span v-if="t.total_score != null"> · {{ t.total_score }} 分</span></b>
+          <MarkdownViewer :content="t.ai_feedback || ''" />
+          <PracticeSources :sources="t.sources" />
+        </el-collapse-item>
+      </el-collapse>
+    </section>
   </div>
+  <section v-else-if="loading || loadFailed" class="page-card" role="status">
+    {{ loading ? '正在读取练习报告…' : '报告读取失败。' }}
+    <el-button v-if="loadFailed" @click="loadReport">重试</el-button>
+  </section>
   <section v-else class="page-card"><el-empty description="完成一次模拟答辩后生成报告"><el-button type="primary" @click="$router.push('/student/ai-defense')">开始模拟答辩</el-button></el-empty></section>
 </template>
 <style scoped>
@@ -64,7 +101,9 @@ onMounted(async () => { sessions.value = (await aiApi.sessions()).data.filter((s
 .advice { background: #f8f9fc; padding: 16px; margin-bottom: 14px; font-size: 13px; }
 .advice p { color: #949baa; font-size: 12px; line-height: 1.8; margin-bottom: 0; }
 .report-action { margin-top: 24px; }
-.review-turns { margin-top: 22px; }
+.review-turns { margin-top: 22px; overflow-wrap: anywhere; }
+.review-turns .answer { white-space: pre-wrap; }
+.report-heading { flex-wrap: wrap; }
 @media (max-width: 800px) {
   .report-top, .report-bottom { grid-template-columns: 1fr; }
   .dimension { flex-wrap: wrap; row-gap: 6px; gap: 8px; }

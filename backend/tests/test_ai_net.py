@@ -10,7 +10,7 @@ import urllib.request
 from unittest import mock
 
 from app.ai import net
-from app.ai.llm.factory import OllamaProbe, probe_ollama, reset_ollama_probe_cache
+from app.ai.llm.factory import OllamaProbe, OpenAICompatibleLLM, probe_ollama, reset_ollama_probe_cache
 
 
 class _FakeResponse:
@@ -57,6 +57,35 @@ class LoopbackTest(unittest.TestCase):
             self.assertFalse(client.trust_env)
         finally:
             client.close()
+
+
+class CompletionTest(unittest.TestCase):
+    def test_sync_completion_sends_system_and_user_without_history(self):
+        with mock.patch("openai.OpenAI") as sdk:
+            service = OpenAICompatibleLLM("https://example.invalid/v1", "test-only", "test-model")
+        create = sdk.return_value.chat.completions.create
+        create.return_value.choices = [mock.Mock(message=mock.Mock(content="练习问题"))]
+        self.assertEqual(service.complete("答辩教师", "请出题"), "练习问题")
+        create.assert_called_once_with(model="test-model", temperature=0.3, messages=[
+            {"role": "system", "content": "答辩教师"}, {"role": "user", "content": "请出题"},
+        ])
+
+    def test_provider_error_omits_upstream_body_and_returns_retryable_status(self):
+        import httpx
+        from openai import RateLimitError
+
+        from app.core.exceptions import BusinessException
+
+        with mock.patch("openai.OpenAI") as sdk:
+            service = OpenAICompatibleLLM("https://example.invalid/v1", "test-only", "test-model")
+        response = httpx.Response(429, request=httpx.Request("POST", "https://example.invalid/v1"))
+        sdk.return_value.chat.completions.create.side_effect = RateLimitError(
+            "sensitive-upstream-detail", response=response, body=None)
+        with self.assertRaises(BusinessException) as raised:
+            service.complete("教师", "反馈")
+        self.assertEqual(raised.exception.code, 50303)
+        self.assertIn("供应商配额", raised.exception.message)
+        self.assertNotIn("sensitive-upstream-detail", raised.exception.message)
 
 
 class ProbeBypassesProxyTest(unittest.TestCase):

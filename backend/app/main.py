@@ -85,6 +85,7 @@ API_PREFIX = "/api/v1"
 
 # 业务模块
 from app.modules.ai.admin import router as ai_admin_router  # noqa: E402
+from app.modules.ai.practice_material import router as ai_material_router  # noqa: E402
 from app.modules.ai.router import defense as ai_defense_router  # noqa: E402
 from app.modules.ai.router import router as ai_router  # noqa: E402
 from app.modules.aiprompt.router import router as aiprompt_router  # noqa: E402
@@ -139,7 +140,7 @@ for r in (
     progress_router, progress_teacher, progress_admin,
     ann_router, ann_admin, notification_router,
     dashboard_router,
-    ai_router, ai_defense_router, ai_admin_router,
+    ai_router, ai_defense_router, ai_material_router, ai_admin_router,
     task_router, defense_router, rubric_router, archive_router, audit_router, sysconfig_router,
     aiprompt_router,
     schedule_router,

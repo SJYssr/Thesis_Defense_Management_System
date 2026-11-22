@@ -431,8 +431,8 @@ def seed(force: bool = False):
         db.commit()
 
         # ---------- 演示论文入知识库并索引 ----------
-        doc = AIDocument(student_id=s1.id, topic_id=topics[0].id, document_type=AIDocumentType.THESIS.value,
-                         document_name="基于LangChain与RAG的智能毕业设计管理系统(演示论文).md",
+        doc = AIDocument(student_id=s1.id, cycle_id=cycle1.id, file_id=thesis_file.id, topic_id=topics[0].id, document_type=AIDocumentType.THESIS.value,
+                         document_name=thesis_file.original_name,
                          scope="STUDENT", index_status="WAITING", content_text=DEMO_THESIS)
         db.add(doc)
         db.commit()

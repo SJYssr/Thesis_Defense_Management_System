@@ -10,13 +10,18 @@ from datetime import datetime
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.ai.document.loader import parse_document
+from app.ai.document.loader import Section, clean_text, parse_document, split_by_headings
+from app.ai.document.source_archive import SourceArchiveError, parse_source_archive
 from app.ai.document.splitter import split_sections
 from app.ai.embedding.factory import EmbeddingFactory
-from app.ai.llm.factory import LLMFactory
+from app.ai.llm.factory import AIServiceUnavailable, LLMFactory
+from app.ai.rag.index_diagnostics import IndexIssue, public_index_error
+from app.ai.rag.practice_sources import REPORTS, material_files, practice_documents, report_text
 from app.ai.rag.retriever import HybridRetriever, RetrievedChunk
 from app.ai.vector.store import vec_to_b64, vector_store
+from app.core.exceptions import AIServiceException, BusinessException, FileException
 from app.models.ai import AIDocument, AIDocumentChunk, AIUsageLog
+from app.models.system import SysFile
 from app.shared.storage import storage
 
 logger = logging.getLogger("app.ai.rag")
@@ -38,133 +43,195 @@ class RAGService:
         doc.index_status = "PROCESSING"
         self.db.commit()
 
+        # Keep this outer lock across the savepoint rollback and the failure status write.
+        doc = self.db.get(AIDocument, document_id, with_for_update=True, populate_existing=True)
+        if doc is None:
+            raise FileException("文档已移除")
         try:
-            # 1. 解析
-            if doc.file_id:
-                from app.models.system import SysFile
-
-                f = self.db.get(SysFile, doc.file_id)
-                if f is None:
-                    raise ValueError("源文件不存在")
-                path = str(storage.abs_path(f.storage_path))
-                sections = parse_document(path)
-            elif doc.content_text:
-                import re as _re
-
-                from app.ai.document.loader import Section, clean_text, split_by_headings
-
-                raw_text = _re.sub(r"^#{1,6}\s*", "", doc.content_text, flags=_re.MULTILINE)
-                sections = [Section(title=t, content=c) for t, c in split_by_headings(clean_text(raw_text))]
+            with self.db.begin_nested():
+                old_ids, writes = self._replace_chunks(doc)
+                doc.index_status = "SUCCESS"
+                doc.indexed_at = datetime.now()
+                doc.chunk_count = len(writes)
+                doc.error_message = None
+        except Exception as exc:
+            if isinstance(exc, (FileException, AIServiceUnavailable)):
+                error = exc
             else:
-                raise ValueError("文档既无文件也无文本内容")
-
-            doc.content_text = "\n\n".join(f"# {s.title}\n{s.content}" for s in sections)[:200000]
-
-            # 2. 分块
-            chunks = split_sections(sections)
-            if not chunks:
-                raise ValueError("未能从文档中提取有效内容")
-
-            # 3. 清理旧 chunk(重新索引场景)
-            old_ids = self.db.execute(
-                select(AIDocumentChunk.id).where(AIDocumentChunk.document_id == document_id)
-            ).scalars().all()
-            if old_ids:
-                vector_store.delete_chunks(list(old_ids))
-                self.db.execute(delete(AIDocumentChunk).where(AIDocumentChunk.document_id == document_id))
-
-            # 4. Embedding(批量)
-            embeddings = EmbeddingFactory.get().embed([c["content"] for c in chunks])
-
-            # 5. 落库 + 写向量
-            for chunk, emb in zip(chunks, embeddings):
-                row = AIDocumentChunk(
-                    document_id=document_id, student_id=doc.student_id, topic_id=doc.topic_id,
-                    scope=doc.scope, document_type=doc.document_type,
-                    chunk_index=chunk["chunk_index"], section_title=chunk["section_title"],
-                    content=chunk["content"], token_count=chunk["token_count"],
-                )
-                # D42: 无条件写 MySQL 降级副本 —— Redis 侧随时可能失效/换实例,
-                # 有副本才能"失败即降级", 否则降级路径召回恒空。
-                row.embedding = vec_to_b64(emb)
-                self.db.add(row)
-                self.db.flush()
-                vector_store.upsert_chunk(row.id, {
-                    "document_id": doc.id, "student_id": doc.student_id, "topic_id": doc.topic_id,
-                    "document_type": doc.document_type, "scope": doc.scope,
-                    "section_title": chunk["section_title"], "content": chunk["content"],
-                }, emb)
-
-            doc.chunk_count = len(chunks)
-            doc.index_status = "SUCCESS"
-            doc.indexed_at = datetime.now()
-            doc.error_message = None
+                error = AIServiceException(IndexIssue.UNKNOWN.value)
+            doc.index_status = "FAILED"
+            doc.error_message = error.message
             self.db.commit()
-            logger.info("文档 %s 索引完成: %d chunks (mode=%s)", document_id, len(chunks), vector_store.mode)
-            # 记录本次索引用的 embedding 指纹, 供 /health/ai 判断"换模型后是否需重建知识库"
-            try:
-                from app.ai.health import mark_embedding_indexed
-                mark_embedding_indexed(self.db)
-            except Exception:  # noqa: BLE001 — 指纹标记失败不影响索引结果
-                logger.warning("embedding 指纹标记失败", exc_info=True)
-            return {"document_id": document_id, "chunk_count": len(chunks), "status": "SUCCESS"}
+            logger.warning("文档 %s 索引失败 (%s)", document_id, type(exc).__name__)
+            raise error from None
+        self.db.commit()
+
+        # MySQL is now authoritative. Until its commit the old Redis keys remain usable.
+        try:
+            self._sync_vector_cache(document_id, old_ids, writes)
         except Exception as exc:
             self.db.rollback()
-            doc = self.db.get(AIDocument, document_id)
-            if doc:
-                doc.index_status = "FAILED"
-                doc.error_message = str(exc)[:480]
-                self.db.commit()
-            logger.exception("文档 %s 索引失败", document_id)
-            raise
+            logger.warning("文档 %s 向量缓存同步失败 (%s)", document_id, type(exc).__name__)
+        try:
+            from app.ai.health import mark_embedding_indexed
+            mark_embedding_indexed(self.db)
+        except Exception:
+            logger.warning("embedding 指纹标记失败", exc_info=True)
+        return {"document_id": document_id, "chunk_count": len(writes), "status": "SUCCESS"}
 
-    def index_stage_reports(self, student_id: int):
-        """将学生的开题/中期/终期文本报告纳入私有知识库(无文件的文本型文档)."""
-        from app.models.business import FinalDefense, MidtermReport, OpeningReport
-        from app.models.enums import AIDocumentType
+    def _read_sections(self, doc: AIDocument) -> list[Section]:
+        if doc.file_id is None:
+            return [Section(title=t, content=c) for t, c in split_by_headings(clean_text(doc.content_text or ""))]
+        file = self.db.get(SysFile, doc.file_id)
+        if file is None or file.deleted_at is not None:
+            raise FileException(IndexIssue.FILE_MISSING.value)
+        try:
+            path = str(storage.abs_path(file.storage_path))
+            sections = parse_source_archive(path) if doc.document_type == "SOURCE_CODE" else parse_document(path)
+        except SourceArchiveError as exc:
+            raise FileException(str(exc)) from None
+        except Exception:
+            raise FileException(IndexIssue.FILE_UNREADABLE.value) from None
+        preview = "\n\n".join(f"# {section.title}\n{section.content}" for section in sections)
+        doc.content_text = preview.encode("utf-8")[:65000].decode("utf-8", errors="ignore")
+        return sections
 
-        mapping = [
-            (AIDocumentType.OPENING_REPORT.value, OpeningReport, ["title", "research_background", "research_content", "technical_route"]),
-            (AIDocumentType.MIDTERM_REPORT.value, MidtermReport, ["progress_description", "completed_content", "next_plan"]),
-            (AIDocumentType.FINAL_REPORT.value, FinalDefense, ["summary", "innovation", "technical_solution", "test_result"]),
-        ]
+    def _replace_chunks(self, doc: AIDocument):
+        chunks = split_sections(self._read_sections(doc))
+        if not chunks:
+            raise FileException(IndexIssue.NO_TEXT.value)
+        try:
+            embedder = EmbeddingFactory.get()
+            embeddings = []
+            for start in range(0, len(chunks), 32):
+                batch = chunks[start:start + 32]
+                vectors = embedder.embed([chunk["content"] for chunk in batch])
+                dimension = len(embeddings[0]) if embeddings else embedder.dim
+                if not dimension or len(vectors) != len(batch) or any(len(v) != dimension for v in vectors):
+                    raise ValueError("unexpected embedding shape")
+                embeddings.extend(vectors)
+        except Exception as exc:
+            if isinstance(exc, BusinessException) and exc.code == 50303:
+                # The SDK adapter has already translated this into a provider-independent message.
+                raise AIServiceUnavailable(public_index_error(exc.message), exc.code) from None
+            raise AIServiceUnavailable(IndexIssue.EMBEDDING.value) from None
+
+        old_ids = list(self.db.scalars(select(AIDocumentChunk.id).where(AIDocumentChunk.document_id == doc.id)))
+        writes = []
+        for chunk, emb in zip(chunks, embeddings):
+            metadata = {
+                "document_id": doc.id, "student_id": doc.student_id, "topic_id": doc.topic_id,
+                "scope": doc.scope, "document_type": doc.document_type,
+                "section_title": chunk["section_title"], "content": chunk["content"],
+            }
+            row = AIDocumentChunk(**metadata, chunk_index=chunk["chunk_index"], token_count=chunk["token_count"],
+                                  embedding=vec_to_b64(emb))
+            self.db.add(row)
+            self.db.flush()
+            writes.append((row.id, metadata, emb))
+        if old_ids:
+            self.db.execute(delete(AIDocumentChunk).where(AIDocumentChunk.id.in_(old_ids)))
+        return old_ids, writes
+
+    def _sync_vector_cache(self, document_id, old_ids, writes):
+        # A second worker may have replaced these IDs since commit. Holding the same document
+        # lock and rechecking IDs stops a delayed cache writer from resurrecting retired chunks.
+        self.db.get(AIDocument, document_id, with_for_update=True, populate_existing=True)
+        current_ids = set(self.db.scalars(select(AIDocumentChunk.id).where(AIDocumentChunk.document_id == document_id)))
+        for chunk_id, metadata, embedding in writes:
+            if chunk_id in current_ids:
+                vector_store.upsert_chunk(chunk_id, metadata, embedding)
+        if old_ids:
+            vector_store.delete_chunks(old_ids)
+        self.db.commit()
+
+    def index_stage_reports(self, student_id: int) -> dict:
+        """Synchronize current uploads and approved stage reports; failed documents remain retryable."""
+        from app.models.business import GraduationCycle
         from app.shared.cycle import get_active_cycle
 
-        # D45: 只取当前 cycle 的已通过报告; 历史实现不带 cycle 过滤, 跨学年两份 APPROVED
-        # (旧数据 cycle_id 为 NULL)会触发 MultipleResultsFound, 接口直接 500。
         cycle = get_active_cycle(self.db, student_id)
-        for doc_type, model, fields in mapping:
-            stmt = select(model).where(model.student_id == student_id, model.status == "APPROVED")
-            if cycle is not None:
-                stmt = stmt.where(model.cycle_id == cycle.id)
-            report = self.db.execute(stmt.order_by(model.id.desc()).limit(1)).scalars().first()
+        cycle_id = cycle.id if cycle else None
+        pending = []
+        if cycle:
+            self.db.get(GraduationCycle, cycle.id, with_for_update=True)
+            for row in material_files(self.db, cycle):
+                doc = self.db.scalar(select(AIDocument).where(
+                    AIDocument.student_id == student_id, AIDocument.cycle_id == cycle_id,
+                    AIDocument.file_id == row.id, AIDocument.document_type == row.material_type,
+                ).order_by(AIDocument.id.desc()).limit(1).with_for_update())
+                if doc is None:
+                    doc = AIDocument(student_id=student_id, cycle_id=cycle_id, topic_id=cycle.topic_id,
+                                     document_type=row.material_type, file_id=row.id, document_name=row.original_name,
+                                     scope="STUDENT", index_status="WAITING", version=1)
+                    self.db.add(doc)
+                if doc.index_status in ("WAITING", "FAILED"):
+                    pending.append(doc)
+
+        for doc_type, (model, fields) in REPORTS.items():
+            stmt = select(model).where(model.student_id == student_id, model.status == "APPROVED",
+                                        model.cycle_id == cycle_id)
+            report = self.db.scalar(stmt.order_by(model.id.desc()).limit(1))
             if report is None:
                 continue
-            text = "\n\n".join(f"## {f}\n{getattr(report, f, '')}" for f in fields if getattr(report, f, None))
-            if not text.strip():
+            content = report_text(report, fields)
+            if not content:
                 continue
-            # D40(本模块侧防御): 论文重传会留下同类型多份 AIDocument, 这里只取 version 最新的一条,
-            # 旧文档作废由 material 模块负责, 但检索侧不能因历史脏数据抛 MultipleResultsFound。
-            existing = self.db.execute(
-                select(AIDocument)
-                .where(AIDocument.student_id == student_id, AIDocument.document_type == doc_type)
-                .order_by(AIDocument.version.desc(), AIDocument.id.desc())
-                .limit(1)
-            ).scalars().first()
-            if existing and existing.content_text == text:
-                continue
-            if existing is None:
-                doc = AIDocument(student_id=student_id, document_type=doc_type,
-                                 document_name=DOC_TYPE_CN.get(doc_type, doc_type), scope="STUDENT",
-                                 index_status="WAITING")
+            doc = self.db.scalar(select(AIDocument).where(
+                AIDocument.student_id == student_id, AIDocument.cycle_id == cycle_id,
+                AIDocument.document_type == doc_type, AIDocument.file_id.is_(None),
+            ).order_by(AIDocument.id.desc()).limit(1).with_for_update())
+            if doc is None:
+                doc = AIDocument(student_id=student_id, cycle_id=cycle_id, topic_id=report.topic_id,
+                                 document_type=doc_type, document_name=DOC_TYPE_CN[doc_type],
+                                 scope="STUDENT", version=1)
                 self.db.add(doc)
-            else:
-                doc = existing
+            elif doc.content_text == content and doc.index_status in ("SUCCESS", "PROCESSING"):
+                continue
+            elif doc.content_text != content:
                 doc.version += 1
-                doc.index_status = "WAITING"
-            doc.content_text = text
-            self.db.commit()
-            self.index_document(doc.id)
+            doc.topic_id = report.topic_id
+            doc.content_text = content
+            doc.index_status = "WAITING"
+            pending.append(doc)
+        self.db.flush()
+        ids = [doc.id for doc in pending]
+        self.db.commit()
+        failed = []
+        for doc_id in ids:
+            try:
+                self.index_document(doc_id)
+            except Exception:
+                # The document retains its reason; a bad archive must not skip the remaining reports.
+                failed.append(doc_id)
+        return {"indexed": len(ids) - len(failed), "failed_document_ids": failed}
+
+    def practice_documents(self, student_id: int) -> list[AIDocument]:
+        return practice_documents(self.db, student_id)
+
+    def retrieve_practice(self, query: str, student_id: int, document_types: list[str] | None = None,
+                          top_k: int = 6, *, document_ids: list[int] | None = None) -> list[RetrievedChunk]:
+        docs = {d.id: d for d in self.practice_documents(student_id)
+                if (document_ids is None or d.id in document_ids)
+                and (not document_types or d.document_type in document_types)}
+        if not docs:
+            return []
+        hits = HybridRetriever(self.db, document_ids=list(docs)).retrieve(query, student_id, document_types, top_k=top_k)
+        for hit in hits:
+            hit.extra["document_name"] = docs[hit.document_id].document_name
+        return hits
+
+    def practice_chunks(self, student_id: int, chunk_ids: list[int]) -> list[RetrievedChunk]:
+        docs = {d.id: d for d in self.practice_documents(student_id)}
+        if not docs or not chunk_ids:
+            return []
+        rows = self.db.scalars(select(AIDocumentChunk).where(
+            AIDocumentChunk.id.in_(chunk_ids), AIDocumentChunk.document_id.in_(list(docs)),
+            AIDocumentChunk.student_id == student_id, AIDocumentChunk.scope == "STUDENT"))
+        chunks = {c.id: RetrievedChunk(c.id, c.document_id, c.document_type, c.section_title, c.content[:1200],
+                                       score=0, source="citation", extra={"document_name": docs[c.document_id].document_name})
+                  for c in rows}
+        return [chunks[cid] for cid in chunk_ids if cid in chunks]
 
     # ---------- 检索 ----------
 

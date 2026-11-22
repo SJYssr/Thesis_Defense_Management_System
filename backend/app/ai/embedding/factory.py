@@ -20,7 +20,7 @@ from collections import Counter
 import numpy as np
 
 from app.ai.llm.factory import AIServiceUnavailable
-from app.ai.net import openai_http_client
+from app.ai.net import openai_http_client, provider_errors
 from app.ai.providers import openai_base_url
 from app.ai.runtime_config import resolve_ai_config
 
@@ -64,7 +64,8 @@ class OpenAICompatibleEmbedding(BaseEmbeddingService):
         result = []
         for i in range(0, len(texts), 16):  # 分批防超限
             batch = [t[:8000] or " " for t in texts[i:i + 16]]
-            resp = self.client.embeddings.create(model=self.model, input=batch)
+            with provider_errors("向量模型"):
+                resp = self.client.embeddings.create(model=self.model, input=batch)
             result.extend([d.embedding for d in resp.data])
         self._sync_dim(result)
         return result

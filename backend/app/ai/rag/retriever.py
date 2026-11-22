@@ -61,8 +61,9 @@ class RetrievedChunk:
 class HybridRetriever:
     """学生私有库 + 全局知识库双路检索(roadmap 三十一章)."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, *, document_ids: list[int] | None = None):
         self.db = db
+        self.document_ids = document_ids
 
     # ---------- 查询重写 ----------
 
@@ -89,7 +90,7 @@ class HybridRetriever:
         """
         if not query or not query.strip():
             return []
-        index = BM25Index(self.db, student_id, document_types)
+        index = BM25Index(self.db, student_id, document_types, document_ids=self.document_ids)
         hits = index.search(query, top_k)
         if not hits:
             _log_fallback_once("keyword-empty", "BM25 关键词召回为空(索引为空或词面不匹配), 本查询退化为向量单路")
@@ -113,7 +114,7 @@ class HybridRetriever:
 
         recall = max(int(getattr(settings, "rerank_recall", 20) or 0), int(top_k))
         embedding = EmbeddingFactory.get().embed_one(search_query)
-        vector_results = vector_store.search(embedding, student_id, document_types, top_k=recall)
+        vector_results = vector_store.search(embedding, student_id, document_types, top_k=recall, document_ids=self.document_ids)
         keyword_results = self.keyword_search(search_query, student_id, document_types, top_k=recall)
 
         if strategy == "vector":
@@ -140,11 +141,15 @@ class HybridRetriever:
 
         # D44: 回表必须带同样的 student 过滤 —— 向量库索引残留(重新索引/删除失败/Redis 越权写入)
         # 不能成为跨学生泄露通道; 命中他人 chunk 时这里直接取不到行。
+        conds = [student_scope_filter(student_id)]
+        if self.document_ids is not None:
+            conds.extend([AIDocumentChunk.document_id.in_(self.document_ids), AIDocumentChunk.student_id == student_id,
+                          AIDocumentChunk.scope == "STUDENT"])
         chunk_map = {
             c.id: c for c in self.db.execute(
                 select(AIDocumentChunk).where(
                     AIDocumentChunk.id.in_([cid for cid, _ in ranked]),
-                    student_scope_filter(student_id),
+                    *conds,
                 )
             ).scalars().all()
         }

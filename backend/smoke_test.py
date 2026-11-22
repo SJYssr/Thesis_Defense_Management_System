@@ -3,6 +3,8 @@ import json
 import os
 import sys
 import time
+from io import BytesIO
+from zipfile import ZipFile
 
 import httpx
 
@@ -142,6 +144,7 @@ session_id = r.json()["data"]["session_id"]
 r = client.post(f"{BASE}/ai/defense/sessions/{session_id}/start", headers=auth(s1))
 first = r.json()["data"]
 check("开始答辩返回第一题", r.json()["code"] == 0 and first.get("question"), r.text[:200])
+check("开场问题带有可读的材料出处", any(c.get("excerpt") and c.get("document_name") for c in first.get("sources", [])))
 print("    第一题:", first["question"][:60])
 
 nxt: dict = {}
@@ -768,6 +771,28 @@ new_selection = workflow_call("POST", "/student/selections", s7, json={
     "topic_id": new_topic, "reason": "我已完成相关技术学习，希望完成全流程毕业设计。"})["id"]
 workflow_call("POST", f"/teacher/selections/{new_selection}/approve", t1, json={"comment": "同意"})
 
+# 正式材料尚未开放时，练习报告可独立入库，学生仍保有正式材料的初始状态。
+policy = workflow_call("GET", "/files/upload-policy", s7)
+check("练习上传策略匹配解析能力", ".md" in policy["practice"]["REPORT"]
+      and policy["practice"]["SOURCE_CODE"] == [".zip"])
+practice = workflow_call("POST", "/ai/defense/materials", s7, params={"kind": "REPORT"},
+                         files={"file": ("practice.md", "## 研究设计\n对温室传感器的温度观测按采样编号去重，缺失值不计入样本。三个有效样本的中位数用于生成日报，并与人工标注的异常读数对照。".encode(), "text/markdown")})
+check("选题通过后可提前准备答辩练习", bool(practice["id"]))
+early_material = workflow_call("GET", "/student/material", s7)
+check("练习上传不改变正式材料", early_material["status"] == "NOT_SUBMITTED" and not early_material["files"])
+bad = client.post(f"{BASE}/ai/defense/materials", headers=auth(s7), params={"kind": "SOURCE_CODE"},
+                  files={"file": ("practice.md", b"report", "text/markdown")})
+check("源码入口拒绝不支持的文件格式", bad.status_code == 400)
+for _ in range(30):
+    docs = workflow_call("GET", "/ai/documents", s7, params={"size": 100})["items"]
+    draft = next(doc for doc in docs if doc["id"] == practice["id"])
+    if draft["index_status"] in ("SUCCESS", "FAILED"):
+        break
+    time.sleep(0.5)
+check("练习来源仅索引成功后可选", draft["practice_upload"] and draft["practice_eligible"])
+other_download = client.get(f"{BASE}/files/{draft['file_id']}/download", headers=auth(s6))
+check("其他学生无法下载练习草稿", other_download.status_code == 403)
+
 # 种子数据的终期任务已经截止。先验证真实拦截, 再由管理员明确延期后继续。
 final_tasks = workflow_call("GET", "/stage-tasks", admin, params={
     "academic_year": year, "stage": "FINAL", "status": "PUBLISHED", "page_size": 100})["items"]
@@ -809,6 +834,33 @@ for _ in range(60):
 check("论文上传后无需手动重建即自动完成索引", bool(indexed and indexed["index_status"] == "SUCCESS"), str(indexed)[:250])
 chunks = workflow_call("POST", "/ai/rag/query", s7, json={"query": "全流程论文检索标识星海", "top_k": 5})["chunks"]
 check("检索实际命中新上传的论文", bool(indexed and any(c["document_id"] == indexed["id"] for c in chunks)))
+source_package = BytesIO()
+with ZipFile(source_package, "w") as archive:
+    archive.writestr("src/progress.py", (
+        "def completion_percent(completed, total):\n"
+        '    """完成比例只统计已审核的阶段。没有阶段时返回零。"""\n'
+        "    return round(100 * completed / total) if total else 0\n"
+    ))
+source_material = workflow_call("POST", "/student/material/files", s7, params={"material_type": "SOURCE_CODE"},
+                                files={"file": ("graduation-source.zip", source_package.getvalue(), "application/zip")})
+source_file = next(f for f in source_material["files"] if f["original_name"] == "graduation-source.zip")
+for _ in range(60):
+    docs = client.get(f"{BASE}/ai/documents", headers=auth(s7), params={"size": 100}).json()["data"]["items"]
+    source_doc = next((doc for doc in docs if doc["file_id"] == source_file["file_id"]), None)
+    if source_doc and source_doc["index_status"] in ("SUCCESS", "FAILED"):
+        break
+    time.sleep(0.5)
+check("源码包通过材料上传后可用于答辩", bool(source_doc and source_doc["index_status"] == "SUCCESS"))
+if indexed and source_doc:
+    selected = {indexed["id"], source_doc["id"]}
+    bank = workflow_call("POST", "/ai/defense/questions/generate", s7, json={"document_ids": sorted(selected)})
+    citations = [source for question in bank["questions"] for source in question["sources"]]
+    check("选中的论文与源码均有出题依据", {source["document_id"] for source in citations} == selected)
+    check("源码出处包含仓库路径和原文", any("src/progress.py" in source["section"] and
+          "completion_percent" in source["excerpt"] for source in citations))
+    other = client.post(f"{BASE}/ai/defense/questions/generate", headers=auth(s6),
+                        json={"document_ids": [source_doc["id"]]})
+    check("其他学生不能指定该源码包出题", 400 <= other.status_code < 500)
 workflow_call("POST", "/student/material/submit", s7)
 workflow_call("POST", f"/teacher/materials/{material['id']}/approve", t1, json={"comment": "材料齐全"})
 progress = workflow_call("GET", "/student/progress", s7)

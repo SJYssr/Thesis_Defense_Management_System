@@ -12,6 +12,7 @@ from datetime import datetime, time
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.ai.document.loader import PARSERS
 from app.core.exceptions import FileException
 from app.models.system import SysFile
 from app.shared.storage import (
@@ -27,6 +28,11 @@ UPLOAD_QUOTA_EXCEEDED = 40013
 
 DEFAULT_MAX_FILE_MB = 50
 DEFAULT_DAILY_MB = 200
+MAX_SOURCE_ARCHIVE_MB = 32
+PRACTICE_EXTENSIONS = {
+    "REPORT": DOCUMENT_EXTENSIONS.intersection(PARSERS),
+    "SOURCE_CODE": ARCHIVE_EXTENSIONS.intersection({".zip"}),
+}
 
 
 def max_upload_size_mb(db: Session) -> int:
@@ -34,6 +40,10 @@ def max_upload_size_mb(db: Session) -> int:
     from app.shared.sysconfig import get_int
 
     return get_int(db, "max_upload_size_mb", DEFAULT_MAX_FILE_MB)
+
+
+def practice_upload_limits(configured_mb: int) -> dict[str, int]:
+    return {"REPORT": configured_mb, "SOURCE_CODE": min(configured_mb, MAX_SOURCE_ARCHIVE_MB)}
 
 
 def daily_limit_mb(db: Session) -> int:
@@ -76,12 +86,17 @@ def ensure_daily_quota(db: Session, user_id: int, incoming: int) -> int:
 def normalize_business(business_type: str | None, business_id: int | None) -> tuple[str | None, int | None]:
     """规整业务归属: 类型去空格并限长, 空串视为未提供."""
     cleaned = (business_type or "").strip()[:32] or None
+    if cleaned and cleaned.upper() == "AI_PRACTICE":
+        raise FileException("练习材料请从模拟答辩页面上传")
     return cleaned, business_id
 
 
 def upload_policy(db: Session) -> dict:
     """暴露给前端的上传策略(前端据此生成 accept 与上传前大小校验)."""
+    configured_mb = max_upload_size_mb(db)
     return {
+        "practice_max_upload_size_mb": practice_upload_limits(configured_mb),
+        "practice": {kind: sorted(extensions) for kind, extensions in PRACTICE_EXTENSIONS.items()},
         "allowed_extensions": sorted(ALLOWED_EXTENSIONS),
         "by_kind": {
             "DOCUMENT": sorted(DOCUMENT_EXTENSIONS),
@@ -89,6 +104,6 @@ def upload_policy(db: Session) -> dict:
             "IMAGE": sorted(IMAGE_EXTENSIONS),
             "MEDIA": sorted(MEDIA_EXTENSIONS),
         },
-        "max_upload_size_mb": max_upload_size_mb(db),
+        "max_upload_size_mb": configured_mb,
         "max_upload_daily_mb": daily_limit_mb(db),
     }
