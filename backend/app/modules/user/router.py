@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, ResourceNotFoundException
-from app.core.permissions import CurrentUser, get_current_user, require_admin
+from app.core.permissions import CurrentUser, get_current_user, require_admin, require_teacher_or_admin
 from app.core.response import ResponseUtil
 from app.core.security import hash_password
 from app.db.mysql import get_db
@@ -269,8 +269,17 @@ def list_majors(college_id: int | None = None, _: CurrentUser = Depends(get_curr
 
 
 @org_router.get("/classes")
-def list_classes(major_id: int | None = None, _: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
+def list_classes(major_id: int | None = None, user: CurrentUser = Depends(require_teacher_or_admin),
+                 db: Session = Depends(get_db)):
+    from app.models.business import GraduationCycle
+
     conds = []
+    if user.role == "TEACHER":
+        taught_classes = select(StudentProfile.class_id).join(
+            GraduationCycle, GraduationCycle.student_id == StudentProfile.id
+        ).join(TeacherProfile, TeacherProfile.id == GraduationCycle.teacher_id).where(
+            TeacherProfile.user_id == user.id, GraduationCycle.status == "ACTIVE")
+        conds.append(ClassInfo.id.in_(taught_classes))
     if major_id:
         conds.append(ClassInfo.major_id == major_id)
     rows = db.execute(select(ClassInfo).where(*conds).order_by(ClassInfo.id)).scalars().all()

@@ -4,19 +4,27 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException
 from app.models.defense import StageTask
-from app.models.user import StudentProfile
+from app.models.user import StudentProfile, SysUser, TeacherProfile
 from app.shared.cycle import academic_year_for, get_active_cycle
 from app.shared.events import now
 
 
 def tasks_for_student(db: Session, student_id: int, stage: str | None = None,
-                      academic_year: str | None = None) -> tuple[str, list[StageTask]]:
+                      academic_year: str | None = None, *, include_closed: bool = False) -> tuple[str, list[StageTask]]:
     cycle = get_active_cycle(db, student_id)
     year = academic_year or (cycle.academic_year if cycle else academic_year_for(db))
     student = db.get(StudentProfile, student_id)
     if student is None:
         return year, []
-    filters = [StageTask.academic_year == year, StageTask.status == "PUBLISHED"]
+    # 学院发布的任务对指定组织生效；教师发布的任务还必须匹配同学年指导关系。
+    # 无创建人的历史任务沿用学年和组织范围。
+    creators = [StageTask.created_by.is_(None),
+                StageTask.created_by.in_(select(SysUser.id).where(SysUser.role == "ADMIN"))]
+    if cycle and cycle.academic_year == year and cycle.teacher_id:
+        creators.append(StageTask.created_by.in_(
+            select(TeacherProfile.user_id).where(TeacherProfile.id == cycle.teacher_id)))
+    statuses = ("PUBLISHED", "CLOSED") if include_closed else ("PUBLISHED",)
+    filters = [StageTask.academic_year == year, StageTask.status.in_(statuses), or_(*creators)]
     if stage:
         filters.append(StageTask.stage == stage)
     for column in ("college_id", "major_id", "class_id"):
@@ -28,7 +36,10 @@ def tasks_for_student(db: Session, student_id: int, stage: str | None = None,
 
 def ensure_task_submission_open(db: Session, student_id: int, stage: str,
                                 academic_year: str | None = None) -> None:
-    _, tasks = tasks_for_student(db, student_id, stage, academic_year)
+    _, applicable = tasks_for_student(db, student_id, stage, academic_year, include_closed=True)
+    tasks = [t for t in applicable if t.status == "PUBLISHED"]
+    if applicable and not tasks:
+        raise BusinessException("该阶段的任务已关闭，请联系教师重新发布任务", 40003)
     current = now()
     for task in tasks:
         if task.opens_at and current < task.opens_at:

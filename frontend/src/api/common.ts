@@ -79,6 +79,7 @@ export const userAdminApi = {
   update: (role: string, id: number, data: Record<string, unknown>) => request.put(`/admin/users/${role}/${id}`, data),
   remove: (role: string, id: number) => request.delete(`/admin/users/${role}/${id}`),
   colleges: () => request.get('/org/colleges'),
+  classes: () => request.get('/org/classes'),
   majors: (collegeId?: number) => request.get('/org/majors', { params: { college_id: collegeId } }),
 }
 

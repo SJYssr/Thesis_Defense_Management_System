@@ -242,7 +242,7 @@ r = client.post(f"{BASE}/stage-tasks", headers=auth(t1),
 check("创建合法逾期任务", r.json()["code"] == 0, r.text[:200])
 overdue_task_id = r.json()["data"]["id"]
 
-r = client.get(f"{BASE}/stage-tasks/mine", headers=auth(s6))
+r = client.get(f"{BASE}/stage-tasks/mine", headers=auth(s2))
 my_tasks = r.json()["data"]["tasks"]
 check("学生待办包含所属学年任务", r.json()["code"] == 0 and any(t["id"] == task_id for t in my_tasks), r.text[:300])
 overdue_item = next((t for t in my_tasks if t["id"] == overdue_task_id), None)
