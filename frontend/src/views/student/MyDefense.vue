@@ -64,7 +64,7 @@ onMounted(load)
         <el-tag size="small" :type="s.status === 'PUBLISHED' ? 'success' : 'info'">{{ s.status_cn }}</el-tag>
       </div>
       <div class="when">
-        {{ s.starts_at?.replace('T', ' ').slice(0, 16) }} ~ {{ s.ends_at?.slice(11, 16) }}
+        {{ s.starts_at?.replace('T', ' ').slice(0, 16) }} ~ {{ s.ends_at?.replace('T', ' ').slice(0, 16) }}
       </div>
     </div>
 
@@ -101,15 +101,18 @@ onMounted(load)
         </el-tag>
         <span class="muted">发布于 {{ s.result.published_at?.replace('T', ' ').slice(0, 16) }}</span>
       </template>
-      <template v-else-if="s.result">
+      <template v-else-if="s.status === 'CANCELLED'"><strong>场次已取消</strong></template>
+      <template v-else-if="['WITHDRAWN', 'UNDER_REVIEW'].includes(s.result?.status)">
         <strong>成绩复核中</strong><span class="muted">评审结论正在复核，复核完成后将重新发布。</span>
       </template>
-      <template v-else>
+      <template v-else-if="s.assignment.seat_status === 'ATTENDED'">
         <strong>评审中</strong><span class="muted">结论尚未发布，发布后将在此显示成绩与决定。</span>
       </template>
+      <template v-else-if="s.assignment.seat_status === 'SCHEDULED'"><strong>等待参加答辩</strong></template>
+      <template v-else><strong>{{ SEAT_CN[s.assignment.seat_status] }}</strong></template>
     </div>
 
-    <div class="card-foot" v-if="s.assignment.seat_status === 'SCHEDULED' && !s.assignment.acknowledged_at">
+    <div class="card-foot" v-if="s.status !== 'CANCELLED' && s.assignment.seat_status === 'SCHEDULED' && !s.assignment.acknowledged_at">
       <el-button type="primary" size="small" @click="ack(s)">确认已读</el-button>
     </div>
     <div class="card-foot acknowledged" v-else-if="s.assignment.acknowledged_at">

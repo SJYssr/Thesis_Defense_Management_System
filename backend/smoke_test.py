@@ -296,8 +296,8 @@ check("学生排入场次", r.json()["code"] == 0, r.text[:200])
 
 r = client.get(f"{BASE}/defense-sessions/{S1}", headers=auth(admin))
 rev = r.json()["data"]["revision"]
-new_start = (datetime.now() + timedelta(hours=6)).isoformat(timespec="seconds")
-new_end = (datetime.now() + timedelta(hours=8)).isoformat(timespec="seconds")
+new_start = (datetime.now() - timedelta(hours=23)).isoformat(timespec="seconds")
+new_end = (datetime.now() - timedelta(hours=21)).isoformat(timespec="seconds")
 r = client.patch(f"{BASE}/defense-sessions/{S1}", headers=auth(admin),
                  json={"starts_at": new_start, "ends_at": new_end, "revision": rev, "change_reason": "教室调整"})
 check("已发布场次改期成功", r.json()["code"] == 0, r.text[:200])
@@ -339,6 +339,10 @@ rubric_weights = r.json()["data"]["rubric"]["weights"]
 check("返回启用评分表", rubric_weights and len(rubric_weights) == 3)
 
 scores_ok = {"报告质量": 90, "系统实现": 88, "答辩表现": 86}
+r = client.post(f"{BASE}/defense-assignments/{seat6}/scores/submit", headers=auth(t1), json={"scores": scores_ok})
+check("未开场不能提交正式评分", r.json()["code"] == 40003, r.text[:150])
+r = client.post(f"{BASE}/defense-sessions/{S1}/start", headers=auth(admin))
+check("管理员开始已到时间的答辩", r.json()["code"] == 0, r.text[:150])
 r = client.put(f"{BASE}/defense-assignments/{seat6}/review", headers=auth(t1), json={"scores": scores_ok, "comment": "暂存"})
 check("评委暂存草稿", r.json()["code"] == 0, r.text[:200])
 r = client.post(f"{BASE}/defense-assignments/{seat6}/scores/submit", headers=auth(t1), json={"scores": scores_ok, "comment": "完成度高"})
@@ -346,6 +350,9 @@ check("评委提交评分锁定", r.json()["code"] == 0 and r.json()["data"]["st
 r = client.post(f"{BASE}/defense-assignments/{seat6}/scores/submit", headers=auth(t1), json={"scores": scores_ok})
 check("重复提交有效评分被拒", r.json()["code"] != 0, r.text[:150])
 
+r = client.get(f"{BASE}/defense-results", headers=auth(admin), params={"session_id": S1})
+check("成绩复核列表含待汇总席位", any(item["id"] == seat6 and item["result"] is None and item["score_count"] > 0
+                                  for item in r.json()["data"]), r.text[:150])
 r = client.post(f"{BASE}/defense-results/generate", headers=auth(admin), json={"assignment_id": seat6})
 result_id = r.json()["data"]["id"]
 r = client.post(f"{BASE}/defense-results/{result_id}/publish", headers=auth(admin))

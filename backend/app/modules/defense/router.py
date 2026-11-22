@@ -7,12 +7,12 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, ConflictException, PermissionDeniedException, ResourceNotFoundException
 from app.core.permissions import CurrentUser, get_current_user, require_admin
-from app.core.response import ResponseUtil
+from app.core.response import ResponseUtil, page_dict
 from app.db.mysql import get_db
 from app.models.business import GraduationCycle, GraduationTopic
 from app.models.defense import (
@@ -29,14 +29,17 @@ from app.models.system import OperationLog
 from app.models.user import StudentProfile, SysUser, TeacherProfile
 from app.modules.defense.seat_state import mark_seat
 from app.modules.defense.service import (
+    RESULT_STATUS_CN,
     SCORE_STATUS_CN,
+    SCORING_SESSION_STATES,
     SESSION_STATUS_CN,
     STAGE_CN,
     _notify_session_members,
     assignment_item,
+    assignment_rubric,
     compute_result,
     get_effective_score,
-    get_rubric_for,
+    load_session,
     mark_result_under_review,
     session_item,
     validate_session,
@@ -63,6 +66,7 @@ from app.modules.defense.service import (
     withdraw_result as withdraw_result_flow,
 )
 from app.shared.events import push_notification
+from app.shared.query import paginate
 
 router = APIRouter(tags=["Defense"])
 rubric_router = APIRouter(prefix="/review-rubrics", tags=["Defense-Rubric"])
@@ -147,15 +151,15 @@ def list_sessions(academic_year: str | None = None, stage: str | None = None, st
         conds.append(DefenseSession.stage == stage)
     if status:
         conds.append(DefenseSession.status == status)
-    total = db.execute(select(func.count(DefenseSession.id)).where(*conds)).scalar()
-    rows = db.execute(
-        select(DefenseSession).where(*conds).order_by(DefenseSession.starts_at.desc())
-        .offset((page - 1) * page_size).limit(page_size)
-    ).scalars().all()
+    if keyword and keyword.strip():
+        pattern = f"%{keyword.strip()}%"
+        conds.append(or_(DefenseSession.title.like(pattern), DefenseSession.location.like(pattern)))
+    rows, total = paginate(db, select(DefenseSession).order_by(DefenseSession.starts_at.desc(), DefenseSession.id.desc()),
+                           filters=conds, page=page, size=page_size)
     items = [session_item(db, s) for s in rows]
-    if keyword:
-        items = [i for i in items if keyword in (i.get("title") or "") or keyword in (i.get("location") or "")]
-    return ResponseUtil.page(items, total, page, page_size)
+    effective_total = db.scalar(select(func.count(DefenseSession.id))
+                                .where(*conds, DefenseSession.status != SessionStatus.CANCELLED.value))
+    return ResponseUtil.success({**page_dict(items, total, page, page_size), "effective_total": effective_total})
 
 
 @router.post("/defense-sessions")
@@ -259,10 +263,14 @@ def publish_session(session_id: int, user: CurrentUser = Depends(require_admin),
     return ResponseUtil.success(session_item(db, s), message="场次已发布并通知相关师生")
 
 
+class SessionCancel(BaseModel):
+    change_reason: str = Field(min_length=1, max_length=500)
+
+
 @router.post("/defense-sessions/{session_id}/cancel")
-def cancel_session(session_id: int, body: SessionPatch | None = None, user: CurrentUser = Depends(require_admin),
+def cancel_session(session_id: int, body: SessionCancel, user: CurrentUser = Depends(require_admin),
                    db: Session = Depends(get_db)):
-    reason = body.change_reason if body else None
+    reason = body.change_reason
     s = cancel_session_flow(db, session_id, user, reason)  # 任意活态 -> CANCELLED, 原因必填
     db.add(OperationLog(user_id=user.id, username=user.username, module="DEFENSE", action="CANCEL_SESSION",
                         detail=f"取消场次#{s.id}: {reason or '未说明'}"))
@@ -298,9 +306,7 @@ def finish_session(session_id: int, user: CurrentUser = Depends(require_admin), 
 def patch_session(session_id: int, body: SessionPatch, user: CurrentUser = Depends(require_admin),
                   db: Session = Depends(get_db)):
     """修改场次; 已发布场次的时间/地点变更必须留痕并通知(乐观锁防并发)."""
-    s = db.get(DefenseSession, session_id)
-    if s is None:
-        raise ResourceNotFoundException("场次不存在")
+    s = load_session(db, session_id)
     if s.revision != body.revision:
         raise ConflictException("场次已被其他人修改, 请刷新后重试")
     if s.status in (SessionStatus.CANCELLED.value, SessionStatus.FINISHED.value):
@@ -327,9 +333,14 @@ def patch_session(session_id: int, body: SessionPatch, user: CurrentUser = Depen
         s.title = body.title
 
     published = s.status == SessionStatus.PUBLISHED.value
+    if s.status == SessionStatus.IN_PROGRESS.value and before != (s.starts_at, s.ends_at, s.location):
+        raise BusinessException("答辩已经开始，不能改期")
     if published and (before[0] != s.starts_at or before[1] != s.ends_at or before[2] != s.location):
-        if not body.change_reason:
+        if not (body.change_reason or "").strip():
             raise BusinessException("已发布场次改期必须填写变更原因")
+        conflicts = validate_session(db, s)
+        if conflicts:
+            raise ConflictException("改期存在排期冲突：" + "；".join(c["detail"] for c in conflicts))
         db.add(DefenseScheduleChange(
             session_id=s.id, revision_before=body.revision,
             before_starts_at=before[0], before_ends_at=before[1], before_location=before[2],
@@ -339,7 +350,7 @@ def patch_session(session_id: int, body: SessionPatch, user: CurrentUser = Depen
         db.add(OperationLog(user_id=user.id, username=user.username, module="DEFENSE", action="RESCHEDULE_SESSION",
                             detail=f"场次#{s.id}从{before[0]}改为{s.starts_at}: {body.change_reason}"))
         _notify_session_members(db, s, title=f"答辩时间变更: {STAGE_CN.get(s.stage, s.stage)}",
-                                content=f"场次「{s.title or s.id}」调整为 {s.starts_at:%Y-%m-%d %H:%M}~{s.ends_at:%H:%M}, 地点: {s.location or '线上'}。原因: {body.change_reason}")
+                                content=f"场次「{s.title or s.id}」调整为 {s.starts_at:%Y-%m-%d %H:%M}~{s.ends_at:%Y-%m-%d %H:%M}, 地点: {s.location or '线上'}。原因: {body.change_reason}")
     s.revision += 1
     db.commit()
     return ResponseUtil.success(session_item(db, s), message="场次已更新")
@@ -528,9 +539,7 @@ def _ensure_scoring_owner(db: Session, a: DefenseAssignment, user: CurrentUser) 
     主体的评分行(examiner_id 对不上任何评委, 历史表现为 500 / 汇总结算漏算), 故写路径一律拒绝
     管理员; 管理员改分只能通过"复核重开"把评分交回原评委。
     """
-    s = db.get(DefenseSession, a.session_id)
-    if s is None:
-        raise ResourceNotFoundException("场次不存在")
+    s = load_session(db, a.session_id)
     if user.role != "TEACHER":
         raise PermissionDeniedException("仅被指派评委教师可暂存/提交评分")
     _ensure_examiner_of(db, s.id, user)
@@ -596,7 +605,7 @@ def get_review(assignment_id: int, user: CurrentUser = Depends(get_current_user)
     eff = None
     if user.role == "TEACHER":
         eff = get_effective_score(db, a.id, user.profile_id)
-    rubric = get_rubric_for(db, s, db.get(GraduationCycle, a.cycle_id))
+    rubric = assignment_rubric(db, a, s)
     return ResponseUtil.success({
         "assignment": assignment_item(db, a),
         "session": {"id": s.id, "stage": s.stage, "stage_cn": STAGE_CN.get(s.stage, s.stage),
@@ -637,7 +646,7 @@ def save_review(assignment_id: int, body: ReviewSave, user: CurrentUser = Depend
         db.add(draft)
         eff = draft
     if eff is None:
-        rubric = get_rubric_for(db, s, db.get(GraduationCycle, a.cycle_id))
+        rubric = assignment_rubric(db, a, s)
         eff = ExaminerScore(assignment_id=a.id, examiner_id=user.profile_id,
                             rubric_id=rubric.id if rubric else None,
                             rubric_version=rubric.version if rubric else None,
@@ -655,10 +664,10 @@ def submit_score(assignment_id: int, body: ReviewSave, user: CurrentUser = Depen
     """提交并锁定评分版本; 校验评分项与启用评分表一致, 禁止重复提交有效评分."""
     a = _get_assignment_or_404(db, assignment_id)
     s = _ensure_scoring_owner(db, a, user)
-    if s.status == SessionStatus.CANCELLED.value:
-        raise BusinessException("场次已取消, 不能提交评分")
+    if s.status not in SCORING_SESSION_STATES:
+        raise BusinessException("请在场次开始后提交正式评分", 40003)
     cycle = db.get(GraduationCycle, a.cycle_id)
-    rubric = get_rubric_for(db, s, cycle)
+    rubric = assignment_rubric(db, a, s)
     if rubric is None:
         raise BusinessException("未配置启用的评分表, 请联系管理员")
     items = json.loads(rubric.weights_json)
@@ -697,7 +706,8 @@ def submit_score(assignment_id: int, body: ReviewSave, user: CurrentUser = Depen
     # 评分变化后不直接改结论状态: RESULT 的 PENDING 只能由 transition(RESULT, "compute") 进入,
     # 已 READY 的结论在校验发布时会重新复算, 因此无需(也无权)在这里回写 result.status。
 
-    # D24: 评委评分齐备时通知学生等待汇总(此前是未使用的死变量)
+    db.flush()  # 当前会话禁用 autoflush，计数必须包含本次评分
+    # 评委评分齐备时通知学生等待汇总
     assigned = db.execute(select(func.count(DefenseExaminer.id)).where(
         DefenseExaminer.session_id == s.id)).scalar() or 0
     submitted = db.execute(select(func.count(ExaminerScore.id)).where(
@@ -721,24 +731,22 @@ def submit_score(assignment_id: int, body: ReviewSave, user: CurrentUser = Depen
 @router.get("/defense-results")
 def list_results(session_id: int | None = None, user: CurrentUser = Depends(require_admin),
                  db: Session = Depends(get_db)):
-    conds = []
-    if session_id:
-        conds.append(DefenseAssignment.session_id == session_id)
-    rows = db.execute(
-        select(DefenseResult, DefenseAssignment)
-        .join(DefenseAssignment, DefenseAssignment.id == DefenseResult.assignment_id)
-        .where(*conds).order_by(DefenseResult.id.desc())
-    ).all()
+    stmt = select(DefenseAssignment, DefenseResult).outerjoin(
+        DefenseResult, DefenseResult.assignment_id == DefenseAssignment.id)
+    if session_id is None:
+        stmt = stmt.where(DefenseResult.id.is_not(None))
+    else:
+        stmt = stmt.where(DefenseAssignment.session_id == session_id)
+    rows = db.execute(stmt.order_by(DefenseAssignment.id)).all()
     items = []
-    for r, a in rows:
+    for a, r in rows:
         item = assignment_item(db, a)
         item["result"] = {
-            "id": r.id, "status": r.status, "status_cn": {"PENDING": "待汇总", "READY": "可复核", "UNDER_REVIEW": "复核中",
-                                                          "PUBLISHED": "已发布", "WITHDRAWN": "已撤回"}.get(r.status, r.status),
+            "id": r.id, "status": r.status, "status_cn": RESULT_STATUS_CN.get(r.status, r.status),
             "score": r.score, "decision": r.decision,
             "published_at": r.published_at.isoformat() if r.published_at else None,
             "withdraw_reason": r.withdraw_reason,
-        }
+        } if r is not None else None
         items.append(item)
     return ResponseUtil.success(items)
 
@@ -750,20 +758,20 @@ class ResultGenerate(BaseModel):
 @router.post("/defense-results/generate")
 def generate_result(body: ResultGenerate, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
     """为席位生成/取回汇总记录(PENDING), 供预览与发布."""
-    a = db.get(DefenseAssignment, body.assignment_id)
-    if a is None:
-        raise ResourceNotFoundException("答辩席位不存在")
-    r = db.execute(select(DefenseResult).where(DefenseResult.assignment_id == a.id)).scalar_one_or_none()
+    a = _get_assignment_or_404(db, body.assignment_id)
+    s = load_session(db, a.session_id)
+    r = db.scalar(select(DefenseResult).where(DefenseResult.assignment_id == a.id).with_for_update())
     if r is None:
         r = DefenseResult(assignment_id=a.id, cycle_id=a.cycle_id,
-                          stage=db.get(DefenseSession, a.session_id).stage, status=ResultStatus.PENDING.value)
+                          stage=s.stage, status=ResultStatus.PENDING.value)
         db.add(r)
         db.flush()  # 取到主键; 状态变更随后交给状态机
     if r.status == ResultStatus.PENDING.value:
         # PENDING -> READY(internal 系统动作); 未复算的结论不允许发布
         calculate_result_flow(db, r.id, user)
     db.commit()
-    return ResponseUtil.success({"id": r.id, "status": r.status}, message="汇总记录已生成并完成复算")
+    return ResponseUtil.success({"id": r.id, "status": r.status, "status_cn": RESULT_STATUS_CN.get(r.status, r.status),
+                                 "score": r.score}, message="汇总记录已生成并完成复算")
 
 
 @router.post("/defense-results/{result_id}/calculate")
@@ -787,8 +795,7 @@ def preview_result(result_id: int, user: CurrentUser = Depends(require_admin), d
         raise ResourceNotFoundException("结论不存在")
     a = db.get(DefenseAssignment, r.assignment_id)
     s = db.get(DefenseSession, a.session_id)
-    cycle = db.get(GraduationCycle, a.cycle_id)
-    rubric = get_rubric_for(db, s, cycle)
+    rubric = assignment_rubric(db, a, s, r)
     if rubric is None:
         raise BusinessException("未配置启用的评分表")
     computed = compute_result(db, a, rubric)
@@ -800,7 +807,7 @@ def preview_result(result_id: int, user: CurrentUser = Depends(require_admin), d
         computed["valid_count"] >= rubric.min_examiners
         and computed["score"] is not None
         and computed["seat_attended"]
-        and s.status not in (SessionStatus.DRAFT.value, SessionStatus.CANCELLED.value)
+        and s.status in SCORING_SESSION_STATES
         and r.status in (ResultStatus.READY.value, ResultStatus.UNDER_REVIEW.value)
     )
     if r.score is not None:
@@ -920,12 +927,20 @@ def list_rubrics(academic_year: str | None = None, stage: str | None = None,
     } for r in rows])
 
 
+def _next_rubric_version(db: Session, body: RubricCreate) -> int:
+    last = db.scalar(select(ReviewRubric.version).where(
+        ReviewRubric.academic_year == body.academic_year, ReviewRubric.stage == body.stage,
+        ReviewRubric.college_id == body.college_id,
+    ).order_by(ReviewRubric.version.desc(), ReviewRubric.id.desc()).limit(1).with_for_update())
+    return (last or 0) + 1
+
+
 @rubric_router.post("")
 def create_rubric(body: RubricCreate, user: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
     _check_weights(body.weights)
     r = ReviewRubric(academic_year=body.academic_year, stage=body.stage, college_id=body.college_id,
                      min_examiners=body.min_examiners, pass_line=body.pass_line,
-                     weights_json=json.dumps(body.weights, ensure_ascii=False), enabled=0, version=1)
+                     weights_json=json.dumps(body.weights, ensure_ascii=False), enabled=0, version=_next_rubric_version(db, body))
     db.add(r)
     db.flush()
     db.add(OperationLog(user_id=user.id, username=user.username, module="DEFENSE", action="CREATE_RUBRIC",
@@ -944,15 +959,11 @@ def update_rubric(rubric_id: int, body: RubricCreate, user: CurrentUser = Depend
     if old.enabled == 1:
         raise BusinessException("已启用的评分表版本已冻结, 请创建新版本")
     _check_weights(body.weights)
-    max_version = db.execute(select(func.max(ReviewRubric.version)).where(
-        ReviewRubric.academic_year == old.academic_year, ReviewRubric.stage == old.stage,
-        ReviewRubric.college_id == old.college_id if old.college_id is not None else ReviewRubric.college_id.is_(None),
-    )).scalar() or 1
     old.enabled = 0
     new = ReviewRubric(academic_year=body.academic_year, stage=body.stage, college_id=body.college_id,
                        min_examiners=body.min_examiners, pass_line=body.pass_line,
                        weights_json=json.dumps(body.weights, ensure_ascii=False),
-                       enabled=0, version=max_version + 1)
+                       enabled=0, version=_next_rubric_version(db, body))
     db.add(new)
     db.flush()
     db.add(OperationLog(user_id=user.id, username=user.username, module="DEFENSE", action="UPDATE_RUBRIC",

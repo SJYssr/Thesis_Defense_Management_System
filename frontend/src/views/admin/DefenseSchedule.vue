@@ -5,6 +5,14 @@ import { defenseApi } from '@/api/defense'
 import { academicYearApi } from '@/api/common'
 
 const sessions = ref<any[]>([])
+const page = ref(1)
+const pageSize = 20
+const total = ref(0)
+const effectiveTotal = ref(0)
+let listSequence = 0
+const rescheduleVisible = ref(false)
+const rescheduling = ref(false)
+const changeForm = reactive({ startsAt: '', endsAt: '', reason: '' })
 const stats = ref<any>({})
 const query = reactive({ academic_year: '', stage: '', status: '' })
 const years = ref<string[]>([])
@@ -22,9 +30,22 @@ const STATUS_TYPE: Record<string, string> = {
   DRAFT: 'info', READY: 'warning', PUBLISHED: 'success', IN_PROGRESS: 'primary', FINISHED: 'info', CANCELLED: 'danger',
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  DRAFT: '草稿', READY: '待发布', PUBLISHED: '已发布', IN_PROGRESS: '进行中', FINISHED: '已结束', CANCELLED: '已取消',
+}
+
 async function load() {
-  const res = await defenseApi.adminList({ ...query, page: 1, page_size: 50 })
-  sessions.value = res.data.items || []
+  const sequence = ++listSequence
+  const res = await defenseApi.adminList({ ...query, page: page.value, page_size: pageSize })
+  if (sequence !== listSequence) return
+  sessions.value = res.data.items
+  total.value = res.data.total
+  effectiveTotal.value = res.data.effective_total
+}
+
+function search() {
+  page.value = 1
+  load()
 }
 
 async function loadStats() {
@@ -129,21 +150,41 @@ async function markSeat(a: any, status: string) {
   refreshDetailAndList(detail.value.id)
 }
 
+function openReschedule() {
+  changeForm.startsAt = detail.value.starts_at
+  changeForm.endsAt = detail.value.ends_at
+  changeForm.reason = ''
+  rescheduleVisible.value = true
+}
+
 async function reschedule() {
+  if (!changeForm.startsAt || !changeForm.endsAt || changeForm.startsAt >= changeForm.endsAt) {
+    ElMessage.warning('请填写开始和结束时间，结束时间须晚于开始时间')
+    return
+  }
+  if (!changeForm.reason.trim()) {
+    ElMessage.warning('请填写改期原因')
+    return
+  }
   const s = detail.value
-  const { value } = await ElMessageBox.prompt(
-    `输入新开始时间(ISO, 当前 ${s.starts_at?.slice(0, 16)})`, '改期', { inputValue: s.starts_at?.slice(0, 16) })
-  const { value: reason } = await ElMessageBox.prompt('变更原因(必填, 全员留痕并通知)', '改期原因', { inputPattern: /.+/, inputErrorMessage: '必填' })
-  await defenseApi.patch(s.id, { starts_at: value, revision: s.revision, change_reason: reason })
-  ElMessage.success('已改期并通知')
-  refreshDetailAndList(s.id)
+  rescheduling.value = true
+  try {
+    await defenseApi.patch(s.id, {
+      starts_at: changeForm.startsAt, ends_at: changeForm.endsAt,
+      revision: s.revision, change_reason: changeForm.reason.trim(),
+    })
+    rescheduleVisible.value = false
+    ElMessage.success('已改期并通知')
+    await refreshDetailAndList(s.id)
+  } finally {
+    rescheduling.value = false
+  }
 }
 
 async function refreshDetailAndList(id: number) {
   const res = await defenseApi.detail(id)
   detail.value = res.data
-  const list = await defenseApi.adminList({ ...query, page: 1, page_size: 50 })
-  sessions.value = list.data.items || []
+  await Promise.all([load(), loadStats()])
 }
 
 onMounted(async () => {
@@ -161,7 +202,7 @@ onMounted(async () => {
     <!-- 统计 -->
     <div class="stat-cards">
       <div class="stat-card" v-for="c in [
-        { label: '有效场次', value: sessions.filter(s => !['CANCELLED'].includes(s.status)).length },
+        { label: '有效场次', value: effectiveTotal },
         { label: '已排学生', value: stats.assigned_total ?? '—' },
         { label: '待评审席位', value: stats.pending_review ?? '—' },
         { label: '未分配评委场次', value: stats.sessions_no_examiner ?? '—' },
@@ -186,9 +227,9 @@ onMounted(async () => {
           <el-option label="开题答辩" value="OPENING" /><el-option label="中期答辩" value="MIDTERM" /><el-option label="终期答辩" value="FINAL" />
         </el-select>
         <el-select v-model="query.status" placeholder="全部状态" clearable style="width: 130px">
-          <el-option v-for="(cn, k) in STATUS_TYPE" :key="k" :label="cn" :value="k" />
+          <el-option v-for="(cn, k) in STATUS_LABEL" :key="k" :label="cn" :value="k" />
         </el-select>
-        <el-button type="primary" @click="load">查询</el-button>
+        <el-button type="primary" @click="search">查询</el-button>
       </div>
 
       <el-empty v-if="!sessions.length" description="当前学年暂无场次" />
@@ -213,18 +254,21 @@ onMounted(async () => {
           <el-button size="small" text type="primary" @click.stop="validate(s)">校验</el-button>
           <el-button v-if="['DRAFT', 'READY'].includes(s.status)" size="small" type="primary" @click.stop="publish(s)">发布</el-button>
           <el-button v-if="s.status === 'PUBLISHED'" size="small" type="success" @click.stop="startSession(s)">开始</el-button>
-          <el-button v-if="['PUBLISHED', 'IN_PROGRESS'].includes(s.status)" size="small" @click.stop="finishSession(s)">结束</el-button>
+          <el-button v-if="s.status === 'IN_PROGRESS'" size="small" @click.stop="finishSession(s)">结束</el-button>
         </div>
       </div>
     </div>
 
+    <el-pagination v-if="total > pageSize" v-model:current-page="page" :page-size="pageSize" :total="total"
+                   layout="prev, pager, next, total" @current-change="load" />
+
     <!-- 场次详情抽屉 -->
-    <el-drawer v-model="detailVisible" size="680px" :title="detail?.title || '场次详情'">
+    <el-drawer v-model="detailVisible" size="min(680px, 100vw)" :title="detail?.title || '场次详情'">
       <template v-if="detail">
         <div class="drawer-meta">
           <el-tag>{{ detail.stage_cn }}</el-tag>
           <el-tag :type="(STATUS_TYPE[detail.status] as any)">{{ detail.status_cn }}</el-tag>
-          <span>{{ detail.starts_at?.replace('T', ' ').slice(0, 16) }} ~ {{ detail.ends_at?.slice(11, 16) }}</span>
+          <span>{{ detail.starts_at?.replace('T', ' ').slice(0, 16) }} ~ {{ detail.ends_at?.replace('T', ' ').slice(0, 16) }}</span>
           <span>{{ detail.is_online ? '线上' : detail.location }}</span>
         </div>
         <div v-if="detail.online_link">线上链接：<el-link type="primary" :href="detail.online_link">{{ detail.online_link }}</el-link></div>
@@ -251,8 +295,8 @@ onMounted(async () => {
           </el-table-column>
           <el-table-column label="操作" width="150">
             <template #default="{ row }">
-              <el-button size="small" text type="success" @click="markSeat(row, 'ATTENDED')">到场</el-button>
-              <el-button size="small" text type="danger" @click="markSeat(row, 'ABSENT')">缺席</el-button>
+              <el-button v-if="['IN_PROGRESS', 'FINISHED'].includes(detail.status) && row.seat_status === 'SCHEDULED'" size="small" text type="success" @click="markSeat(row, 'ATTENDED')">到场</el-button>
+              <el-button v-if="detail.status === 'FINISHED' && row.seat_status === 'SCHEDULED'" size="small" text type="danger" @click="markSeat(row, 'ABSENT')">缺席</el-button>
               <el-button size="small" text type="warning" @click="markSeat(row, 'POSTPONED')">延期</el-button>
             </template>
           </el-table-column>
@@ -270,16 +314,31 @@ onMounted(async () => {
           <el-button @click="validate()">校验冲突</el-button>
           <el-button @click="addExaminer">添加评委</el-button>
           <el-button @click="assignStudents">排入学生</el-button>
-          <el-button v-if="detail.status === 'PUBLISHED'" type="warning" @click="reschedule">改期</el-button>
+          <el-button v-if="detail.status === 'PUBLISHED'" type="warning" @click="openReschedule">改期</el-button>
           <el-button v-if="['DRAFT', 'READY'].includes(detail.status)" type="primary" @click="publish()">发布场次</el-button>
           <el-button v-if="detail.status === 'PUBLISHED'" type="success" @click="startSession()">开始答辩</el-button>
-          <el-button v-if="['PUBLISHED', 'IN_PROGRESS'].includes(detail.status)" @click="finishSession()">结束答辩</el-button>
+          <el-button v-if="detail.status === 'IN_PROGRESS'" @click="finishSession()">结束答辩</el-button>
           <el-button v-if="!['CANCELLED', 'FINISHED'].includes(detail.status)" type="danger" plain @click="cancelSession(detail)">取消场次</el-button>
         </div>
       </template>
     </el-drawer>
 
-    <el-dialog v-model="createVisible" title="新建答辩场次" width="520px">
+    <el-dialog v-model="rescheduleVisible" title="答辩改期" width="min(520px, 94vw)">
+      <el-form label-width="90px">
+        <el-form-item label="开始时间">
+          <el-date-picker v-model="changeForm.startsAt" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" />
+        </el-form-item>
+        <el-form-item label="结束时间">
+          <el-date-picker v-model="changeForm.endsAt" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" />
+        </el-form-item>
+        <el-form-item label="改期原因"><el-input v-model="changeForm.reason" type="textarea" maxlength="500" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="rescheduleVisible = false">取消</el-button>
+        <el-button type="primary" :loading="rescheduling" @click="reschedule">保存并通知</el-button>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="createVisible" title="新建答辩场次" width="min(520px, 94vw)">
       <el-form label-width="90px">
         <el-form-item label="学年"><el-input v-model="createForm.academic_year" style="width: 200px" /></el-form-item>
         <el-form-item label="阶段">

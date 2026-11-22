@@ -146,7 +146,8 @@ onMounted(load)
                     :disabled="detail.my_score?.status === 'SUBMITTED'" style="margin-top: 10px" />
           <div class="foot-actions" v-if="detail.my_score?.status !== 'SUBMITTED'">
             <el-button @click="saveDraft">暂存草稿</el-button>
-            <el-button type="primary" :loading="submitting" @click="submit">正式提交(锁定)</el-button>
+            <el-button type="primary" :loading="submitting"
+                       :disabled="!['IN_PROGRESS', 'FINISHED'].includes(detail.session.status)" @click="submit">正式提交(锁定)</el-button>
           </div>
           <div v-else class="locked-tip">评分已提交锁定。如需修改，请申请管理员复核重开。</div>
         </template>

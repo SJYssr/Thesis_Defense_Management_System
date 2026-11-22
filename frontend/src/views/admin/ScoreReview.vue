@@ -9,6 +9,12 @@ const years = ref<string[]>([])
 const activeYear = ref('')
 const activeSession = ref<number | null>(null)
 const rows = ref<any[]>([])
+const page = ref(1)
+const pageSize = 20
+const sessionTotal = ref(0)
+let sessionsRequest = 0
+let resultsRequest = 0
+let previewRequest = 0
 const preview = ref<any | null>(null)
 const rubrics = ref<any[]>([])
 const rubricDialog = ref(false)
@@ -25,43 +31,62 @@ const RESULT_TYPE: Record<string, string> = {
 }
 
 async function loadSessions() {
-  const res = await defenseApi.adminList({ academic_year: activeYear.value || undefined, page: 1, page_size: 50 })
-  sessions.value = res.data.items || []
-  activeSession.value = sessions.value[0]?.id ?? null
+  const requestId = ++sessionsRequest
+  clearSelection()
+  const res = await defenseApi.adminList({ academic_year: activeYear.value || undefined, page: page.value, page_size: pageSize })
+  if (requestId !== sessionsRequest) return
+  sessions.value = res.data.items
+  sessionTotal.value = res.data.total
+  rubricForm.value.academic_year = activeYear.value
+  if (sessions.value[0]) await pickSession(sessions.value[0])
+}
+
+function clearSelection() {
+  resultsRequest++
+  previewRequest++
+  activeSession.value = null
   rows.value = []
   preview.value = null
-  rubricForm.value.academic_year = activeYear.value
-  if (activeSession.value) await loadResults()
+}
+
+function changeYear() {
+  page.value = 1
+  loadSessions()
 }
 
 async function loadResults() {
-  const res = await reviewApi.results(activeSession.value ?? undefined)
-  rows.value = res.data || []
+  if (!activeSession.value) return
+  const requestId = ++resultsRequest
+  previewRequest++
+  preview.value = null
+  const res = await reviewApi.results(activeSession.value)
+  if (requestId === resultsRequest) rows.value = res.data
 }
 
 async function pickSession(s: any) {
+  clearSelection()
   activeSession.value = s.id
   await loadResults()
 }
 
 async function doPreview(row: any) {
+  const requestId = ++previewRequest
+  preview.value = null
   if (!row.result) {
     const res = await reviewApi.generateResult(row.id)
-    row.result = { id: res.data.id, status: res.data.status }
+    if (requestId !== previewRequest) return
+    row.result = res.data
   }
   const res = await reviewApi.preview(row.result.id)
-  preview.value = res.data
+  if (requestId === previewRequest) preview.value = { ...res.data, student_name: row.student_name, student_no: row.student_no }
 }
 
 async function calculate(row: any) {
-  const resultId = row.result.id
-  const res = await reviewApi.calculate(resultId)
-  const score = res.data?.score
-  ElMessage.success(`已复算: ${score ?? '—'} 分 ${res.data?.decision === 'PASS' ? '通过' : res.data?.decision === 'FAIL' ? '不通过' : ''}`.trim())
+  const res = await reviewApi.calculate(row.result.id)
+  ElMessage.success(`已复算：${res.data?.score ?? '—'} 分`)
+  if (activeSession.value !== row.session_id) return
   await loadResults()
-  // 复算会改写分数与结论明细: 立刻按同一 result 重拉预览(复用 doPreview), 不再要求用户再点一次"复算预览"
-  const fresh = rows.value.find((r: any) => r.result?.id === resultId) || row
-  await doPreview(fresh)
+  if (activeSession.value === row.session_id) await doPreview(row)
 }
 
 async function publish(row: any) {
@@ -122,7 +147,7 @@ onMounted(async () => {
       <div class="tab-bar">
         <div class="tabs"><div class="tab active">成绩复核</div></div>
         <div class="tab-actions">
-          <el-select v-model="activeYear" style="width:140px" @change="loadSessions">
+          <el-select v-model="activeYear" style="width:140px" @change="changeYear">
             <el-option v-for="year in years" :key="year" :label="year" :value="year" />
           </el-select>
           <el-button @click="rubricListVisible = true">评分表版本</el-button>
@@ -137,6 +162,8 @@ onMounted(async () => {
             <b>{{ s.title || `场次#${s.id}` }}</b>
             <span class="muted">{{ s.stage_cn }} · {{ s.starts_at?.slice(5, 16).replace('T', ' ') }} · {{ s.status_cn }}</span>
           </div>
+          <el-pagination v-if="sessionTotal > pageSize" v-model:current-page="page" :page-size="pageSize" :total="sessionTotal"
+                         layout="prev, pager, next" :pager-count="5" @current-change="loadSessions" />
           <el-empty v-if="!sessions.length" description="暂无场次" :image-size="60" />
         </div>
 
@@ -159,7 +186,7 @@ onMounted(async () => {
             <el-table-column prop="result.score" label="成绩" width="70" />
             <el-table-column label="操作" width="300" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" text type="primary" @click="doPreview(row)">复算预览</el-button>
+                <el-button size="small" text type="primary" :disabled="!row.result && !row.score_count" @click="doPreview(row)">{{ row.result ? '复算预览' : '生成汇总' }}</el-button>
                 <el-button v-if="row.result && ['PENDING', 'WITHDRAWN'].includes(row.result.status)" size="small" text type="warning" @click="calculate(row)">复算结论</el-button>
                 <el-button v-if="row.result && ['READY', 'UNDER_REVIEW'].includes(row.result.status)" size="small" type="success" @click="publish(row)">发布</el-button>
                 <el-button v-if="row.result?.status === 'PUBLISHED'" size="small" type="warning" @click="withdraw(row)">撤回</el-button>
@@ -171,10 +198,10 @@ onMounted(async () => {
           <!-- 复算预览 -->
           <div v-if="preview" class="preview-card">
             <div class="preview-head">
-              <b>汇总复算（{{ preview.valid_count }}/{{ preview.min_required }} 份有效评分）</b>
+              <b>{{ preview.student_name }}（{{ preview.student_no }}）汇总复算（{{ preview.valid_count }}/{{ preview.min_required }} 份有效评分）</b>
               <el-tag v-if="preview.recompute_match === true" type="success" size="small">与发布成绩一致</el-tag>
               <el-tag v-if="preview.publishable" type="warning" size="small">可发布</el-tag>
-              <el-button text size="small" @click="preview = null">收起</el-button>
+              <el-button text size="small" @click="previewRequest++; preview = null">收起</el-button>
             </div>
             <div class="preview-body">
               <div v-for="(v, k) in preview.item_avg" :key="k" class="avg-row">{{ k }} 均分：<b>{{ v ?? '缺项' }}</b></div>
@@ -183,7 +210,7 @@ onMounted(async () => {
                   {{ preview.decision === 'PASS' ? '通过' : '不通过' }}
                 </el-tag>
               </div>
-              <div class="detail-note" v-if="!preview.publishable">
+              <div class="detail-note" v-if="!preview.publishable && preview.status !== 'PUBLISHED'">
                 未达发布条件：评委人数/评分完整性/到场状态需全部满足。
               </div>
             </div>

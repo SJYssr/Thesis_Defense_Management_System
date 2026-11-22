@@ -59,12 +59,14 @@ def mark_seat(db: Session, assignment: DefenseAssignment, target_status: str, ac
             f"转移表未定义席位动作「{target_status}」, 待扩展 SEAT.{target_status.lower()} 后才能使用",
             INVALID_TRANSITION,
         )
-    session = db.get(DefenseSession, assignment.session_id)
+    session = db.get(DefenseSession, assignment.session_id, with_for_update=True)
     if session is None:
         raise ResourceNotFoundException("场次不存在")
     if session.status not in SEAT_LIVE_SESSION_STATES:
         raise BusinessException(
             f"场次状态「{session.status}」不允许登记出席情况, 请先发布场次", INVALID_TRANSITION)
+    if action == "attend" and session.status == SessionStatus.PUBLISHED.value:
+        raise BusinessException("请先开始答辩，再登记到场", INVALID_TRANSITION)
     if action == "absent" and session.status != SessionStatus.FINISHED.value:
         raise BusinessException("场次结束后才能标记学生缺席", INVALID_TRANSITION)
     transition(db, SEAT, assignment, action, actor)

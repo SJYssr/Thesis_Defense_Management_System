@@ -195,6 +195,28 @@ def get_rubric_for(db: Session, session: DefenseSession, cycle: GraduationCycle 
     ).scalars().first()
 
 
+def assignment_rubric(db: Session, assignment: DefenseAssignment, session: DefenseSession,
+                      result: DefenseResult | None = None) -> ReviewRubric | None:
+    """结论以留档规则复算；尚未生成结论的席位沿用首份评审绑定的版本。"""
+    if result is None:
+        result = db.scalar(select(DefenseResult).where(DefenseResult.assignment_id == assignment.id))
+    if result is not None and result.rubric_snapshot:
+        try:
+            saved = json.loads(result.rubric_snapshot)
+            return ReviewRubric(id=saved.get("rubric_id"), version=saved["version"],
+                                weights_json=json.dumps(saved["weights"], ensure_ascii=False),
+                                pass_line=saved["pass_line"], min_examiners=saved["min_examiners"])
+        except (TypeError, KeyError, ValueError, AttributeError) as exc:
+            raise BusinessException("留存的评分表快照不完整，请核对历史结论") from exc
+    pinned = db.scalar(select(ReviewRubric).join(ExaminerScore, ExaminerScore.rubric_id == ReviewRubric.id)
+                       .where(ExaminerScore.assignment_id == assignment.id)
+                       .order_by(ExaminerScore.id).limit(1))
+    return pinned or get_rubric_for(db, session, db.get(GraduationCycle, assignment.cycle_id))
+
+
+SCORING_SESSION_STATES = (SessionStatus.IN_PROGRESS.value, SessionStatus.FINISHED.value)
+
+
 # ============ D35 评分复算: 单轨 / 可复现 / 舍入确定 ============
 # 权威精度 0.1 分; 发布分 = 精确分按 0.1 四舍五入后再取整(HALF_UP), 与 defense_result.score 列一致
 SCORE_EXP = Decimal("0.1")
@@ -525,6 +547,12 @@ def cancel_session(db: Session, session_id: int, actor, reason: str | None) -> D
     if not reason:
         raise BusinessException("取消场次必须填写原因", INVALID_TRANSITION)
     s = load_session(db, session_id)
+    published_result = db.scalar(select(DefenseResult.id)
+                                 .join(DefenseAssignment, DefenseAssignment.id == DefenseResult.assignment_id)
+                                 .where(DefenseAssignment.session_id == s.id,
+                                        DefenseResult.status == ResultStatus.PUBLISHED.value).limit(1).with_for_update())
+    if published_result is not None:
+        raise BusinessException("本场次已有发布的正式成绩，请先撤回成绩", INVALID_TRANSITION)
     transition(db, SESSION, s, "cancel", actor, comment=reason)
     s.revision = (s.revision or 0) + 1
     return s
@@ -553,18 +581,17 @@ def _recompute_progress(db: Session, cycle_id: int | None) -> None:
 
 def load_result(db: Session, result_id: int, for_update: bool = True) -> tuple:
     """载入结论及其席位/场次/评分表(发布与撤回都取行锁, 挡住并发双击)."""
-    r = (db.get(DefenseResult, result_id, with_for_update=True) if for_update
-         else db.get(DefenseResult, result_id))
+    r = db.get(DefenseResult, result_id)
     if r is None:
         raise ResourceNotFoundException("结论不存在")
     a = db.get(DefenseAssignment, r.assignment_id)
     if a is None:
         raise ResourceNotFoundException("答辩席位不存在")
-    s = db.get(DefenseSession, a.session_id)
-    if s is None:
-        raise ResourceNotFoundException("答辩场次不存在")
+    s = load_session(db, a.session_id, for_update=for_update)
+    if for_update:
+        r = db.get(DefenseResult, result_id, with_for_update=True)
     cycle = db.get(GraduationCycle, a.cycle_id)
-    return r, a, s, cycle, get_rubric_for(db, s, cycle)
+    return r, a, s, cycle, assignment_rubric(db, a, s, r)
 
 
 def _apply_result_payload(r: DefenseResult, computed: dict) -> None:
@@ -610,7 +637,7 @@ def publish_result(db: Session, result_id: int, actor) -> tuple[DefenseResult, d
     r, a, s, _cycle, rubric = load_result(db, result_id)
     if rubric is None:
         raise BusinessException("未配置启用的评分表")
-    if s.status in (SessionStatus.DRAFT.value, SessionStatus.CANCELLED.value):
+    if s.status not in SCORING_SESSION_STATES:
         raise BusinessException(
             f"场次状态「{SESSION_STATUS_CN.get(s.status, s.status)}」不允许发布结论", INVALID_TRANSITION)
     computed = compute_result(db, a, rubric)
