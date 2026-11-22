@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FileDownload from '@/components/FileDownload.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { reviewApi } from '@/api/defense'
@@ -129,7 +130,7 @@ onMounted(load)
           <div v-if="detail.materials.graduation_files?.length">
             <b>毕业材料文件</b>
             <div v-for="f in detail.materials.graduation_files" :key="f.file_id" class="field-row">
-              <el-link type="primary" :href="f.url" target="_blank">{{ f.original_name }}</el-link>
+              <FileDownload :file-id="f.file_id" :filename="f.original_name">{{ f.original_name }}</FileDownload>
             </div>
           </div>
         </div>

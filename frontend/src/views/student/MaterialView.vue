@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FileDownload from '@/components/FileDownload.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { materialApi } from '@/api/business'
@@ -159,7 +160,7 @@ onMounted(() => {
           <button type="button" class="upload-control" :disabled="view?.can_edit === false || uploading"><el-icon><Upload /></el-icon> {{ uploading ? '正在上传…' : `点击上传${t.label}文件` }}</button>
         </el-upload>
         <div v-for="f in (view?.files || []).filter((x: any) => x.material_type === t.value)" :key="f.id" class="file-row">
-          <el-icon><Document /></el-icon><a :href="f.url" target="_blank" rel="noopener" class="file-name">{{ f.original_name }}</a>
+          <el-icon><Document /></el-icon><FileDownload :file-id="f.file_id" :filename="f.original_name" class="file-name">{{ f.original_name }}</FileDownload>
           <small>{{ (f.size / 1024 / 1024).toFixed(2) }}MB</small>
           <el-button v-if="view?.can_edit" link type="danger" @click="removeFile(f)">删除</el-button>
         </div>

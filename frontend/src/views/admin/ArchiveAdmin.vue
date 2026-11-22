@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FileDownload from '@/components/FileDownload.vue'
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { archiveApi } from '@/api/defense'
@@ -179,7 +180,7 @@ onMounted(async () => {
           <el-table-column prop="original_name" label="文件" min-width="180" />
           <el-table-column prop="sha256" label="SHA256" width="110" show-overflow-tooltip />
           <el-table-column label="下载" width="70">
-            <template #default="{ row }"><el-link type="primary" :href="row.url" target="_blank">下载</el-link></template>
+            <template #default="{ row }"><FileDownload :file-id="row.id" :filename="row.original_name" archive /></template>
           </el-table-column>
         </el-table>
       </template>
