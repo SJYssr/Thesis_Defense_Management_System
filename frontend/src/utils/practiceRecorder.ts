@@ -19,52 +19,45 @@ function pcmWave(samples: Int16Array): Blob {
   return new Blob([header, new Int16Array(samples).buffer], { type: 'audio/wav' })
 }
 
-export async function recordAnswer(maxSeconds: number, signal: AbortSignal, ready: (finish: () => void) => void): Promise<Blob> {
+/** The room owns the MediaStream and unlocked AudioContext for its entire visit. */
+export async function recordAnswer(stream: MediaStream, context: AudioContext, maxSeconds: number,
+                                   signal: AbortSignal, ready: () => void): Promise<Blob | null> {
   signal.throwIfAborted()
-  const context = new AudioContext()
-  const resumed = context.resume().catch(() => {})
-  const base = new URL(import.meta.env.BASE_URL, window.location.origin)
-  let stream: MediaStream | undefined
-  let recorder: AudioWorkletNode | undefined
-  let timeout: ReturnType<typeof setTimeout> | undefined
-  const release = () => {
-    stream?.getTracks().forEach(track => { track.onended = null; track.stop() })
-    recorder?.disconnect()
-    if (context.state !== 'closed') void context.close().catch(() => {})
-  }
-  signal.addEventListener('abort', release, { once: true })
+  if (context.state !== 'running') throw new Error('录音设备尚未就绪')
+  const base = new URL(import.meta.env.BASE_URL, location.origin)
+  await context.audioWorklet.addModule(new URL('practice-audio/recorder.js', base))
+  signal.throwIfAborted()
+  const track = stream.getAudioTracks()[0]
+  if (!track || track.readyState !== 'live') throw new Error('麦克风连接已中断')
+  const source = context.createMediaStreamSource(stream)
+  const node = new AudioWorkletNode(context, 'practice-answer-recorder', {
+    channelCount: 1, channelCountMode: 'explicit', processorOptions: { maxSeconds },
+  })
+  let watchdog: ReturnType<typeof setTimeout> | undefined
+  let rejectCapture: (error: Error) => void
+  const aborted = () => rejectCapture(new DOMException('Aborted', 'AbortError'))
+  const lost = () => rejectCapture(new Error('麦克风连接已中断'))
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true }, video: false })
-    signal.throwIfAborted()
-    await context.audioWorklet.addModule(new URL('practice-audio/recorder.js', base))
-    await resumed
-    signal.throwIfAborted()
-    if (context.state !== 'running') throw new Error('录音设备未启动，请重新开启语音作答。')
-    const node = new AudioWorkletNode(context, 'practice-answer-recorder', {
-      channelCount: 1, channelCountMode: 'explicit', processorOptions: { maxSeconds },
-    })
-    recorder = node
-    context.createMediaStreamSource(stream).connect(node)
-    node.connect(context.destination) // The processor's output is silent.
-    const track = stream.getAudioTracks()[0]
-    if (!track || track.readyState === 'ended') throw new Error('麦克风连接已中断。')
-    return await new Promise<Blob>((resolve, reject) => {
-      const aborted = () => reject(new DOMException('Aborted', 'AbortError'))
+    return await new Promise<Blob | null>((resolve, reject) => {
+      rejectCapture = reject
       signal.addEventListener('abort', aborted, { once: true })
-      const finish = () => node.port.postMessage('finish')
-      track.onended = () => reject(new Error('麦克风连接已中断。'))
-      node.onprocessorerror = () => reject(new Error('录音处理失败。'))
+      track.addEventListener('ended', lost, { once: true })
+      node.onprocessorerror = () => reject(new Error('录音处理失败'))
       node.port.onmessage = ({ data }) => {
-        signal.removeEventListener('abort', aborted)
-        if (!(data instanceof Int16Array) || data.length < 1600) reject(new Error('录音太短，请重新作答。'))
-        else resolve(pcmWave(data))
+        if (!(data instanceof Int16Array)) { reject(new Error('录音处理失败')); return }
+        resolve(data.length ? pcmWave(data) : null)
       }
-      timeout = setTimeout(finish, maxSeconds * 1000)
-      ready(finish)
+      watchdog = setTimeout(() => reject(new Error('录音设备超时')), (maxSeconds + 45) * 1000)
+      source.connect(node)
+      node.connect(context.destination) // The processor outputs silence.
+      ready()
     })
   } finally {
-    clearTimeout(timeout)
-    signal.removeEventListener('abort', release)
-    release()
+    signal.removeEventListener('abort', aborted)
+    track.removeEventListener('ended', lost)
+    clearTimeout(watchdog)
+    source.disconnect()
+    node.disconnect()
+    node.port.close()
   }
 }

@@ -1,5 +1,9 @@
+import type { AxiosRequestConfig } from 'axios'
 import request from './request'
 import { clampPageSize, type AiDocument, type AiDocumentType, type ApiEnvelope, type PageResult, type PracticeMaterialKind, type UploadPolicy, type UploadResult } from '@/types/api'
+
+// The live room handles failures through its own accessible audio/video controls.
+const oralRequest: AxiosRequestConfig & { _silent: boolean } = { _silent: true }
 
 export const aiApi = {
   /**
@@ -25,16 +29,16 @@ export const aiApi = {
     body.append('file', file)
     return request.post('/ai/defense/materials', body, { params: { kind } })
   },
-  generateQuestions: (documentIds: number[], questionCount: number) =>
-    request.post('/ai/defense/questions/generate', { document_ids: documentIds, question_count: questionCount }),
+  generateQuestions: (questionCount: number) =>
+    request.post('/ai/defense/questions/generate', { question_count: questionCount }, { ...oralRequest, timeout: 240000 }),
   createSession: (questionCount: number, questionIds?: number[]) =>
-    request.post(`/ai/defense/sessions?question_count=${questionCount}`, questionIds ? { question_ids: questionIds } : undefined),
-  startSession: (id: number) => request.post(`/ai/defense/sessions/${id}/start`),
+    request.post(`/ai/defense/sessions?question_count=${questionCount}`, questionIds ? { question_ids: questionIds } : undefined, oralRequest),
+  startSession: (id: number) => request.post(`/ai/defense/sessions/${id}/start`, undefined, oralRequest),
   answer: (id: number, data: { question: string; answer: string }) =>
-    request.post(`/ai/defense/sessions/${id}/answer`, data),
-  next: (id: number) => request.post(`/ai/defense/sessions/${id}/next`),
+    request.post(`/ai/defense/sessions/${id}/answer`, data, oralRequest),
+  next: (id: number) => request.post(`/ai/defense/sessions/${id}/next`, undefined, oralRequest),
   sessions: () => request.get('/ai/defense/sessions'),
-  sessionDetail: (id: number) => request.get(`/ai/defense/sessions/${id}`),
+  sessionDetail: (id: number) => request.get(`/ai/defense/sessions/${id}`, oralRequest),
   report: (id: number) => request.get(`/ai/defense/sessions/${id}/report`),
   pptOutline: () => request.post('/ai/ppt-outline/generate'),
   exportPptx: (data: unknown) => request.post('/ai/ppt-outline/export', data, { responseType: 'blob' }),

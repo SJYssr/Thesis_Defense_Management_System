@@ -23,7 +23,7 @@ export function speechPhrases(text: string): string[] {
     .filter(part => part.trim())
 }
 
-async function activeContext(signal: AbortSignal): Promise<AudioContext> {
+export async function activeContext(signal: AbortSignal): Promise<AudioContext> {
   signal.throwIfAborted()
   const context = audioContext
   if (context && context.state !== 'running' && activation) {
@@ -68,10 +68,11 @@ export async function playOfflineSpeech(text: string, signal: AbortSignal, onSta
   const worker = new Worker(new URL('practice-voice/worker.js', base), { type: 'module' })
   let source: AudioBufferSourceNode | null = null
   let timer: ReturnType<typeof setTimeout>
+  let abort: (() => void) | undefined
   try {
     await new Promise<void>((resolve, reject) => {
       const fail = () => reject(new Error('offline voice unavailable'))
-      const abort = () => resolve()
+      abort = () => resolve()
       signal.addEventListener('abort', abort, { once: true })
       const next = () => {
         const phrase = phrases.shift()
@@ -101,8 +102,49 @@ export async function playOfflineSpeech(text: string, signal: AbortSignal, onSta
     })
   } finally {
     clearTimeout(timer!)
+    if (abort) signal.removeEventListener('abort', abort)
     worker.terminate()
     const playing = source as AudioBufferSourceNode | null
     if (playing) { playing.onended = null; playing.stop(); playing.disconnect() }
+  }
+}
+
+/** Wait for actual playback completion before the room starts capturing the answer. */
+async function nativePhrase(phrase: string, voice: SpeechSynthesisVoice, signal: AbortSignal, onStart?: () => void) {
+  signal.throwIfAborted()
+  const synth = window.speechSynthesis
+  const utterance = new SpeechSynthesisUtterance(phrase)
+  utterance.voice = voice
+  utterance.lang = voice.lang
+  await new Promise<void>((resolve, reject) => {
+    const settle = (error?: Error) => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', cancel)
+      utterance.onend = utterance.onerror = utterance.onstart = null
+      if (error) { synth.cancel(); reject(error) }
+      else resolve()
+    }
+    const cancel = () => settle(new DOMException('Aborted', 'AbortError'))
+    let timer = setTimeout(() => settle(new Error('未能启动朗读')), 5000)
+    signal.addEventListener('abort', cancel, { once: true })
+    utterance.onstart = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => settle(new Error('朗读已中断')), 90000)
+      onStart?.()
+    }
+    utterance.onend = () => settle()
+    utterance.onerror = () => settle(new Error('设备朗读失败'))
+    try { synth.speak(utterance) } catch { settle(new Error('设备朗读失败')) }
+  })
+}
+
+export async function speakLocally(text: string, signal: AbortSignal, onStart?: () => void): Promise<void> {
+  const voice = window.speechSynthesis?.getVoices().find(v => v.localService && /^(zh|cmn)/i.test(v.lang))
+  for (const phrase of speechPhrases(text)) {
+    signal.throwIfAborted()
+    if (voice && window.SpeechSynthesisUtterance) {
+      try { await nativePhrase(phrase, voice, signal, onStart); continue } catch { signal.throwIfAborted() }
+    }
+    await playOfflineSpeech(phrase, signal, onStart)
   }
 }
