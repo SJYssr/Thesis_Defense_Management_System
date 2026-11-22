@@ -78,6 +78,21 @@ class SelectionWindowTest(unittest.TestCase):
         self.db.commit()
         return s
 
+    def test_referenced_year_keeps_its_windows(self):
+        from app.models.business import GraduationCycle
+        from app.modules.schedule.router import ScheduleBody, update_schedule
+
+        schedule = self._schedule(end=datetime.now() - timedelta(days=10))
+        self.db.add(GraduationCycle(id=1, student_id=1, academic_year=schedule.academic_year))
+        self.db.commit()
+        original_end = schedule.selection_end
+        with self.assertRaises(BusinessException) as ctx:
+            update_schedule(schedule.id, ScheduleBody(academic_year="2026-2027", is_active=True),
+                            SimpleNamespace(id=1, username="admin"), self.db)
+        self.assertEqual(ctx.exception.code, 40900)
+        self.db.refresh(schedule)
+        self.assertEqual((schedule.academic_year, schedule.selection_end), ("2025-2026", original_end))
+
     def test_no_schedule_passes(self):
         ProgressService.ensure_selection_window_open(self.db)
 

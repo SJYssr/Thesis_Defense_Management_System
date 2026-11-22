@@ -10,14 +10,15 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import BusinessException, ResourceNotFoundException
 from app.core.permissions import CurrentUser, get_current_user, require_admin
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
-from app.models.business import GraduationSchedule
+from app.models.business import GraduationCycle, GraduationSchedule
+from app.models.defense import DefenseSession, ReviewRubric, StageTask
 from app.models.system import OperationLog
 from app.shared.query import paginate
 
@@ -26,6 +27,7 @@ admin_router = APIRouter(prefix="/admin/academic-schedules", tags=["Schedule-Adm
 
 STAGES = ("selection", "opening", "midterm", "final", "material")
 STAGE_LABELS = {"selection": "选题", "opening": "开题", "midterm": "中期", "final": "终期", "material": "毕业材料"}
+YEAR_REFERENCES = (GraduationCycle, DefenseSession, ReviewRubric, StageTask)
 WINDOW_KEYS = [f"{stage}_{side}" for stage in STAGES for side in ("start", "end")]
 
 
@@ -110,13 +112,11 @@ def active_schedule(user: CurrentUser = Depends(get_current_user), db: Session =
 @router.get("/years")
 def academic_year_options(user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     """已配置及有业务记录的学年；三角色共用，不暴露学生或成绩。"""
-    from app.models.business import GraduationCycle
-    from app.models.defense import DefenseSession, ReviewRubric, StageTask
     from app.shared.cycle import academic_year_for
 
     active = academic_year_for(db)
     years = {active}
-    for model in (GraduationSchedule, GraduationCycle, DefenseSession, ReviewRubric, StageTask):
+    for model in (GraduationSchedule, *YEAR_REFERENCES):
         years.update(year for year in db.execute(select(model.academic_year).distinct()).scalars() if year)
     return ResponseUtil.success({"active_year": active, "years": sorted(years, reverse=True)})
 
@@ -158,6 +158,11 @@ def update_schedule(schedule_id: int, body: ScheduleBody, user: CurrentUser = De
         GraduationSchedule.id != schedule_id)).scalar_one_or_none()
     if conflict is not None:
         raise BusinessException(f"学年 {body.academic_year} 的配置已存在", 40002)
+    if schedule.academic_year != body.academic_year:
+        in_use = or_(*(select(model.id).where(model.academic_year == schedule.academic_year).exists()
+                       for model in YEAR_REFERENCES))
+        if db.scalar(select(in_use)):
+            raise BusinessException("该学年已有业务记录，不能改名。换届请新建学年配置。", 40900)
     schedule.academic_year = body.academic_year
     schedule.is_active = 1 if body.is_active else 0
     _set_windows(schedule, body.windows, user, db, "UPDATE_SCHEDULE")
