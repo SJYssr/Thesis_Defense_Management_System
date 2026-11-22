@@ -147,6 +147,12 @@ check("开始答辩返回第一题", r.json()["code"] == 0 and first.get("questi
 check("开场问题带有可读的材料出处", any(c.get("excerpt") and c.get("document_name") for c in first.get("sources", [])))
 print("    第一题:", first["question"][:60])
 
+observations_url = f"{BASE}/ai/defense/sessions/{session_id}/observations"
+snapshot = {"run_id": "00000000-0000-4000-8000-000000000001", "no_face": 1, "multiple_faces": 0, "tab_hidden": 2}
+check("仅本人可保存练习环境提醒", client.put(observations_url, headers=auth(s6), json=snapshot).status_code == 404)
+for _ in range(2):
+    check("重传环境统计成功", client.put(observations_url, headers=auth(s1), json=snapshot).status_code == 200)
+
 nxt: dict = {}
 for i in range(6):
     q = first["question"] if i == 0 else nxt["question"]
@@ -165,6 +171,9 @@ for i in range(6):
 
 r = client.get(f"{BASE}/ai/defense/sessions/{session_id}/report", headers=auth(s1))
 check("获取答辩报告", r.json()["code"] == 0 and r.json()["data"].get("overall_score") is not None, r.text[:200])
+
+check("复盘能读回环境提醒，重复上报不增加次数",
+      r.json()["data"]["observation_counts"] == {"no_face": 1, "multiple_faces": 0, "tab_hidden": 2})
 
 print("== 8. PPT大纲 / 进度分析 / SSE ==")
 r = client.post(f"{BASE}/ai/ppt-outline/generate", headers=auth(s1))

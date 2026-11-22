@@ -1,114 +1,120 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-const props = defineProps<{ question: string; canDictate: boolean }>()
-const emit = defineEmits<{ transcript: [text: string] }>()
+import request from '@/api/request'
+import PracticeAnswerInput from '@/components/PracticeAnswerInput.vue'
+import { playQuestionAudio, playOfflineSpeech, primePracticeVoice, releasePracticeVoice, speechPhrases } from '@/utils/practiceVoice'
 
-// Web Speech 转写接口在部分浏览器中仅带 webkit 前缀。
-interface Dictation {
-  lang: string
-  continuous: boolean
-  interimResults: boolean
-  onresult: ((event: { resultIndex: number; results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null
-  onerror: ((event: { error: string }) => void) | null
-  onend: (() => void) | null
-  start(): void
-  stop(): void
-  abort(): void
-}
-type SpeechWindow = Window & {
-  SpeechRecognition?: new () => Dictation
-  webkitSpeechRecognition?: new () => Dictation
-}
+const props = defineProps<{ question: string; sessionId: number; turnNo: number; turnKey: string; canDictate: boolean; autoRead: boolean }>()
+const emit = defineEmits<{ transcript: [text: string]; submitTranscript: []; 'update:autoRead': [enabled: boolean] }>()
 
 const synth = window.speechSynthesis
-const speechWindow = window as SpeechWindow
-const Recognizer = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition
+const answerInput = ref<InstanceType<typeof PracticeAnswerInput> | null>(null)
 const canUseCamera = Boolean(navigator.mediaDevices?.getUserMedia)
 const voices = ref<SpeechSynthesisVoice[]>([])
-const voice = computed(() => voices.value.find(v => v.localService && /^zh/i.test(v.lang)))
+const voice = computed(() => {
+  const local = voices.value.filter(v => v.localService)
+  return local.find(v => /^(zh[-_](CN|Hans)|cmn)/i.test(v.lang))
+    || local.find(v => /^zh(?:$|[-_](TW|SG|Hant))/i.test(v.lang))
+})
 const speaking = ref(false)
-const dictating = ref(false)
+const voiceStatus = ref('')
+let cachedQuestionAudio: Blob | null = null
 const cameraPending = ref(false)
 const cameraOn = ref(false)
 const camera = ref<HTMLVideoElement | null>(null)
 const message = ref('')
 let speech: SpeechSynthesisUtterance | null = null
-let recognition: Dictation | null = null
+let playback: AbortController | null = null
+let readTurn = ''
 let stream: MediaStream | null = null
 let cameraRequest = 0
 
 function loadVoices() { voices.value = synth?.getVoices() || [] }
 
 function stopSpeech() {
-  if (!speech) return
-  speech.onend = null
-  speech.onerror = null
-  speech = null
+  playback?.abort()
+  playback = null
   speaking.value = false
-  synth.cancel()
-}
-
-function readQuestion() {
-  if (speaking.value) { stopSpeech(); return }
-  if (!voice.value || !props.question) return
-  abortDictation()
-  message.value = ''
-  speech = new SpeechSynthesisUtterance(props.question)
-  speech.lang = voice.value.lang
-  speech.voice = voice.value
-  speech.onend = () => { speaking.value = false; speech = null }
-  speech.onerror = () => {
-    speaking.value = false
+  if (voiceStatus.value === '正在生成题目语音…') voiceStatus.value = ''
+  if (speech) {
+    speech.onend = speech.onerror = null
     speech = null
-    message.value = '朗读未完成，可以重试或阅读上方题目。'
+    synth.cancel()
   }
-  speaking.value = true
-  synth.speak(speech)
 }
 
-function abortDictation() {
-  if (!recognition) return
-  const current = recognition
-  recognition = null
-  current.onresult = current.onerror = current.onend = null
-  current.abort()
-  dictating.value = false
-}
-
-function toggleDictation() {
-  if (!Recognizer || !props.canDictate) return
-  if (recognition) { recognition.stop(); return }
-  stopSpeech()
+async function readQuestion() {
+  if (speaking.value) { stopSpeech(); return }
+  if (!props.question || document.hidden) return
+  readTurn = props.turnKey
+  answerInput.value?.cancel()
+  const attempt = new AbortController()
+  playback = attempt
   message.value = ''
-  const current = new Recognizer()
-  recognition = current
-  current.lang = 'zh-CN'
-  current.continuous = true
-  current.interimResults = false
-  current.onresult = event => {
-    if (!props.canDictate || recognition !== current) return
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const result = event.results[i]
-      if (result?.isFinal && result[0].transcript) emit('transcript', result[0].transcript)
-    }
-  }
-  current.onerror = event => {
-    if (event.error === 'aborted') return
-    message.value = event.error === 'not-allowed'
-      ? '麦克风权限未开启，可继续输入文字。'
-      : '语音转写未完成，可继续输入文字或重新开启。'
-  }
-  current.onend = () => {
-    if (recognition === current) { recognition = null; dictating.value = false }
+  speaking.value = true
+  voiceStatus.value = '正在生成题目语音…'
+  const complete = () => {
+    if (playback === attempt) { playback = null; speaking.value = false; speech = null }
   }
   try {
-    current.start()
-    dictating.value = true
+    const options = { responseType: 'blob' as const, _silent: true, signal: attempt.signal, timeout: 70000 }
+    const audio = cachedQuestionAudio || await request.get<Blob, Blob>(
+      `/ai/defense/sessions/${props.sessionId}/turns/${props.turnNo}/speech`, options)
+    attempt.signal.throwIfAborted()
+    await playQuestionAudio(audio, attempt.signal, () => {
+      cachedQuestionAudio = audio
+      voiceStatus.value = '语音来源：自托管语音模型'
+    })
+    complete()
+    return
   } catch {
-    abortDictation()
-    message.value = '无法启动麦克风，可继续输入文字。'
+    if (attempt.signal.aborted) return
   }
+  const offline = async (text: string) => {
+    try {
+      await playOfflineSpeech(text, attempt.signal, () => { voiceStatus.value = '语音来源：本机离线普通话' })
+    }
+    catch (err) {
+      if (attempt.signal.aborted) return
+      voiceStatus.value = ''
+      message.value = err instanceof Error && err.message === 'activation'
+        ? '浏览器需要你先点击「朗读题目」开启声音。'
+        : '离线语音未能播放，请检查声音设置后点击「朗读题目」重试。'
+    } finally { complete() }
+  }
+
+  const native = voice.value
+  const phrases = speechPhrases(props.question)
+  if (!native || !window.SpeechSynthesisUtterance) { void offline(props.question); return }
+  const next = () => {
+    if (attempt.signal.aborted) return
+    const phrase = phrases.shift()
+    if (phrase === undefined) { complete(); return }
+    speech = new SpeechSynthesisUtterance(phrase)
+    speech.lang = native.lang
+    speech.voice = native
+    speech.onstart = () => { if (!attempt.signal.aborted) voiceStatus.value = '语音来源：设备中文语音' }
+    speech.onend = next
+    const fallback = () => {
+      if (attempt.signal.aborted) return
+      speech = null
+      void offline(phrase + phrases.join(''))
+    }
+    speech.onerror = fallback
+    try { synth.speak(speech) } catch { fallback() }
+  }
+  next()
+}
+
+function manualRead() {
+  primePracticeVoice()
+  readQuestion()
+}
+
+function changeAutoRead(enabled: boolean) {
+  if (enabled) primePracticeVoice()
+  emit('update:autoRead', enabled)
 }
 
 function stopCamera() {
@@ -147,18 +153,36 @@ async function toggleCamera() {
   }
 }
 
-function stopDevices() { stopSpeech(); abortDictation(); stopCamera() }
+function requestCamera() {
+  if (!cameraOn.value && !cameraPending.value) void toggleCamera()
+}
+
+function stopDevices() { stopSpeech(); answerInput.value?.cancel(); stopCamera() }
 function onVisibility() { if (document.hidden) stopDevices() }
-watch(() => props.question, () => { stopSpeech(); abortDictation(); message.value = '' })
-watch(() => props.canDictate, allowed => { if (!allowed) abortDictation() })
+watch(() => props.turnKey, () => {
+  stopSpeech(); answerInput.value?.cancel(); message.value = ''
+  cachedQuestionAudio = null
+  voiceStatus.value = ''
+})
+watch(() => props.canDictate, allowed => { if (!allowed) { answerInput.value?.cancel(); stopSpeech() } })
+watch(() => props.autoRead, enabled => {
+  if (!enabled) stopSpeech()
+  else readTurn = speaking.value ? props.turnKey : ''
+})
+function autoReadIfReady() {
+  if (props.autoRead && props.canDictate && props.turnKey !== readTurn && !document.hidden) readQuestion()
+}
+watch(() => [props.turnKey, props.autoRead, props.canDictate], autoReadIfReady, { flush: 'post' })
 onMounted(() => {
   loadVoices()
+  autoReadIfReady()
   synth?.addEventListener('voiceschanged', loadVoices)
   document.addEventListener('visibilitychange', onVisibility)
   window.addEventListener('pagehide', stopDevices)
 })
 onBeforeUnmount(() => {
   stopDevices()
+  releasePracticeVoice()
   synth?.removeEventListener('voiceschanged', loadVoices)
   document.removeEventListener('visibilitychange', onVisibility)
   window.removeEventListener('pagehide', stopDevices)
@@ -168,19 +192,21 @@ onBeforeUnmount(() => {
 <template>
   <div class="practice-media">
     <div class="tools">
-      <el-button size="small" :disabled="!voice" :aria-pressed="speaking" @click="readQuestion">{{ speaking ? '停止朗读' : '朗读题目' }}</el-button>
-      <el-button v-if="canDictate" size="small" :disabled="!Recognizer" :aria-pressed="dictating" @click="toggleDictation">{{ dictating ? '停止转写' : '语音输入' }}</el-button>
+      <el-switch :model-value="autoRead" aria-label="连续语音提问" active-text="连续语音提问" @update:model-value="changeAutoRead($event === true)" />
+      <el-button size="small" :aria-pressed="speaking" @click="manualRead">{{ speaking ? '停止朗读' : '朗读题目' }}</el-button>
       <el-button size="small" :disabled="!canUseCamera" :aria-pressed="cameraOn" @click="toggleCamera">{{ cameraPending ? '取消开启' : cameraOn ? '关闭摄像头' : '预览摄像头' }}</el-button>
     </div>
-    <p v-if="!voice">设备未提供本地中文朗读声音。</p>
-    <p v-if="canDictate && Recognizer">语音输入使用浏览器转写服务，音频可能由服务商处理。转写文字可编辑，点击提交后才用于评价。</p>
-    <p v-else-if="canDictate">当前浏览器未提供语音转写，可在下方输入回答。</p>
+    <p v-if="voiceStatus" role="status">{{ voiceStatus }} <a v-if="voiceStatus === '语音来源：本机离线普通话'" href="/practice-voice/NOTICE.txt" target="_blank" rel="noopener">语音组件来源与许可</a></p>
+    <PracticeAnswerInput ref="answerInput" :session-id="sessionId" :turn-no="turnNo" :can-dictate="canDictate"
+                         @recording-start="stopSpeech" @transcript="emit('transcript', $event)"
+                         @submit-transcript="emit('submitTranscript')" />
     <p v-if="!canUseCamera">摄像头需要支持视频采集的浏览器及 HTTPS 或本机地址。</p>
     <p v-else-if="cameraPending" role="status">等待摄像头授权…</p>
     <figure v-if="cameraOn">
       <video ref="camera" autoplay muted playsinline aria-label="本机摄像头预览" />
       <figcaption>本机镜头预览，仅供练习仪态。画面不录制、不上传。</figcaption>
     </figure>
+    <slot name="observation" :video="camera" :request-camera="requestCamera" :release-camera="stopCamera" />
     <p v-if="message" role="status" class="device-message">{{ message }}</p>
   </div>
 </template>

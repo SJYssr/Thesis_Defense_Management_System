@@ -4,7 +4,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { aiApi, listKnowledgeMaterials, uploadApi } from '@/api/common'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
+import { createObservationRecorder, syncObservations, type ObservationSignal } from '@/api/practiceObservations'
+import { useUserStore } from '@/stores/user'
+import { primePracticeVoice } from '@/utils/practiceVoice'
+import PracticeObservation from '@/components/PracticeObservation.vue'
 import PracticeMedia from '@/components/PracticeMedia.vue'
+import PracticeAssessment from '@/components/PracticeAssessment.vue'
 import PracticeSources from '@/components/PracticeSources.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import type { AiDocument, PracticeMaterialKind, UploadPolicy, PracticeQuestion, PracticeSession, PracticeTurn } from '@/types/api'
@@ -28,6 +33,31 @@ const questions = ref<(PracticeQuestion & { id: number })[]>([])
 const questionCount = ref(8)
 const sessionId = ref<number | null>(null)
 const sessionCount = ref(0)
+const userStore = useUserStore()
+const voicePreference = `practice-auto-read:${userStore.user?.id ?? ''}`
+const autoRead = ref(true)
+try { autoRead.value = sessionStorage.getItem(voicePreference) !== 'off' } catch { /* Use the visible default. */ }
+function setAutoRead(enabled: boolean) {
+  autoRead.value = enabled
+  try { sessionStorage.setItem(voicePreference, enabled ? 'on' : 'off') } catch { /* Keep this page's preference. */ }
+  if (enabled) void primePracticeVoice()
+}
+const observationSyncFailed = ref(false)
+let recorder: ReturnType<typeof createObservationRecorder> | null = null
+let observationRequest = 0
+
+async function syncDeviceObservations(signal?: ObservationSignal) {
+  const id = sessionId.value
+  const owner = userStore.user?.id
+  if (!id || !owner) return
+  const request = ++observationRequest
+  if (signal && !recorder) recorder = createObservationRecorder(owner, id)
+  const saved = signal && recorder ? await recorder(signal) : await syncObservations(owner, id)
+  if (sessionId.value === id && observationRequest === request) observationSyncFailed.value = !saved
+}
+function onOnline() { void syncDeviceObservations() }
+onMounted(() => window.addEventListener('online', onOnline))
+onBeforeUnmount(() => window.removeEventListener('online', onOnline))
 const turns = ref<PracticeTurn[]>([])
 const answer = ref('')
 const busy = ref(false)
@@ -132,7 +162,12 @@ async function previewQuestions() {
 }
 
 function showTurns(sid: number, count: number, values: PracticeTurn[]) {
+  if (sessionId.value !== sid) {
+    recorder = null
+    observationSyncFailed.value = false
+  }
   sessionId.value = sid
+  void syncDeviceObservations()
   sessionCount.value = count
   turns.value = values
   answer.value = ''
@@ -158,14 +193,16 @@ async function openSession(id: number) {
   await router.replace({ query: { session: String(id) } })
 }
 
-async function resume(id: number) {
+async function resume(id: number, fromClick = true) {
   if (busy.value) return
+  if (autoRead.value && fromClick) void primePracticeVoice()
   busy.value = true
   try { await openSession(id) } catch { /* 可在练习记录重试。 */ } finally { busy.value = false }
 }
 
 async function start() {
   if (busy.value || !selected.value.length || !questionCount.value) return
+  if (autoRead.value) void primePracticeVoice()
   busy.value = true
   try {
     if (!questions.value.length) await generate()
@@ -196,6 +233,7 @@ async function submitAnswer() {
     turn.scores = data.scores
     turn.total_score = data.scores.total
     turn.sources = data.sources
+    turn.assessment = data.assessment
     phase.value = 'feedback'
   } catch { /* 评价失败时保留回答，允许重试。 */ } finally { busy.value = false }
 }
@@ -234,7 +272,7 @@ onMounted(() => {
   void loadDocuments()
   void loadSessions()
   const id = Number(route.query.session)
-  if (Number.isSafeInteger(id) && id > 0) void resume(id)
+  if (Number.isSafeInteger(id) && id > 0) void resume(id, false)
 })
 </script>
 <template>
@@ -283,6 +321,8 @@ onMounted(() => {
         <div class="start-controls">
           <label for="practice-count">正题数量</label>
           <el-input-number id="practice-count" v-model="questionCount" :min="3" :max="22" :disabled="busy" @change="questions = []" />
+          <label class="voice-mode"><el-switch :model-value="autoRead" aria-label="语音提问" :disabled="busy"
+              @update:model-value="setAutoRead($event === true)" />语音提问<span>自动朗读题目和追问</span></label>
           <el-button :disabled="busy || documentsBusy || !!uploading || !selected.length || !questionCount" @click="previewQuestions">预览题库</el-button>
           <el-button type="primary" :loading="busy" :disabled="documentsBusy || !!uploading || !selected.length || !questionCount" @click="start">开始模拟答辩</el-button>
         </div>
@@ -314,7 +354,16 @@ onMounted(() => {
         </div>
         <h2 class="question">{{ current.question }}</h2>
         <PracticeSources :sources="current.sources" />
-        <PracticeMedia :question="current.question" :can-dictate="phase === 'answering' && !busy" @transcript="appendTranscript" />
+        <PracticeMedia v-if="sessionId" :session-id="sessionId" :turn-no="current.turn_no" :question="current.question" :turn-key="`${sessionId}-${current.turn_no}`" :auto-read="autoRead"
+                       @update:auto-read="setAutoRead" :can-dictate="phase === 'answering' && !busy" @transcript="appendTranscript" @submit-transcript="submitAnswer">
+          <template #observation="{ video, requestCamera, releaseCamera }">
+            <PracticeObservation v-if="sessionId" :key="sessionId" :session-id="sessionId" :video="video"
+                                 :active="phase === 'answering' && !busy" @signal="syncDeviceObservations" @request-camera="requestCamera" @release-camera="releaseCamera" />
+            <p v-if="observationSyncFailed" role="status">提醒次数尚未同步，可继续答辩。
+              <el-button link type="primary" @click="syncDeviceObservations()">重试同步</el-button>
+            </p>
+          </template>
+        </PracticeMedia>
         <template v-if="phase === 'answering'">
           <label for="practice-answer" class="answer-label">你的回答</label>
           <el-input id="practice-answer" v-model="answer" type="textarea" :rows="7" maxlength="8000" show-word-limit
@@ -327,6 +376,7 @@ onMounted(() => {
           <div class="feedback">
             <h3>你的回答</h3><p class="answer">{{ current.student_answer }}</p>
             <h3>本轮反馈</h3>
+            <PracticeAssessment :assessment="current.assessment" :sources="current.sources" />
             <MarkdownViewer :content="current.ai_feedback || ''" />
           </div>
           <div class="actions"><el-button type="primary" :loading="busy" @click="next">继续答辩</el-button></div>
@@ -355,6 +405,8 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.voice-mode { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 14px; }
+.voice-mode span { font-size: 12px; color: #586478; }
 .ai-defense { color: #243449; }
 .page-heading { margin-bottom: 16px; }
 .page-heading h1 { font-size: 26px; margin: 0 0 6px; }

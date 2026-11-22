@@ -2,7 +2,7 @@
 
 口径:
 - 一个供应商 = 一份 Base URL + API Key, 同时可提供对话与向量能力;
-- 管理端只维护"供应商"与"三个能力位绑定给谁 + 用哪个模型", 不在这里填维度/环境变量;
+- 管理端只维护"供应商"与"各能力位绑定给谁 + 用哪个模型", 不在这里填维度/环境变量;
 - 模型名一律从供应商的 /models(ollama 为 /api/tags) 拉取后下拉选择, 不做手填兜底;
 - API Key 只写不读: 响应里永远是 has_key + ***后四位。
 """
@@ -48,6 +48,8 @@ class BindingsUpdate(BaseModel):
     chat: BindingSlot | None = None
     embedding: BindingSlot | None = None
     rerank: BindingSlot | None = None
+    speech: BindingSlot | None = None
+    transcription: BindingSlot | None = None
 
 
 @router.get("/presets")
@@ -142,7 +144,7 @@ def save_bindings(
 
 @router.get("/overview")
 def overview(_: CurrentUser = Depends(require_admin), db: Session = Depends(get_db)):
-    """一屏看全: 供应商列表 + 绑定 + 三个能力位的真实探测结果."""
+    """一屏看全: 供应商列表、能力绑定和检索对话服务探测结果."""
     ai = probe_all(db)
     bound = svc.bindings(db)
     return ResponseUtil.success({

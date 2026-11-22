@@ -348,7 +348,7 @@ export interface AiBindingSlot {
   provider_enabled: boolean
 }
 
-export type AiSlotKey = 'chat' | 'embedding' | 'rerank'
+export type AiSlotKey = 'chat' | 'embedding' | 'rerank' | 'speech' | 'transcription'
 
 /** GET /admin/ai/bindings 与 PUT 的同形返回 */
 export interface AiBindings {
@@ -403,6 +403,8 @@ export interface AiBindingsUpdate {
   chat?: { provider_id: number | null; model?: string | null } | null
   embedding?: { provider_id: number | null; model?: string | null } | null
   rerank?: { provider_id: number | null; model?: string | null } | null
+  speech?: { provider_id: number | null; model?: string | null } | null
+  transcription?: { provider_id: number | null; model?: string | null } | null
 }
 
 /**

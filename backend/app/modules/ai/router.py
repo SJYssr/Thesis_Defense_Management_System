@@ -1,10 +1,11 @@
 """AI 模块路由: 文档索引/RAG检索/AI模拟答辩/PPT大纲/进度分析/SSE流式问答(roadmap 六十五章)."""
 import json
 import logging
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Query, UploadFile
+from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,8 +14,10 @@ from app.ai.progress.service import ProgressAnalysisService
 from app.ai.rag.index_diagnostics import public_index_error
 from app.ai.rag.practice_sources import practice_upload_filter
 from app.ai.rag.rag_service import RAGService
+from app.ai.runtime_config import resolve_ai_config
+from app.ai.speech import SpeechFactory
 from app.core.config import settings
-from app.core.exceptions import BusinessException, PermissionDeniedException
+from app.core.exceptions import BusinessException, PermissionDeniedException, ResourceNotFoundException
 from app.core.permissions import (
     CurrentUser,
     PermissionService,
@@ -26,8 +29,16 @@ from app.core.permissions import (
 from app.core.response import ResponseUtil
 from app.db.mysql import get_db
 from app.db.redis import RedisKeys, redis_client
-from app.models.ai import AIDocument
+from app.models.ai import AIDefenseSession, AIDefenseTurn, AIDocument
 from app.models.enums import AIDocumentType
+from app.shared.storage import pathlib_suffix, read_upload
+from app.shared.upload_policy import (
+    MAX_RECORDING_MB,
+    MAX_RECORDING_SECONDS,
+    RECORDING_SAMPLE_RATE,
+    ensure_daily_quota,
+    max_upload_size_mb,
+)
 
 logger = logging.getLogger("app.ai.router")
 
@@ -36,7 +47,7 @@ router = APIRouter(prefix="/ai", tags=["AI"])
 STATUS_CN = {"WAITING": "待处理", "PROCESSING": "处理中", "SUCCESS": "已完成", "FAILED": "失败"}
 
 
-def _check_ai_rate(user: CurrentUser, db: Session) -> None:
+def _check_ai_rate(user: CurrentUser, db: Session, *, speech: bool = False) -> None:
     """AI 总开关 + 每分钟限流, 阈值均来自系统配置(roadmap 七十七/八十五章).
 
     D41: 计数与过期时间放进同一事务型 pipeline 原子提交(SET NX EX 打底 + INCR),
@@ -56,6 +67,8 @@ def _check_ai_rate(user: CurrentUser, db: Session) -> None:
     except (TypeError, ValueError):
         limit = settings.ai_rate_limit_per_minute
     key = RedisKeys.RATE_AI.format(user_id=user.id)
+    if speech:
+        key += ":speech"  # 朗读和答题共用配置阈值，独立计数，避免重听影响提交。
     try:
         pipe = redis_client.pipeline(transaction=True)
         pipe.set(key, 0, nx=True, ex=60)  # 仅首次请求生效: 原子建立计数与 60s 过期
@@ -295,6 +308,70 @@ def start_session(session_id: int, user: CurrentUser = Depends(require_student),
 class AnswerRequest(BaseModel):
     question: str = Field(min_length=2)
     answer: str = Field(min_length=5, max_length=8000)
+
+
+class PracticeObservations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    no_face: int = Field(ge=0, le=65535, strict=True)
+    multiple_faces: int = Field(ge=0, le=65535, strict=True)
+    tab_hidden: int = Field(ge=0, le=65535, strict=True)
+
+
+@defense.put("/sessions/{session_id}/observations")
+def save_observations(session_id: int, body: PracticeObservations, user: CurrentUser = Depends(require_student),
+                      db: Session = Depends(get_db)):
+    DefenseService(db).record_observations(user.profile_id, session_id, str(body.run_id),
+                                           body.no_face, body.multiple_faces, body.tab_hidden)
+    return ResponseUtil.success()
+
+
+@defense.get("/speech-capabilities")
+def speech_capabilities(_: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+    config = resolve_ai_config(db)
+    max_bytes = min(MAX_RECORDING_MB, max_upload_size_mb(db)) * 1024 * 1024
+    return ResponseUtil.success({
+        "speech": config.speech_slot.enabled and config.speech_slot.configured,
+        "transcription": config.transcription_slot.enabled and config.transcription_slot.configured,
+        "max_recording_seconds": min(MAX_RECORDING_SECONDS, (max_bytes - 44) // (RECORDING_SAMPLE_RATE * 2)),
+    })
+
+
+@defense.post("/sessions/{session_id}/turns/{turn_no}/transcription")
+def transcribe_answer(session_id: int, turn_no: int, file: UploadFile,
+                      user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+    turn = db.execute(select(AIDefenseTurn.turn_no, AIDefenseTurn.student_answer, AIDefenseSession.status)
+                      .join(AIDefenseSession).where(AIDefenseSession.id == session_id,
+                                                    AIDefenseSession.student_id == user.profile_id)
+                      .order_by(AIDefenseTurn.id.desc()).limit(1)).first()
+    if turn is None:
+        raise ResourceNotFoundException("未找到可作答的答辩题目")
+    if turn.turn_no != turn_no or turn.student_answer is not None or turn.status != "RUNNING":
+        raise BusinessException("仅当前尚未作答的题目可以转写录音，请刷新练习", 40900)
+    _check_ai_rate(user, db, speech=True)
+    voice = SpeechFactory.get(db, "transcription")
+    if pathlib_suffix(file.filename) != ".wav":
+        raise BusinessException("回答录音需要使用 WAV 格式", 42200)
+    audio, _, _, size, _ = read_upload(file, min(MAX_RECORDING_MB, max_upload_size_mb(db)))
+    ensure_daily_quota(db, user.id, size)
+    db.rollback()
+    return ResponseUtil.success({"text": voice.transcribe(audio)})
+
+
+@defense.get("/sessions/{session_id}/turns/{turn_no}/speech", response_class=Response,
+             responses={200: {"content": {"audio/wav": {}}}})
+def read_question_aloud(session_id: int, turn_no: int, user: CurrentUser = Depends(require_student),
+                        db: Session = Depends(get_db)):
+    question = db.scalar(select(AIDefenseTurn.question).join(AIDefenseSession).where(
+        AIDefenseSession.id == session_id, AIDefenseSession.student_id == user.profile_id,
+        AIDefenseTurn.turn_no == turn_no))
+    if question is None:
+        raise ResourceNotFoundException("未找到可朗读的答辩题目")
+    _check_ai_rate(user, db, speech=True)
+    voice = SpeechFactory.get(db)
+    db.rollback()  # 读事务结束后再等待模型合成。
+    return Response(voice.synthesize(question), media_type="audio/wav", headers={"Cache-Control": "private, no-store"})
 
 
 @defense.post("/sessions/{session_id}/answer")

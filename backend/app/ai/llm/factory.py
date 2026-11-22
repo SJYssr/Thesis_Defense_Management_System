@@ -286,6 +286,10 @@ class MockLLM(BaseLLMService):
             return json.dumps({
                 "accuracy": int(base * 0.35), "logic": int(base * 0.25),
                 "clarity": int(base * 0.2), "depth": int(max(50, base - 12) * 0.2),
+                "assessment": [{"id": p["id"], "verdict": "partial", "answer_quote": answer[:40],
+                                "reason": "请对照本题原文进一步说明回答的依据。"} for p in ctx.get("rubric", [])],
+                "follow_up_rubric": [{"expectation": c["excerpt"][:50], "source_ids": [c["chunk_id"]]}
+                                     for c in chunks[:1]],
                 "feedback": f"练习反馈：你的回答提到“{answer[:48]}”。请用材料中具体的实现或测试结果支撑这个说法。",
                 "source_ids": [c["chunk_id"] for c in chunks[:1] if "chunk_id" in c],
                 "follow_up_needed": length < 120,
@@ -336,9 +340,10 @@ class MockLLM(BaseLLMService):
                 chunk = chunks[i % len(chunks)]
                 name = chunk.get("section") or chunk.get("document_name", "材料")
                 quote = chunk.get("excerpt", "")[:40].strip()
-                questions.append({"question": f"结合《{name}》中的“{quote}”，{angle}？",
+                questions.append({"question": f"请先概述《{name}》所引片段，再说明{angle}？",
                                   "question_type": kind, "difficulty": "MEDIUM",
-                                  "source_ids": [chunk.get("chunk_id")], "reference": quote})
+                                  "source_ids": [chunk.get("chunk_id")], "reference": quote,
+                                  "rubric": [{"expectation": quote, "source_ids": [chunk.get("chunk_id")]}]})
             return json.dumps({"questions": questions[:22]}, ensure_ascii=False)
 
         if "follow_up_question" in system and "追问" in system:

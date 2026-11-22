@@ -97,6 +97,17 @@ class AIDefenseSession(Base, TimestampMixin):
     summary: Mapped[str | None] = mapped_column(Text, comment="答辩报告 JSON")
 
 
+class AIDefenseObservation(Base):
+    """每次在浏览器开启观察的累计值。复盘仅展示各项总次数。"""
+    __tablename__ = "ai_defense_observation"
+
+    session_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("ai_defense_session.id", ondelete="CASCADE"), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    no_face: Mapped[int] = mapped_column(Integer, default=0)
+    multiple_faces: Mapped[int] = mapped_column(Integer, default=0)
+    tab_hidden: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class AIDefenseTurn(Base, TimestampMixin):
     __tablename__ = "ai_defense_turn"
 

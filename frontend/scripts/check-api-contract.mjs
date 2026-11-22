@@ -759,13 +759,15 @@ const SHAPE_ASSERTIONS = [
     mustNot: [/ai_llm_/, /ai_embedding_/, /ai_rerank_/],
   },
   {
-    name: '系统设置 AI 区: 供应商卡片 + 三个能力位 + 密钥只写不读',
+    name: '系统设置 AI 区: 供应商卡片 + 五个能力位 + 密钥只写不读',
     file: 'views/admin/SystemSettings.vue',
     must: [
-      // 三个能力位的 key 必须与后端 SLOT_KEYS 一致, 否则绑定保存会 400
+      // 各能力位的 key 必须与后端 SLOT_KEYS 一致, 否则绑定保存会 400
       /\{ key: 'chat', label: '会话模型'/,
       /\{ key: 'embedding', label: '向量模型'/,
       /\{ key: 'rerank', label: '精排模型'/,
+      /\{ key: 'speech', label: '答辩语音'/,
+      /\{ key: 'transcription', label: '回答转写'/,
       // 供应商卡片: kind 中文标签 + 最近探测状态 + 刷新模型 + 删除确认
       /providerKindLabel\(row\.kind\)/,
       /providerStatusMeta\(row\.last_status\)/,

@@ -71,11 +71,13 @@ const busyProviderId = ref<number | null>(null)
 /** AI 功能总开关: 与后端 ai_defense_enabled 同源, 只经 PUT /admin/ai/bindings 写 */
 const aiEnabled = ref(true)
 
-/** 三个能力位(顺序即界面顺序); 与后端 SLOT_KEYS 的 key 一一对应 */
+/** 能力位(顺序即界面顺序); 与后端 SLOT_KEYS 的 key 一一对应 */
 const SLOT_META: { key: AiSlotKey; label: string; hint: string }[] = [
   { key: 'chat', label: '会话模型', hint: 'AI 问答、模拟答辩、文本生成都用它' },
   { key: 'embedding', label: '向量模型', hint: '知识库入库与检索; 换供应商或换模型后必须重建索引' },
   { key: 'rerank', label: '精排模型', hint: '对召回结果精排; 留空表示跳过精排' },
+  { key: 'speech', label: '答辩语音', hint: '用绑定的语音服务朗读学生当前的答辩题目' },
+  { key: 'transcription', label: '回答转写', hint: '将学生本轮录音转为可修改的答辩文字' },
 ]
 
 interface SlotDraft {
@@ -87,6 +89,8 @@ const draft = reactive<Record<AiSlotKey, SlotDraft>>({
   chat: { provider_id: null, model: '' },
   embedding: { provider_id: null, model: '' },
   rerank: { provider_id: null, model: '' },
+  speech: { provider_id: null, model: '' },
+  transcription: { provider_id: null, model: '' },
 })
 
 const probe = computed(() => overviewProbe(overview.value))
@@ -95,7 +99,7 @@ const statusRows = computed(() => healthRows(probe.value))
 const aiFixHint = computed(() => aiHealthFixHint(probe.value))
 const needsReindex = computed(() => overview.value?.needs_reindex === true)
 const embeddingDim = computed(() => bindings.value?.embedding_dim ?? null)
-/** 三个能力位都配好了才算"AI 可用"; 否则页头给一条可操作提示 */
+/** 展示还没有绑定供应商与模型的能力数。 */
 const unconfiguredCount = computed(() => SLOT_META.filter((meta) => !bindings.value?.slots?.[meta.key]?.configured).length)
 
 function applyBindings(next: AiBindings | AiOverview | null): void {
@@ -457,7 +461,7 @@ onMounted(async () => {
     <section class="settings-block ai-service-block" v-loading="aiLoading">
       <div class="block-head">
         <h3 class="block-title">AI 服务</h3>
-        <span class="block-sub">供应商 = 一份 Base URL + API Key；三个能力位分别指向供应商与模型名; 保存即生效, 无需重启</span>
+        <span class="block-sub">供应商 = 一份 Base URL + API Key；每项能力选择对应的供应商和模型，保存后生效</span>
       </div>
 
       <!-- 状态带: AI 总开关 + 五盏灯(会话/向量/重排/向量库/ollama) -->
@@ -472,7 +476,7 @@ onMounted(async () => {
             @change="onToggleAi"
           />
           <el-tag v-if="unconfiguredCount" type="info" size="small" effect="plain">还有 {{ unconfiguredCount }} 个能力位未配置</el-tag>
-          <el-tag v-else type="success" size="small" effect="plain">三个能力位均已配置</el-tag>
+          <el-tag v-else type="success" size="small" effect="plain">各项能力均已配置</el-tag>
         </div>
         <div class="status-lights">
           <el-tooltip v-for="row in statusRows" :key="row.key" :content="row.detail" placement="top">
@@ -670,7 +674,7 @@ onMounted(async () => {
         </el-form-item>
         <el-form-item label="Base URL">
           <el-input v-model="editor.base_url" maxlength="255" placeholder="https://api.deepseek.com/v1" />
-          <div class="field-hint">填供应商根地址, 后端会自行补 /chat/completions 与 /embeddings</div>
+          <div class="field-hint">填写供应商接口基址。答辩语音使用兼容的 /audio/speech 接口。</div>
         </el-form-item>
         <el-form-item label="API Key">
           <el-input

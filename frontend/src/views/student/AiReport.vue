@@ -2,9 +2,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { aiApi } from '@/api/common'
+import { syncObservations } from '@/api/practiceObservations'
+import { useUserStore } from '@/stores/user'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
+import PracticeAssessment from '@/components/PracticeAssessment.vue'
 import PracticeSources from '@/components/PracticeSources.vue'
 const route = useRoute()
+const userStore = useUserStore()
+const observationsPending = ref(false)
 const DIM_CN: Record<string, string> = { accuracy: '知识准确性', logic: '逻辑完整性', clarity: '表达清晰度', depth: '技术深度' }
 const sessions = ref<any[]>([])
 const selected = ref<number>()
@@ -24,7 +29,12 @@ async function loadReport() {
   loading.value = true
   loadFailed.value = false
   try {
-    const { data } = await aiApi.report(selected.value)
+    const sessionId = selected.value
+    const owner = userStore.user?.id
+    const saved = owner ? await syncObservations(owner, sessionId) : true
+    if (id !== requestId) return
+    observationsPending.value = !saved
+    const { data } = await aiApi.report(sessionId)
     if (id === requestId) report.value = data
   } catch {
     if (id === requestId) loadFailed.value = true
@@ -69,12 +79,25 @@ onMounted(async () => {
         <el-button @click="$router.push('/student/ai-ppt')">生成 PPT 大纲</el-button>
       </section>
     </div>
+    <section v-if="report.observation_counts || observationsPending" class="page-card review-turns">
+      <h3 class="block-title">练习环境回顾</h3>
+      <p v-if="observationsPending" role="status">本机还有未同步的提醒。<el-button link type="primary" @click="loadReport">重试同步</el-button></p>
+      <template v-if="report.observation_counts">
+        <dl class="observation-counts">
+          <div><dt>持续未检测到人脸</dt><dd>{{ report.observation_counts.no_face }} 次</dd></div>
+          <div><dt>持续检测到多张人脸</dt><dd>{{ report.observation_counts.multiple_faces }} 次</dd></div>
+          <div><dt>答题页转入后台</dt><dd>{{ report.observation_counts.tab_hidden }} 次</dd></div>
+        </dl>
+        <p class="report-summary">仅统计你启用观察期间的提示，光线、遮挡也会影响识别。此记录仅供本人复盘，不参与评分。</p>
+      </template>
+    </section>
     <section class="page-card review-turns">
       <h3 class="block-title">逐轮回顾</h3>
       <el-collapse>
         <el-collapse-item v-for="t in report.turns" :key="t.turn_no" :title="`第 ${t.turn_no} 轮 · ${t.is_follow_up ? '追问 · ' : ''}${t.question}`">
           <b>你的回答</b><p class="answer">{{ t.student_answer }}</p>
           <b>本轮反馈<span v-if="t.total_score != null"> · {{ t.total_score }} 分</span></b>
+          <PracticeAssessment :assessment="t.assessment" :sources="t.sources" />
           <MarkdownViewer :content="t.ai_feedback || ''" />
           <PracticeSources :sources="t.sources" />
         </el-collapse-item>
@@ -102,6 +125,9 @@ onMounted(async () => {
 .advice p { color: #949baa; font-size: 12px; line-height: 1.8; margin-bottom: 0; }
 .report-action { margin-top: 24px; }
 .review-turns { margin-top: 22px; overflow-wrap: anywhere; }
+.observation-counts { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 12px 0; }
+.observation-counts dt { font-size: 13px; color: #586478; }
+.observation-counts dd { margin: 4px 0 0; font-weight: 600; }
 .review-turns .answer { white-space: pre-wrap; }
 .report-heading { flex-wrap: wrap; }
 @media (max-width: 800px) {

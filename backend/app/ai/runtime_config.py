@@ -23,7 +23,7 @@ from app.core.config import settings
 logger = logging.getLogger("app.ai.runtime")
 
 CACHE_TTL_SECONDS = 5.0
-SLOT_LABELS = {"chat": "会话模型", "embedding": "向量模型", "rerank": "精排模型"}
+SLOT_LABELS = {"chat": "会话模型", "embedding": "向量模型", "rerank": "精排模型", "speech": "答辩语音", "transcription": "回答转写"}
 
 # 唯一的 AI 环境变量: 测试替身。不参与真实配置解析, 只在单测/离线演示时替换实现。
 TEST_MODES = ("", "mock", "hash")
@@ -109,13 +109,14 @@ class AISlot:
 class EffectiveAIConfig:
     """当前生效的 AI 配置(只读快照).
 
-    对外仍暴露 llm_* / embedding_* / rerank_* 三组扁平属性, 但底层只有三个 AISlot,
-    避免"三个能力各一套解析代码"再次分叉。
+    保留 llm_* / embedding_* / rerank_* 属性供既有调用方使用，语音合成与转写各自使用一个 AISlot。
     """
 
     chat: AISlot
     embedding_slot: AISlot
     rerank_slot: AISlot
+    speech_slot: AISlot
+    transcription_slot: AISlot
 
     # ---- 会话模型 ----
     @property
@@ -225,7 +226,8 @@ class EffectiveAIConfig:
                     f"key={key_hint(slot.api_key)!r}, enabled={slot.enabled}")
 
         return (f"EffectiveAIConfig(chat=({show(self.chat)}), "
-                f"embedding=({show(self.embedding_slot)}), rerank=({show(self.rerank_slot)}))")
+                f"embedding=({show(self.embedding_slot)}), rerank=({show(self.rerank_slot)}), "
+                f"speech=({show(self.speech_slot)}), transcription=({show(self.transcription_slot)}))")
 
 
 EMPTY_SNAPSHOTS: dict[int, ProviderSnapshot] = {}
@@ -267,6 +269,10 @@ def _build(values: dict[str, str], snapshots: dict[int, ProviderSnapshot]) -> Ef
     rerank = _slot(values, snapshots, name="rerank", id_key="ai_rerank_provider_id",
                    model_key="ai_rerank_model", enabled=global_enabled)
 
+    speech = _slot(values, snapshots, name="speech", id_key="ai_speech_provider_id",
+                   model_key="ai_speech_model", enabled=global_enabled)
+    transcription = _slot(values, snapshots, name="transcription", id_key="ai_transcription_provider_id",
+                          model_key="ai_transcription_model", enabled=global_enabled)
     mode = test_mode()
     # 测试替身: mock = 会话与向量都走本地替身(离线跑通全链路); hash = 只把向量换成哈希,
     # 会话仍按真实绑定解析(用于只想避开 embed 服务的场景)。
@@ -283,7 +289,8 @@ def _build(values: dict[str, str], snapshots: dict[int, ProviderSnapshot]) -> Ef
                            model=embedding.model, dim=embedding.dim,
                            dim_explicit=embedding.dim_explicit, models=embedding.models)
 
-    return EffectiveAIConfig(chat=chat, embedding_slot=embedding, rerank_slot=rerank)
+    return EffectiveAIConfig(chat=chat, embedding_slot=embedding, rerank_slot=rerank, speech_slot=speech,
+                             transcription_slot=transcription)
 
 
 def _db_values(db=None) -> dict[str, str]:
@@ -317,6 +324,8 @@ def _signature(values: dict[str, str]) -> tuple:
         _pick(values, "ai_embedding_provider_id"), _pick(values, "ai_embedding_model"),
         _pick(values, "ai_embedding_dim"),
         _pick(values, "ai_rerank_provider_id"), _pick(values, "ai_rerank_model"),
+        _pick(values, "ai_speech_provider_id"), _pick(values, "ai_speech_model"),
+        _pick(values, "ai_transcription_provider_id"), _pick(values, "ai_transcription_model"),
     )
 
 
@@ -338,7 +347,8 @@ def resolve_ai_config(db=None, *, use_cache: bool = True) -> EffectiveAIConfig:
                     and (time.monotonic() - _cached_at) < CACHE_TTL_SECONDS):
                 return _cached
     ids = {_as_int(values.get(key)) or 0 for key in
-           ("ai_chat_provider_id", "ai_embedding_provider_id", "ai_rerank_provider_id")}
+           ("ai_chat_provider_id", "ai_embedding_provider_id", "ai_rerank_provider_id", "ai_speech_provider_id",
+            "ai_transcription_provider_id")}
     snapshots = load_provider_snapshots(db, ids)
     config = _build(values, snapshots)
     with _lock:

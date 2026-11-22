@@ -66,7 +66,9 @@ _DEFENSE_QUESTION_CORE = """你是毕业设计模拟答辩教师，负责根据�
 并用一道题让学生对照文中设计和实现。材料只有设计设想时，不能假定已经实现。
 按输入 question_count 生成指定数量的不同问题，覆盖基础理解、技术选型、设计、实现、测试、局限与扩展。每题只问一个明确的问题。
 输出 JSON 对象 {"questions":[{"question":"问题","question_type":"DESIGN","difficulty":"MEDIUM",
-"reference":"依据材料可核对的要点","source_ids":[123]}]}。source_ids 必须选自输入 chunks 中的 chunk_id。
+"source_ids":[123],"rubric":[{"expectation":"逐字摘录该题所考查的事实或代码","source_ids":[123]}]}]}。
+每题独立选择1至3个最相关的预期要点。expectation 必须是其引用 excerpt 中连续的原文（2至220字符），不得改写、截拼或引用其他题的材料。source_ids 必须选自输入 chunks 中的 chunk_id。
+题干可指明章节、文件、函数及所问行为，但不要直接给出期望学生回答的结论。
 """
 
 _DEFENSE_EVALUATE_CORE = """你是毕业设计模拟答辩教师，结合当前题目的材料和学生本轮实际回答给出练习反馈。
@@ -74,7 +76,14 @@ _DEFENSE_EVALUATE_CORE = """你是毕业设计模拟答辩教师，结合当前�
 指出答案中一个具体主张及其材料依据，描述缺失的信息和可操作的改进。材料不足时指出证据边界。
 回答与材料矛盾、含糊或缺少验证时，追问该回答中的具体说法，要求说明证据、取舍或验证方法。
 输出 JSON 对象 {"accuracy":0,"logic":0,"clarity":0,"depth":0,"feedback":"评价",
-"source_ids":[123],"follow_up_needed":true,"follow_up_question":"追问或null"}。
+"source_ids":[123],"assessment":[{"id":1,"verdict":"supported","answer_quote":"学生答句原文","reason":"结合要点说明理由"}],
+"follow_up_needed":true,"follow_up_question":"追问或null","follow_up_rubric":[{"expectation":"与追问直接相关的材料原文","source_ids":[123]}]}。
+按输入 rubric 中的每个 id 逐项判断一次。verdict 选 supported、partial、missing、contradicted、insufficient_evidence。
+有依据、部分覆盖或矛盾时 answer_quote 必须是 student_answer 的连续原文，最多240字符。缺少和依据不足可留空。
+学生没提到材料中本题明确考查的要点是 missing；额外说法无法从材料验证时不据此判错。仅当要点本身欠缺材料依据时标记 insufficient_evidence。
+学生用自己的话准确说明材料含义也算 supported，不要求背诵原文。
+准确性由服务器按可判断要点折算；逻辑、表达、深度仅评价回答和材料所问的内容。
+需要追问时为追问独立选择1至3个能从本次 source_ids 引文中逐字核对的要点，每项2至220字符。
 引用的 source_ids 必须选自输入 chunks 中的 chunk_id，不能杜撰材料、路径或实验结果。
 """
 
@@ -232,13 +241,20 @@ def invalidate_prompt_cache(code: str) -> None:
 # ---------- User Prompt 构建(数据组装逻辑, 不随模板配置) ----------
 
 def defense_question_prompt(topic_title: str, sources: list[dict], question_count: int) -> str:
-    return json.dumps({"topic_title": topic_title, "chunks": sources, "question_count": question_count}, ensure_ascii=False)
+    return json.dumps({"topic_title": topic_title, "chunks": sources, "question_count": question_count,
+                       "output_contract": "每道题返回 source_ids 和 rubric 数组，每项含 expectation 与 source_ids。"
+                                          "expectation 是所引 excerpt 中2至220字的连续原文。题干不直接给出预期结论。"}, ensure_ascii=False)
 
 
 def defense_evaluate_prompt(topic_title: str, question: str, answer: str, sources: list[dict],
-                            turns_summary: str = "") -> str:
+                            turns_summary: str = "", rubric: list[dict] | None = None) -> str:
     return json.dumps({"topic_title": topic_title, "question": question, "student_answer": answer,
-                       "chunks": sources, "previous_turns": turns_summary}, ensure_ascii=False)
+                       "chunks": sources, "rubric": rubric or [], "previous_turns": turns_summary,
+                       "output_contract": "对 rubric 每项返回 assessment 对象，包含 id、verdict（supported/partial/missing/"
+                                          "contradicted/insufficient_evidence）、reason、answer_quote（学生连续原话或空串）。"
+                                          "意思准确即可计分。缺少明确考查的事实判 missing；材料之外的补充说法不据此判错。"
+                                          "需要追问时返回 follow_up_rubric，格式为 expectation 和 source_ids；"
+                                          "要点必须逐字引自本次返回 source_ids 对应片段。"}, ensure_ascii=False)
 
 
 def defense_report_prompt(topic_title: str, turns: list[dict], overall_score: int) -> str:

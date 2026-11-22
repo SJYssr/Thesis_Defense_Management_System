@@ -4,7 +4,7 @@
 (Dify / Open WebUI / LiteLLM 的共同口径)。管理端因此只需要三步:
   1) 添加供应商(可从预设一键填 Base URL);
   2) 点"获取模型"从 /v1/models(ollama 走 /api/tags)拉清单;
-  3) 三个下拉把 会话 / 向量 / 精排 绑定到"某供应商的某模型"。
+  3) 分别为会话、向量、精排、语音合成与转写选择供应商和模型。
 Base URL 与 Key 各只填一次, 不再按能力重复; 也没有任何 AI 环境变量参与解析。
 """
 from __future__ import annotations
@@ -395,6 +395,8 @@ SLOT_KEYS: tuple[tuple[str, str, str, str], ...] = (
     ("chat", "ai_chat_provider_id", "ai_chat_model", "会话模型"),
     ("embedding", "ai_embedding_provider_id", "ai_embedding_model", "向量模型"),
     ("rerank", "ai_rerank_provider_id", "ai_rerank_model", "精排模型"),
+    ("speech", "ai_speech_provider_id", "ai_speech_model", "答辩语音"),
+    ("transcription", "ai_transcription_provider_id", "ai_transcription_model", "回答转写"),
 )
 
 
@@ -410,7 +412,7 @@ def _bound_slots(db: Session, provider_id: int) -> list[str]:
 
 
 def bindings(db: Session) -> dict:
-    """当前三个能力位的绑定; provider 不存在时显式标记 broken(供应商被删/停用)."""
+    """当前各项能力的绑定; provider 不存在时显式标记 broken(供应商被删/停用)."""
     from app.shared.sysconfig import get_all
 
     values = dict(get_all(db))

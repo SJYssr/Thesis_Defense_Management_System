@@ -71,7 +71,17 @@ export interface PracticeScores {
   total: number
 }
 
+export interface PracticeAssessment {
+  id: number
+  expectation: string
+  source_ids: number[]
+  verdict: 'supported' | 'partial' | 'missing' | 'contradicted' | 'insufficient_evidence'
+  reason: string
+  answer_quote: string
+}
+
 export interface PracticeTurn extends PracticeQuestion {
+  assessment?: PracticeAssessment[]
   turn_no: number
   is_follow_up?: boolean
   student_answer?: string | null
