@@ -80,6 +80,28 @@ class PracticeSpeechTest(unittest.TestCase):
         self.assertEqual((res.media_type, res.body), ("audio/wav", audio))
         service.synthesize.assert_called_once_with("为什么选择这个方案？")
 
+    def test_written_questions_never_reach_tts(self):
+        from pydantic import ValidationError
+
+        from app.ai.defense.oral import oral_question
+        from app.modules.ai.router import AnswerRequest
+
+        for dirty in ("## 请根据 backend/app/ai/llm/factory.py", "请解释《设计报告.pdf》中的取舍？",
+                      "在 HoldQueue.notify_next 中，谁先收到通知？", "调用 queue_pop() 得到什么？",
+                      "请先概述《设计》第三章所引片段的内容，再说明它有何作用？"):
+            self.assertFalse(oral_question(dirty), dirty)
+        self.assertTrue(oral_question("如果读数超过 18.5 度，系统如何判断是否要提示异常？"))
+        factory = self.enterContext(patch("app.modules.ai.router.SpeechFactory.get"))
+        self.db.get(AIDefenseTurn, 102).question = "## 请根据 backend/app/ai/llm/factory.py"
+        self.db.commit()
+        with self.assertRaises(BusinessException) as exc:
+            read_question_aloud(10, 2, self.owner, self.db)
+        self.assertEqual(exc.exception.code, 40900)
+        factory.assert_not_called()
+        self.assertEqual(AnswerRequest(question="是否需要借阅证？", answer="  是  ").answer, "是")
+        with self.assertRaises(ValidationError):
+            AnswerRequest(question="是否需要借阅证？", answer="  ")
+
     def test_transcription_only_for_latest_unanswered_turn_does_not_submit(self):
         factory = self.enterContext(patch("app.modules.ai.router.SpeechFactory.get"))
         service = factory.return_value

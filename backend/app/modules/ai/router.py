@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.ai.defense.oral import oral_question
 from app.ai.defense.service import DefenseService
 from app.ai.progress.service import ProgressAnalysisService
 from app.ai.rag.index_diagnostics import public_index_error
@@ -306,8 +307,10 @@ def start_session(session_id: int, user: CurrentUser = Depends(require_student),
 
 
 class AnswerRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     question: str = Field(min_length=2)
-    answer: str = Field(min_length=5, max_length=8000)
+    answer: str = Field(min_length=1, max_length=8000)
 
 
 class PracticeObservations(BaseModel):
@@ -368,6 +371,8 @@ def read_question_aloud(session_id: int, turn_no: int, user: CurrentUser = Depen
         AIDefenseTurn.turn_no == turn_no))
     if question is None:
         raise ResourceNotFoundException("未找到可朗读的答辩题目")
+    if not oral_question(question):
+        raise BusinessException("这道旧题需要更新，请继续练习以获取口头问题", 40900)
     _check_ai_rate(user, db, speech=True)
     voice = SpeechFactory.get(db)
     db.rollback()  # 读事务结束后再等待模型合成。

@@ -338,9 +338,9 @@ class MockLLM(BaseLLMService):
                 if not chunks:
                     break
                 chunk = chunks[i % len(chunks)]
-                name = chunk.get("section") or chunk.get("document_name", "材料")
+
                 quote = chunk.get("excerpt", "")[:40].strip()
-                questions.append({"question": f"请先概述《{name}》所引片段，再说明{angle}？",
+                questions.append({"question": f"在你的项目里，{angle}？",
                                   "question_type": kind, "difficulty": "MEDIUM",
                                   "source_ids": [chunk.get("chunk_id")], "reference": quote,
                                   "rubric": [{"expectation": quote, "source_ids": [chunk.get("chunk_id")]}]})
