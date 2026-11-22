@@ -30,3 +30,23 @@ def dispatch_index_task(document_id: int) -> dict | None:
             return None
     # 同步执行
     return _run_index(document_id)
+
+
+def index_uploaded_material(document_id: int) -> None:
+    """材料已提交后独立索引; 模型或队列故障不影响上传, 并允许从知识库重试。"""
+    from app.db.mysql import SessionLocal
+    from app.models.ai import AIDocument
+
+    try:
+        dispatch_index_task(document_id)
+    except Exception:
+        logger.exception("材料 %s 自动索引失败", document_id)
+        try:
+            with SessionLocal() as session:
+                doc = session.get(AIDocument, document_id)
+                if doc is not None and doc.index_status != "FAILED":
+                    doc.index_status = "FAILED"
+                    doc.error_message = "自动索引未完成，请检查 AI 服务与任务队列后重试"
+                    session.commit()
+        except Exception:
+            logger.exception("材料 %s 索引失败状态记录失败", document_id)

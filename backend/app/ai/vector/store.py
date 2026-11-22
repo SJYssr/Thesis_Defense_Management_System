@@ -170,16 +170,21 @@ class VectorStore:
     # ---------- 检索 ----------
 
     def search(self, query_embedding: list[float], student_id: int | None, document_types: list[str] | None,
-               top_k: int = 8) -> list[tuple[int, float]]:
+               top_k: int = 8, *, document_ids: list[int] | None = None) -> list[tuple[int, float]]:
         """返回 [(chunk_id, 相似度分数)], 分数越大越相似."""
+        if document_ids is not None and not document_ids:
+            return []
         if self.mode == "redis":
-            return self._search_redis(query_embedding, student_id, document_types, top_k)
-        return self._search_mysql(query_embedding, student_id, document_types, top_k)
+            return self._search_redis(query_embedding, student_id, document_types, top_k, document_ids)
+        return self._search_mysql(query_embedding, student_id, document_types, top_k, document_ids)
 
-    def _search_redis(self, query_embedding, student_id, document_types, top_k) -> list[tuple[int, float]]:
+    def _search_redis(self, query_embedding, student_id, document_types, top_k, document_ids) -> list[tuple[int, float]]:
         # 全局知识库 chunk 的 student_id 标签存为 0
         sid = safe_student_tag(student_id)
         filter_parts = [f"@student_id:{{{sid}|0}}"]
+        if document_ids is not None:
+            filter_parts = [f"@student_id:{{{sid}}}",
+                            "@document_id:{" + "|".join(str(int(i)) for i in document_ids) + "}"]
         types = "|".join(safe_document_types(document_types))
         if types:
             filter_parts.append(f"@document_type:{{{types}}}")
@@ -192,7 +197,7 @@ class VectorStore:
             )
         except Exception as exc:
             logger.warning("Redis KNN 失败, 降级 MySQL: %s", exc)
-            return self._search_mysql(query_embedding, student_id, document_types, top_k)
+            return self._search_mysql(query_embedding, student_id, document_types, top_k, document_ids)
 
         results = []
         for chunk_key, fields in _parse_ftsearch_rows(rows):
@@ -213,7 +218,7 @@ class VectorStore:
             results.append((cid, 1.0 - score))  # cosine distance → similarity
         return results
 
-    def _search_mysql(self, query_embedding, student_id, document_types, top_k) -> list[tuple[int, float]]:
+    def _search_mysql(self, query_embedding, student_id, document_types, top_k, document_ids) -> list[tuple[int, float]]:
         from app.db.mysql import SessionLocal
 
         q = np.asarray(query_embedding, dtype=np.float32)
@@ -223,6 +228,8 @@ class VectorStore:
         db: Session = SessionLocal()
         try:
             conds = [AIDocumentChunk.embedding.is_not(None), student_scope_filter(student_id)]
+            if document_ids is not None:
+                conds.extend([AIDocumentChunk.student_id == student_id, AIDocumentChunk.document_id.in_(document_ids)])
             types = safe_document_types(document_types)
             if types:
                 conds.append(AIDocumentChunk.document_type.in_(types))

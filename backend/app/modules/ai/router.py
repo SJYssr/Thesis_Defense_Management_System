@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.defense.service import DefenseService
 from app.ai.progress.service import ProgressAnalysisService
+from app.ai.rag.practice_sources import practice_upload_filter
 from app.ai.rag.rag_service import RAGService
 from app.core.config import settings
 from app.core.exceptions import BusinessException, PermissionDeniedException
@@ -73,28 +74,32 @@ def _check_ai_rate(user: CurrentUser, db: Session) -> None:
 def list_documents(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=100),
                    user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     """学生知识库文档列表(D50): 依赖只注入一次, 分页下推到 SQL, size 上限 100."""
-    from sqlalchemy import func
+    from sqlalchemy.orm import defer
 
     from app.models.system import SysFile
+    from app.shared.query import paginate
 
-    total = db.execute(
-        select(func.count(AIDocument.id)).where(AIDocument.student_id == user.profile_id)
-    ).scalar() or 0
+    ids, total = paginate(db, select(AIDocument.id).order_by(AIDocument.id.desc()),
+                          filters=[AIDocument.student_id == user.profile_id], page=page, size=size)
+    if not ids:
+        return ResponseUtil.page([], total, page, size)
+    practice_upload = practice_upload_filter(user.id, AIDocument.cycle_id)
     rows = db.execute(
-        select(AIDocument, SysFile.size)
+        select(AIDocument, SysFile.size, practice_upload).options(defer(AIDocument.content_text))
         .outerjoin(SysFile, AIDocument.file_id == SysFile.id)
-        .where(AIDocument.student_id == user.profile_id)
+        .where(AIDocument.id.in_(ids), AIDocument.student_id == user.profile_id)
         .order_by(AIDocument.id.desc())
-        .offset((page - 1) * size).limit(size)
     ).all()
+    ready = {doc.id for doc in RAGService(db).practice_documents(user.profile_id)}
     items = [{
+        "practice_eligible": d.id in ready, "practice_upload": bool(uploaded),
         "id": d.id, "document_name": d.document_name, "document_type": d.document_type,
         "index_status": d.index_status, "status_cn": STATUS_CN.get(d.index_status, d.index_status),
         "chunk_count": d.chunk_count, "version": d.version, "error_message": d.error_message,
         "file_size": file_size, "file_id": d.file_id,
         "indexed_at": d.indexed_at.isoformat() if d.indexed_at and d.index_status == "SUCCESS" else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
-    } for d, file_size in rows]
+    } for d, file_size, uploaded in rows]
     return ResponseUtil.page(items, total, page, size)
 
 
@@ -102,7 +107,7 @@ def list_documents(page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=10
 def rag_config(_: CurrentUser = Depends(require_student)):
     """学生端知识准备页展示的检索配置(只读, 与 RAGService 实际行为一致)."""
     return ResponseUtil.success({
-        "personal_scope": ["论文", "开题报告", "中期报告", "终期报告", "题目信息"],
+        "personal_scope": ["论文", "源代码（ZIP）", "毕业设计", "说明文档", "开题报告", "中期报告", "终期报告"],
         "global_scope": ["答辩规范", "专业知识文档"],
         "default_top_k": 6,
         "retrieval": "向量 KNN + 关键词检索, RRF 融合排序",
@@ -118,7 +123,10 @@ def index_document(document_id: int, user: CurrentUser = Depends(require_student
         raise BusinessException("文档不存在")
     from app.tasks.dispatcher import dispatch_index_task
 
-    result = dispatch_index_task(document_id)
+    try:
+        result = dispatch_index_task(document_id)
+    except ValueError as exc:
+        raise BusinessException(str(exc)) from exc
     if result is None:  # 已进入 Celery 队列
         return ResponseUtil.success({"document_id": document_id, "status": "PROCESSING",
                                      "message": "已提交后台索引任务"}, message="索引任务已提交")
@@ -140,8 +148,12 @@ def index_stage_reports(user: CurrentUser = Depends(require_student), db: Sessio
     """将已通过的开题/中期/终期报告文本纳入知识库."""
     _check_ai_rate(user, db)
     rag = RAGService(db)
-    rag.index_stage_reports(user.profile_id)
-    return ResponseUtil.success(message="阶段报告已纳入知识库")
+    result = rag.index_stage_reports(user.profile_id)
+    failed = len(result["failed_document_ids"])
+    message = f"已同步 {result['indexed']} 份材料"
+    if failed:
+        message += f"，{failed} 份索引失败，请查看文档状态后重试"
+    return ResponseUtil.success(result, message=message)
 
 
 # ---------- RAG 检索测试 ----------

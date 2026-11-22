@@ -38,14 +38,15 @@ def split_sections(sections: list[Section], chunk_size: int = DEFAULT_CHUNK_SIZE
     """返回 [{section_title, content, page}], 每个 chunk 自带章节上下文前缀."""
     chunks: list[dict] = []
     for sec in sections:
+        title = (f"第{sec.page}页 · {sec.title}" if sec.page else sec.title)[:255]
         parts = split_section_content(sec.content, chunk_size, overlap)
         for i, part in enumerate(parts):
-            prefix = f"[{sec.title}] " if sec.title and sec.title != "正文" else ""
+            prefix = f"[{title}] " if title and title != "正文" else ""
             text = f"{prefix}{part}"
-            if len(text.strip()) < MIN_CHUNK_SIZE:
+            if len(text.strip()) < MIN_CHUNK_SIZE and not sec.metadata.get("source_code"):
                 continue
             chunks.append({
-                "section_title": sec.title,
+                "section_title": title,
                 "content": text.strip(),
                 "page": sec.page,
                 "chunk_index": len(chunks),

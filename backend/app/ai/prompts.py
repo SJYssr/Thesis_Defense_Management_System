@@ -31,6 +31,7 @@ DOC_TYPE_CN = {
     "THESIS": "毕业论文", "OPENING_REPORT": "开题报告", "MIDTERM_REPORT": "中期报告",
     "FINAL_REPORT": "终期报告", "TOPIC": "题目信息", "TEACHER_COMMENT": "教师评语",
     "DEFENSE_RULE": "答辩规范", "REFERENCE": "参考资料",
+    "PRACTICE_REPORT": "答辩练习报告", "SOURCE_CODE": "源代码", "DESIGN": "毕业设计", "MANUAL": "说明文档",
 }
 
 

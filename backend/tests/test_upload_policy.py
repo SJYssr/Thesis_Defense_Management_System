@@ -136,9 +136,12 @@ class PolicyEndpointTest(unittest.TestCase):
 
         body = json.loads(get_upload_policy(user=STUDENT, db=self.db).body)
         data = body["data"]
-        self.assertEqual(set(data), {"allowed_extensions", "by_kind",
+        self.assertEqual(set(data), {"allowed_extensions", "by_kind", "practice",
                                      "max_upload_size_mb", "max_upload_daily_mb"})
         self.assertEqual(set(data["by_kind"]), {"DOCUMENT", "ARCHIVE", "IMAGE", "MEDIA"})
+        self.assertEqual(data["practice"]["SOURCE_CODE"], [".zip"])
+        self.assertIn(".pdf", data["practice"]["REPORT"])
+        self.assertNotIn(".doc", data["practice"]["REPORT"])
         self.assertIn(".mp4", data["allowed_extensions"])
         self.assertNotIn(".svg", data["allowed_extensions"])
         self.assertEqual(data["max_upload_size_mb"], 7, "上限必须来自系统配置, 不能是环境变量默认值")

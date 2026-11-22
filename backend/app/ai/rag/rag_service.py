@@ -11,9 +11,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.ai.document.loader import parse_document
+from app.ai.document.source_archive import parse_source_archive
 from app.ai.document.splitter import split_sections
 from app.ai.embedding.factory import EmbeddingFactory
 from app.ai.llm.factory import LLMFactory
+from app.ai.rag.practice_sources import REPORTS, material_files, practice_documents, report_text
 from app.ai.rag.retriever import HybridRetriever, RetrievedChunk
 from app.ai.vector.store import vec_to_b64, vector_store
 from app.models.ai import AIDocument, AIDocumentChunk, AIUsageLog
@@ -39,26 +41,27 @@ class RAGService:
         self.db.commit()
 
         try:
+            # Serialize replacement of the chunks even if two workers accept the same retry.
+            doc = self.db.get(AIDocument, document_id, with_for_update=True, populate_existing=True)
+            if doc is None:
+                raise ValueError("文档已移除")
             # 1. 解析
             if doc.file_id:
                 from app.models.system import SysFile
 
                 f = self.db.get(SysFile, doc.file_id)
-                if f is None:
+                if f is None or f.deleted_at is not None:
                     raise ValueError("源文件不存在")
                 path = str(storage.abs_path(f.storage_path))
-                sections = parse_document(path)
+                sections = parse_source_archive(path) if doc.document_type == "SOURCE_CODE" else parse_document(path)
+                preview = "\n\n".join(f"# {s.title}\n{s.content}" for s in sections)
+                doc.content_text = preview.encode("utf-8")[:65000].decode("utf-8", errors="ignore")
             elif doc.content_text:
-                import re as _re
-
                 from app.ai.document.loader import Section, clean_text, split_by_headings
 
-                raw_text = _re.sub(r"^#{1,6}\s*", "", doc.content_text, flags=_re.MULTILINE)
-                sections = [Section(title=t, content=c) for t, c in split_by_headings(clean_text(raw_text))]
+                sections = [Section(title=t, content=c) for t, c in split_by_headings(clean_text(doc.content_text))]
             else:
                 raise ValueError("文档既无文件也无文本内容")
-
-            doc.content_text = "\n\n".join(f"# {s.title}\n{s.content}" for s in sections)[:200000]
 
             # 2. 分块
             chunks = split_sections(sections)
@@ -74,7 +77,15 @@ class RAGService:
                 self.db.execute(delete(AIDocumentChunk).where(AIDocumentChunk.document_id == document_id))
 
             # 4. Embedding(批量)
-            embeddings = EmbeddingFactory.get().embed([c["content"] for c in chunks])
+            embedder = EmbeddingFactory.get()
+            embeddings = []
+            for start in range(0, len(chunks), 32):
+                batch = chunks[start:start + 32]
+                vectors = embedder.embed([chunk["content"] for chunk in batch])
+                dimension = len(embeddings[0]) if embeddings else embedder.dim
+                if not dimension or len(vectors) != len(batch) or any(len(v) != dimension for v in vectors):
+                    raise ValueError("向量服务返回的分块数量或维度不匹配，请检查模型后重试")
+                embeddings.extend(vectors)
 
             # 5. 落库 + 写向量
             for chunk, emb in zip(chunks, embeddings):
@@ -118,53 +129,93 @@ class RAGService:
             logger.exception("文档 %s 索引失败", document_id)
             raise
 
-    def index_stage_reports(self, student_id: int):
-        """将学生的开题/中期/终期文本报告纳入私有知识库(无文件的文本型文档)."""
-        from app.models.business import FinalDefense, MidtermReport, OpeningReport
-        from app.models.enums import AIDocumentType
-
-        mapping = [
-            (AIDocumentType.OPENING_REPORT.value, OpeningReport, ["title", "research_background", "research_content", "technical_route"]),
-            (AIDocumentType.MIDTERM_REPORT.value, MidtermReport, ["progress_description", "completed_content", "next_plan"]),
-            (AIDocumentType.FINAL_REPORT.value, FinalDefense, ["summary", "innovation", "technical_solution", "test_result"]),
-        ]
+    def index_stage_reports(self, student_id: int) -> dict:
+        """Synchronize current uploads and approved stage reports; failed documents remain retryable."""
+        from app.models.business import GraduationCycle
         from app.shared.cycle import get_active_cycle
 
-        # D45: 只取当前 cycle 的已通过报告; 历史实现不带 cycle 过滤, 跨学年两份 APPROVED
-        # (旧数据 cycle_id 为 NULL)会触发 MultipleResultsFound, 接口直接 500。
         cycle = get_active_cycle(self.db, student_id)
-        for doc_type, model, fields in mapping:
-            stmt = select(model).where(model.student_id == student_id, model.status == "APPROVED")
-            if cycle is not None:
-                stmt = stmt.where(model.cycle_id == cycle.id)
-            report = self.db.execute(stmt.order_by(model.id.desc()).limit(1)).scalars().first()
+        cycle_id = cycle.id if cycle else None
+        pending = []
+        if cycle:
+            self.db.get(GraduationCycle, cycle.id, with_for_update=True)
+            for row in material_files(self.db, cycle):
+                doc = self.db.scalar(select(AIDocument).where(
+                    AIDocument.student_id == student_id, AIDocument.cycle_id == cycle_id,
+                    AIDocument.file_id == row.id, AIDocument.document_type == row.material_type,
+                ).order_by(AIDocument.id.desc()).limit(1).with_for_update())
+                if doc is None:
+                    doc = AIDocument(student_id=student_id, cycle_id=cycle_id, topic_id=cycle.topic_id,
+                                     document_type=row.material_type, file_id=row.id, document_name=row.original_name,
+                                     scope="STUDENT", index_status="WAITING", version=1)
+                    self.db.add(doc)
+                if doc.index_status in ("WAITING", "FAILED"):
+                    pending.append(doc)
+
+        for doc_type, (model, fields) in REPORTS.items():
+            stmt = select(model).where(model.student_id == student_id, model.status == "APPROVED",
+                                        model.cycle_id == cycle_id)
+            report = self.db.scalar(stmt.order_by(model.id.desc()).limit(1))
             if report is None:
                 continue
-            text = "\n\n".join(f"## {f}\n{getattr(report, f, '')}" for f in fields if getattr(report, f, None))
-            if not text.strip():
+            content = report_text(report, fields)
+            if not content:
                 continue
-            # D40(本模块侧防御): 论文重传会留下同类型多份 AIDocument, 这里只取 version 最新的一条,
-            # 旧文档作废由 material 模块负责, 但检索侧不能因历史脏数据抛 MultipleResultsFound。
-            existing = self.db.execute(
-                select(AIDocument)
-                .where(AIDocument.student_id == student_id, AIDocument.document_type == doc_type)
-                .order_by(AIDocument.version.desc(), AIDocument.id.desc())
-                .limit(1)
-            ).scalars().first()
-            if existing and existing.content_text == text:
-                continue
-            if existing is None:
-                doc = AIDocument(student_id=student_id, document_type=doc_type,
-                                 document_name=DOC_TYPE_CN.get(doc_type, doc_type), scope="STUDENT",
-                                 index_status="WAITING")
+            doc = self.db.scalar(select(AIDocument).where(
+                AIDocument.student_id == student_id, AIDocument.cycle_id == cycle_id,
+                AIDocument.document_type == doc_type, AIDocument.file_id.is_(None),
+            ).order_by(AIDocument.id.desc()).limit(1).with_for_update())
+            if doc is None:
+                doc = AIDocument(student_id=student_id, cycle_id=cycle_id, topic_id=report.topic_id,
+                                 document_type=doc_type, document_name=DOC_TYPE_CN[doc_type],
+                                 scope="STUDENT", version=1)
                 self.db.add(doc)
-            else:
-                doc = existing
+            elif doc.content_text == content and doc.index_status in ("SUCCESS", "PROCESSING"):
+                continue
+            elif doc.content_text != content:
                 doc.version += 1
-                doc.index_status = "WAITING"
-            doc.content_text = text
-            self.db.commit()
-            self.index_document(doc.id)
+            doc.topic_id = report.topic_id
+            doc.content_text = content
+            doc.index_status = "WAITING"
+            pending.append(doc)
+        self.db.flush()
+        ids = [doc.id for doc in pending]
+        self.db.commit()
+        failed = []
+        for doc_id in ids:
+            try:
+                self.index_document(doc_id)
+            except Exception:
+                # The document retains its reason; a bad archive must not skip the remaining reports.
+                failed.append(doc_id)
+        return {"indexed": len(ids) - len(failed), "failed_document_ids": failed}
+
+    def practice_documents(self, student_id: int) -> list[AIDocument]:
+        return practice_documents(self.db, student_id)
+
+    def retrieve_practice(self, query: str, student_id: int, document_types: list[str] | None = None,
+                          top_k: int = 6, *, document_ids: list[int] | None = None) -> list[RetrievedChunk]:
+        docs = {d.id: d for d in self.practice_documents(student_id)
+                if (document_ids is None or d.id in document_ids)
+                and (not document_types or d.document_type in document_types)}
+        if not docs:
+            return []
+        hits = HybridRetriever(self.db, document_ids=list(docs)).retrieve(query, student_id, document_types, top_k=top_k)
+        for hit in hits:
+            hit.extra["document_name"] = docs[hit.document_id].document_name
+        return hits
+
+    def practice_chunks(self, student_id: int, chunk_ids: list[int]) -> list[RetrievedChunk]:
+        docs = {d.id: d for d in self.practice_documents(student_id)}
+        if not docs or not chunk_ids:
+            return []
+        rows = self.db.scalars(select(AIDocumentChunk).where(
+            AIDocumentChunk.id.in_(chunk_ids), AIDocumentChunk.document_id.in_(list(docs)),
+            AIDocumentChunk.student_id == student_id, AIDocumentChunk.scope == "STUDENT"))
+        chunks = {c.id: RetrievedChunk(c.id, c.document_id, c.document_type, c.section_title, c.content[:1200],
+                                       score=0, source="citation", extra={"document_name": docs[c.document_id].document_name})
+                  for c in rows}
+        return [chunks[cid] for cid in chunk_ids if cid in chunks]
 
     # ---------- 检索 ----------
 

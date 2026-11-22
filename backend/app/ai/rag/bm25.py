@@ -124,22 +124,25 @@ class BM25Index:
     """
 
     def __init__(self, db: Session, student_id: int | None = None,
-                 document_types: list[str] | None = None):
+                 document_types: list[str] | None = None, *, document_ids: list[int] | None = None):
         self.db = db
         self.student_id = student_id
         self.document_types = safe_document_types(document_types)
         # 可观测性: 建索引(全量取数)的次数, 单测据此断言缓存是否真的命中
         self.build_count = 0
+        self.document_ids = None if document_ids is None else tuple(sorted(document_ids))
 
     # ---------- 维度与过滤 ----------
 
     @property
     def key(self) -> tuple:
         sid = int(self.student_id) if self.student_id is not None else None
-        return (_bind_key(self.db), sid, tuple(self.document_types))
+        return (_bind_key(self.db), sid, tuple(self.document_types), self.document_ids)
 
     def _conds(self) -> list:
         conds = [student_scope_filter(self.student_id)]
+        if self.document_ids is not None:
+            conds.extend([AIDocumentChunk.student_id == self.student_id, AIDocumentChunk.document_id.in_(self.document_ids)])
         if self.document_types:
             conds.append(AIDocumentChunk.document_type.in_(self.document_types))
         return conds

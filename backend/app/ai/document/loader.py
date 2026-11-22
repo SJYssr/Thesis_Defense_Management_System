@@ -24,6 +24,7 @@ def clean_text(text: str) -> str:
 
 
 HEADING_PATTERNS = [
+    re.compile(r"^#{1,6}[ \t]+[^\n]{1,120}$", re.MULTILINE),
     re.compile(r"^(第[一二三四五六七八九十百\d]+[章节部分][^\n]{0,60})$", re.MULTILINE),
     re.compile(r"^(\d+(\.\d+){0,3})\s+[^\n]{1,80}$", re.MULTILINE),
     re.compile(r"^([一二三四五六七八九十]+、[^\n]{1,60})$", re.MULTILINE),
@@ -35,7 +36,7 @@ def split_by_headings(text: str) -> list[tuple[str, str]]:
     matches: list[tuple[int, int, str]] = []
     for pattern in HEADING_PATTERNS:
         for m in pattern.finditer(text):
-            matches.append((m.start(), m.end(), m.group(0).strip()))
+            matches.append((m.start(), m.end(), m.group(0).lstrip("#").strip()))
     if not matches:
         return [("正文", text)]
     # 去重叠并按位置排序
@@ -157,7 +158,6 @@ def parse_txt(path: str) -> list[Section]:
     else:
         return []
     text = clean_text(text)
-    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)  # markdown 标题前缀
     return [Section(title=t, content=c) for t, c in split_by_headings(text)]
 
 
@@ -183,7 +183,7 @@ def _merge_sections(sections: list[Section]) -> list[Section]:
     for s in sections:
         if not s.content or len(s.content) < 10:
             continue
-        if merged and merged[-1].title == s.title:
+        if merged and merged[-1].title == s.title and merged[-1].page == s.page:
             merged[-1].content += "\n" + s.content
         else:
             merged.append(s)
