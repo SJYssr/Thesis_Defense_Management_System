@@ -35,12 +35,16 @@ class MemoryStorage {
 
 const localStorageStub = new MemoryStorage()
 const navigations = []
+const storageListeners = []
+let reloads = 0
 globalThis.localStorage = localStorageStub
 globalThis.window = {
+  addEventListener(type, handler) { if (type === 'storage') storageListeners.push(handler) },
   location: {
     pathname: '/teacher/home',
     search: '?page=2',
     replace(url) { navigations.push(String(url)) },
+    reload() { reloads++ },
   },
 }
 
@@ -81,7 +85,8 @@ function resetEnv(access, refresh) {
   axiosStub.resetStats()
   epStub.resetNotifyLog()
   navigations.length = 0
-  session.resetSessionExpiredFlag()
+  reloads = 0
+  session.changeLoginSession()
 }
 
 process.stdout.write('===== D49 401 恢复路径验证 (真实 src/api/request.ts + session.ts) =====\n')
@@ -413,6 +418,114 @@ process.stdout.write('===== D49 401 恢复路径验证 (真实 src/api/request.t
     '实测 refresh ' + axiosStub.stats.refresh + ' 次 (期望 0)',
   )
   globalThis.fetch = originalFetch
+}
+// 真实 Pinia 登出，以及同源其它标签更换账号时尚未完成的请求。
+{
+  const { createPinia } = await import('pinia')
+  const { useUserStore } = await import(srcUrl('stores/user.ts'))
+  const store = useUserStore(createPinia())
+  const first = { access_token: 'first-access', refresh_token: 'first-refresh', user: { id: 1, role: 'STUDENT' } }
+  const second = { access_token: 'second-access', refresh_token: 'second-refresh', user: { id: 2, role: 'STUDENT' } }
+  const storageEvent = key => storageListeners.forEach(fn => fn({ key, storageArea: localStorageStub }))
+  for (const change of ['本页换号', '其他标签换号']) {
+    for (const pending of ['business401', 'refresh', 'profile']) {
+      resetEnv(null, null)
+      store.setSession(first)
+      const started = Promise.withResolvers()
+      const release = Promise.withResolvers()
+      const logoutHeader = Promise.withResolvers()
+      let businessCalls = 0
+      let refreshCalls = 0
+      axiosStub.setAdapter(async cfg => {
+        if (cfg.url === '/auth/logout') {
+          logoutHeader.resolve(cfg.headers.Authorization)
+          return okBody({})
+        }
+        if (cfg.url === '/auth/refresh') {
+          refreshCalls++
+          if (pending === 'refresh') { started.resolve(); await release.promise }
+          return okBody({ access_token: 'renewed-first', refresh_token: 'renewed-first-refresh' })
+        }
+        if (cfg.url === '/auth/profile') {
+          started.resolve()
+          await release.promise
+          return okBody(first.user)
+        }
+        businessCalls++
+        if (pending === 'business401') { started.resolve(); await release.promise }
+        throw fail401('测试请求已过期')
+      })
+      const oldRequest = Promise.allSettled([request.get('/topics')])
+      await started.promise
+      if (change === '本页换号') {
+        const oldAccess = tokenUtils.getAccessToken()
+        store.logout()
+        const cleared = !store.user && !tokenUtils.getAccessToken() && !tokenUtils.getRefreshToken()
+        store.setSession(second)
+        check('登出请求携带退出前的凭证（' + pending + '）', cleared && await logoutHeader.promise === 'Bearer ' + oldAccess)
+      } else {
+        localStorageStub.setItem('access_token', second.access_token)
+        localStorageStub.setItem('refresh_token', second.refresh_token)
+        localStorageStub.setItem('user_info', JSON.stringify(second.user))
+        // 事件尚未投递时，旧页主动发出的请求也必须在 adapter 之前被拒绝。
+        const [beforeEvent] = await Promise.allSettled([request.get('/notifications')])
+        storageEvent('user_info')
+        check('其它标签换号时旧页只重载一次（' + pending + '）', beforeEvent.status === 'rejected' && reloads === 1)
+      }
+      release.resolve()
+      const [result] = await oldRequest
+      check(change + '后保留新账号且不重放旧请求（' + pending + '）',
+        result.status === 'rejected' && businessCalls === 1 && refreshCalls === (pending === 'business401' ? 0 : 1)
+        && tokenUtils.getAccessToken() === second.access_token && tokenUtils.getRefreshToken() === second.refresh_token
+        && tokenUtils.readStoredUser().id === second.user.id && navigations.length === 0 && epStub.notifyLog.length === 0
+        && (change !== '本页换号' || store.user.id === second.user.id))
+    }
+  }
+  resetEnv('first-access', 'first-refresh')
+  localStorageStub.setItem('access_token', 'same-user-renewed')
+  localStorageStub.setItem('user_info', JSON.stringify({ id: 2, role: 'TEACHER', real_name: '已更新' }))
+  storageEvent('user_info')
+  check('同一人的正常续期和资料更新保持当前页面', session.isCurrentSession() && reloads === 0)
+  localStorageStub.clear()
+  storageEvent(null)
+  check('另一个标签清空会话后，旧页面立即重载', reloads === 1 && !session.isCurrentSession())
+
+  for (const outcome of ['success', '401']) {
+    resetEnv('expired', 'old-refresh')
+    const started = Promise.withResolvers()
+    const release = Promise.withResolvers()
+    axiosStub.setAdapter(async cfg => {
+      if (cfg.url === '/auth/refresh') {
+        started.resolve()
+        await release.promise
+        if (outcome === '401') throw fail401('刷新令牌已轮换')
+        return okBody({ access_token: 'obsolete-access', refresh_token: 'obsolete-refresh' })
+      }
+      if (cfg.headers.Authorization === 'Bearer other-tab-renewed') return okBody({ ready: true })
+      throw fail401('已过期')
+    })
+    const replay = request.get('/topics')
+    await started.promise
+    localStorageStub.setItem('access_token', 'other-tab-renewed')
+    localStorageStub.setItem('refresh_token', 'other-tab-rotated')
+    storageEvent('user_info')
+    release.resolve()
+    const result = await replay
+    check('同一人跨标签同时续期复用已轮换凭证（' + outcome + '）',
+      result.data.ready && tokenUtils.getAccessToken() === 'other-tab-renewed'
+      && tokenUtils.getRefreshToken() === 'other-tab-rotated' && reloads === 0 && navigations.length === 0)
+  }
+
+  const jwt = 'h.' + Buffer.from(JSON.stringify({ sub: '7' })).toString('base64url') + '.s'
+  for (const cachedUser of [null, { id: 9 }]) {
+    resetEnv(jwt, 'leftover-refresh')
+    if (cachedUser) localStorageStub.setItem('user_info', JSON.stringify(cachedUser))
+    else localStorageStub.removeItem('user_info')
+    session.changeLoginSession() // 模拟从已不一致的持久存储载入新页。
+    check('载入孤立或错配令牌时清理并只跳转一次（' + (cachedUser ? '错配' : '缺失') + '）',
+      !session.isCurrentSession() && !session.isCurrentSession() && reloads === 0 && navigations.length === 1
+      && navigations[0] === '/login' && !tokenUtils.getAccessToken() && !tokenUtils.getRefreshToken() && !tokenUtils.readStoredUser())
+  }
 }
 const failed = checks.filter((c) => !c.passed)
 process.stdout.write('\n共 ' + checks.length + ' 项断言, 通过 ' + (checks.length - failed.length) + ' 项, 失败 ' + failed.length + ' 项\n')

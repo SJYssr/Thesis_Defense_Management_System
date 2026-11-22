@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { clearAuthStorage, getAccessToken, isTokenExpired, readStoredUser, roleHome } from '@/utils/token'
-import { dropSession, hasRefreshToken, refreshAccessToken } from '@/api/session'
+import { getAccessToken, isTokenExpired, readStoredUser, roleHome } from '@/utils/token'
+import { clearLoginSession, currentSessionGeneration, isCurrentSession, dropSession, hasRefreshToken, refreshAccessToken } from '@/api/session'
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('@/views/login/LoginView.vue'), meta: { public: true } },
@@ -83,6 +83,8 @@ function loginRoute(fullPath: string) {
 }
 
 router.beforeEach(async (to) => {
+  const generation = currentSessionGeneration()
+  if (!isCurrentSession(generation)) return false
   const token = getAccessToken()
 
   // 登录页等公开路由: 已登录且 token 未过期则不重复展示登录页
@@ -95,16 +97,18 @@ router.beforeEach(async (to) => {
   // ===== 1) exp 校验(不验签，只判过期) + 静默续期 =====
   if (!token || isTokenExpired(token)) {
     if (!hasRefreshToken()) {
-      clearAuthStorage()
+      clearLoginSession()
       return loginRoute(to.fullPath)
     }
     try {
       // 与 api/request.ts 共用同一个 refresh 单例，不会重复刷新
       await refreshAccessToken()
     } catch {
+      if (!isCurrentSession(generation)) return false
       dropSession()
       return loginRoute(to.fullPath)
     }
+    if (!isCurrentSession(generation)) return false
     if (isTokenExpired(getAccessToken())) {
       dropSession()
       return loginRoute(to.fullPath)
@@ -114,7 +118,7 @@ router.beforeEach(async (to) => {
   // ===== 2) 用户信息缺失(本地存储被清) → 视为未登录 =====
   const user = readStoredUser<StoredUser>()
   if (!user?.role) {
-    clearAuthStorage()
+    clearLoginSession()
     return loginRoute(to.fullPath)
   }
 

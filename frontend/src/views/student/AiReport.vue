@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { aiApi } from '@/api/common'
 import { syncObservations } from '@/api/practiceObservations'
 import { useUserStore } from '@/stores/user'
@@ -8,11 +8,23 @@ import MarkdownViewer from '@/components/MarkdownViewer.vue'
 import PracticeAssessment from '@/components/PracticeAssessment.vue'
 import PracticeSources from '@/components/PracticeSources.vue'
 const route = useRoute()
+const router = useRouter()
 const userStore = useUserStore()
 const observationsPending = ref(false)
 const DIM_CN: Record<string, string> = { accuracy: '知识准确性', logic: '逻辑完整性', clarity: '表达清晰度', depth: '技术深度' }
 const sessions = ref<any[]>([])
-const selected = ref<number>()
+const sessionsReady = ref(false)
+const sessionsFailed = ref(false)
+const selected = computed(() => {
+  const value = route.query.session
+  if (value === undefined) return sessions.value[0]?.id
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return undefined
+  return sessions.value.find(session => String(session.id) === value)?.id
+})
+const unavailable = computed(() => sessionsReady.value && route.query.session !== undefined && !selected.value)
+function selectReport(id: number) {
+  void router.push({ query: { ...route.query, session: String(id) } })
+}
 const report = ref<any>(null)
 const loading = ref(false)
 const dimensions = computed(() => Object.entries(report.value?.dimension_scores || {}).map(([key, value]) => ({ key, label: DIM_CN[key] || key, value: Number(value) })))
@@ -23,13 +35,13 @@ const weakest = computed(() => {
 let requestId = 0
 const loadFailed = ref(false)
 async function loadReport() {
-  if (!selected.value) return
   const id = ++requestId
+  const sessionId = selected.value
   report.value = null
-  loading.value = true
   loadFailed.value = false
+  loading.value = Boolean(sessionId)
+  if (!sessionId) return
   try {
-    const sessionId = selected.value
     const owner = userStore.user?.id
     const saved = owner ? await syncObservations(owner, sessionId) : true
     if (id !== requestId) return
@@ -40,15 +52,20 @@ async function loadReport() {
     if (id === requestId) loadFailed.value = true
   } finally { if (id === requestId) loading.value = false }
 }
-onMounted(async () => {
-  sessions.value = (await aiApi.sessions()).data.filter((s: any) => s.status === 'FINISHED')
-  const requested = Number(route.query.session)
-  selected.value = sessions.value.find(s => s.id === requested)?.id || sessions.value[0]?.id
-  await loadReport()
-})
+async function loadSessions() {
+  sessionsFailed.value = false
+  try {
+    sessions.value = (await aiApi.sessions()).data.filter((s: any) => s.status === 'FINISHED')
+    sessionsReady.value = true
+  } catch {
+    sessionsFailed.value = true
+  }
+}
+watch(selected, loadReport, { flush: 'sync' })
+onMounted(loadSessions)
 </script>
 <template>
-  <header class="student-heading report-heading"><div><h1>AI 模拟答辩报告</h1><p>基于答辩表现整理能力评估与复习建议（练习结果，不计入正式成绩）</p></div><el-select v-if="sessions.length" v-model="selected" style="width:230px" @change="loadReport"><el-option v-for="s in sessions" :key="s.id" :value="s.id" :label="`答辩 #${s.id} · ${(s.finished_at || '').slice(0, 10)}`" /></el-select></header>
+  <header class="student-heading report-heading"><div><h1>AI 模拟答辩报告</h1><p>基于答辩表现整理能力评估与复习建议（练习结果，不计入正式成绩）</p></div><el-select v-if="sessions.length" :model-value="selected" placeholder="选择本人的报告" style="width:230px" @change="selectReport"><el-option v-for="s in sessions" :key="s.id" :value="s.id" :label="`答辩 #${s.id} · ${(s.finished_at || '').slice(0, 10)}`" /></el-select></header>
   <div v-loading="loading" v-if="report">
     <div class="report-top">
       <section class="page-card score-card"><h3 class="block-title">综合得分</h3><strong>{{ report.overall_score }}</strong><span>{{ report.overall_score >= 80 ? '良好' : report.overall_score >= 60 ? '合格' : '继续加油' }}</span></section>
@@ -104,8 +121,15 @@ onMounted(async () => {
       </el-collapse>
     </section>
   </div>
-  <section v-else-if="loading || loadFailed" class="page-card" role="status">
-    {{ loading ? '正在读取练习报告…' : '报告读取失败。' }}
+  <section v-else-if="sessionsFailed" class="page-card" role="status">
+    练习记录读取失败。<el-button @click="loadSessions">重试</el-button>
+  </section>
+  <section v-else-if="unavailable" class="page-card" role="status">
+    该报告不可用。<span v-if="sessions.length">请从上方选择本人的练习报告。</span>
+    <el-button v-else @click="$router.push('/student/ai-defense')">前往模拟答辩</el-button>
+  </section>
+  <section v-else-if="!sessionsReady || loading || loadFailed" class="page-card" role="status">
+    {{ loadFailed ? '报告读取失败。' : '正在读取练习报告…' }}
     <el-button v-if="loadFailed" @click="loadReport">重试</el-button>
   </section>
   <section v-else class="page-card"><el-empty description="完成一次模拟答辩后生成报告"><el-button type="primary" @click="$router.push('/student/ai-defense')">开始模拟答辩</el-button></el-empty></section>
