@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { aiApi } from '@/api/common'
+import { aiApi, listKnowledgeMaterials } from '@/api/common'
 import StatusTag from '@/components/StatusTag.vue'
 
 const TYPE_CN: Record<string, string> = {
-  THESIS: '论文', OPENING_REPORT: '开题报告', MIDTERM_REPORT: '中期报告', FINAL_REPORT: '终期报告',
+  PRACTICE_REPORT: '练习报告', SOURCE_CODE: '源代码', DESIGN: '设计作品', MANUAL: '说明文档', THESIS: '论文', OPENING_REPORT: '开题报告', MIDTERM_REPORT: '中期报告', FINAL_REPORT: '终期报告',
   TOPIC: '题目信息', TEACHER_COMMENT: '教师评语', DEFENSE_RULE: '答辩规范', REFERENCE: '参考资料',
 }
 const docs = ref<any[]>([])
@@ -24,26 +24,34 @@ function fmtSize(size: number | null | undefined) {
 
 async function load() {
   // 后端已分页(page/size ≤ 100)，知识库页需要全量做统计与刷新判断
-  docs.value = (await aiApi.listDocuments(1, 100)).data.items
+  docs.value = await listKnowledgeMaterials()
   if (!config.value) config.value = (await aiApi.ragConfig()).data
 }
 async function index(id?: number) {
+  if (busy.value) return
   busy.value = true
   try {
-    if (id != null) await aiApi.indexDocument(id)
-    else await aiApi.indexReports()
-    ElMessage.success('已提交索引任务')
-    await load()
-  } finally { busy.value = false }
+    if (id != null) {
+      const res = await aiApi.indexDocument(id)
+      ElMessage.success(res.data?.message || '文档索引已更新')
+    } else {
+      const res = await aiApi.indexReports()
+      if (res.data?.failed_document_ids?.length) ElMessage.warning(res.message)
+      else ElMessage.success(res.message)
+    }
+  } catch { /* 请求层已显示索引失败原因。 */ }
+  finally {
+    try { await load() } finally { busy.value = false }
+  }
 }
 onMounted(() => {
   load()
-  timer = setInterval(() => { if (docs.value.some(d => ['WAITING', 'PROCESSING'].includes(d.index_status))) load() }, 5000)
+  timer = setInterval(() => { if (!busy.value && docs.value.some(d => ['WAITING', 'PROCESSING'].includes(d.index_status))) load() }, 5000)
 })
 onUnmounted(() => clearInterval(timer))
 </script>
 <template>
-  <header class="student-heading"><h1>AI 知识准备</h1><p>查看论文与阶段材料的解析、切分和向量索引状态</p></header>
+  <header class="student-heading"><h1>AI 知识准备</h1><p>查看毕业论文、阶段报告和源码的索引。已有材料可在此补建索引。</p></header>
   <section class="page-card knowledge-panel">
     <h3 class="block-title">知识来源</h3>
     <el-table :data="docs">
@@ -54,7 +62,7 @@ onUnmounted(() => clearInterval(timer))
       <el-table-column label="大小" width="90">
         <template #default="{ row }">{{ fmtSize(row.file_size) }}</template>
       </el-table-column>
-      <el-table-column prop="chunk_count" label="Chunk" width="85" />
+      <el-table-column prop="chunk_count" label="片段数" width="85" />
       <el-table-column label="索引状态" width="110"><template #default="{ row }"><StatusTag :status="row.index_status" /></template></el-table-column>
       <el-table-column label="最近更新" width="165"><template #default="{ row }">{{ (row.indexed_at || row.created_at || '—').replace('T', ' ').slice(0, 16) }}</template></el-table-column>
       <el-table-column label="操作" width="100"><template #default="{ row }"><el-button link type="primary" :loading="busy" @click="index(row.id)">重建索引</el-button></template></el-table-column>
@@ -74,7 +82,7 @@ onUnmounted(() => clearInterval(timer))
     </div>
     <div class="knowledge-actions">
       <el-button @click="$router.push('/student/material')">上传材料</el-button>
-      <el-button :loading="busy" @click="index()">开始构建索引</el-button>
+      <el-button :loading="busy" @click="index()">同步并索引本期材料</el-button>
       <el-button type="primary" @click="$router.push('/student/ai-defense')">开始模拟答辩</el-button>
     </div>
   </section>

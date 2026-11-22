@@ -20,6 +20,10 @@ export interface PageResult<T> {
 /** backend/app/modules/ai 的 AIDocumentType 枚举(强校验, 非法值 → 42200) */
 export type AiDocumentType =
   | 'THESIS'
+  | 'PRACTICE_REPORT'
+  | 'SOURCE_CODE'
+  | 'DESIGN'
+  | 'MANUAL'
   | 'OPENING_REPORT'
   | 'MIDTERM_REPORT'
   | 'FINAL_REPORT'
@@ -35,6 +39,8 @@ export interface AiDocument {
   index_status: string
   status_cn?: string
   chunk_count?: number
+  practice_upload?: boolean
+  practice_eligible?: boolean
   version?: number
   error_message?: string | null
   file_size?: number
@@ -42,6 +48,45 @@ export interface AiDocument {
   indexed_at?: string | null
   created_at?: string
   [key: string]: unknown
+}
+
+export interface PracticeSource {
+  chunk_id: number
+  document_name?: string
+  section?: string | null
+  excerpt?: string
+}
+
+export interface PracticeQuestion {
+  question: string
+  question_type?: string | null
+  sources?: PracticeSource[]
+}
+
+export interface PracticeScores {
+  accuracy: number
+  logic: number
+  clarity: number
+  depth: number
+  total: number
+}
+
+export interface PracticeTurn extends PracticeQuestion {
+  turn_no: number
+  is_follow_up?: boolean
+  student_answer?: string | null
+  ai_feedback?: string | null
+  scores?: PracticeScores | null
+  total_score?: number | null
+}
+
+export interface PracticeSession {
+  id: number
+  status: 'CREATED' | 'RUNNING' | 'FINISHED'
+  question_count: number
+  answered_count: number
+  overall_score?: number | null
+  finished_at?: string | null
 }
 
 /** 分页查询通用参数: 后端一律 page(从 1 开始, ge=1) + page_size(ge=1, le=100) */
@@ -105,7 +150,10 @@ export type UploadKind = 'DOCUMENT' | 'ARCHIVE' | 'IMAGE' | 'MEDIA'
  * 扩展名白名单与大小上限由后端单源给出: 此前前端 accept 写 .mp4 而后端白名单没有 .mp4,
  * 演示视频必然上传失败。前端一律据此生成 accept 并做上传前预校验。
  */
+export type PracticeMaterialKind = 'REPORT' | 'SOURCE_CODE'
+
 export interface UploadPolicy {
+  practice: Record<PracticeMaterialKind, string[]>
   allowed_extensions: string[]
   by_kind: Record<UploadKind, string[]>
   max_upload_size_mb: number
