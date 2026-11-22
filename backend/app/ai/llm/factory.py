@@ -206,7 +206,7 @@ class OpenAICompatibleLLM(BaseLLMService):
         self.name = f"openai:{model}"
 
     @staticmethod
-    def _messages(system: str, user: str, history: list[dict] | None):
+    def _messages(system: str, user: str, history: list[dict] | None = None):
         messages = [{"role": "system", "content": system}]
         for h in (history or [])[-10:]:
             if h.get("role") in ("user", "assistant") and h.get("content"):

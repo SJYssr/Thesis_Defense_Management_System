@@ -10,7 +10,7 @@ import urllib.request
 from unittest import mock
 
 from app.ai import net
-from app.ai.llm.factory import OllamaProbe, probe_ollama, reset_ollama_probe_cache
+from app.ai.llm.factory import OllamaProbe, OpenAICompatibleLLM, probe_ollama, reset_ollama_probe_cache
 
 
 class _FakeResponse:
@@ -57,6 +57,18 @@ class LoopbackTest(unittest.TestCase):
             self.assertFalse(client.trust_env)
         finally:
             client.close()
+
+
+class CompletionTest(unittest.TestCase):
+    def test_sync_completion_sends_system_and_user_without_history(self):
+        with mock.patch("openai.OpenAI") as sdk:
+            service = OpenAICompatibleLLM("https://example.invalid/v1", "test-only", "test-model")
+        create = sdk.return_value.chat.completions.create
+        create.return_value.choices = [mock.Mock(message=mock.Mock(content="练习问题"))]
+        self.assertEqual(service.complete("答辩教师", "请出题"), "练习问题")
+        create.assert_called_once_with(model="test-model", temperature=0.3, messages=[
+            {"role": "system", "content": "答辩教师"}, {"role": "user", "content": "请出题"},
+        ])
 
 
 class ProbeBypassesProxyTest(unittest.TestCase):
