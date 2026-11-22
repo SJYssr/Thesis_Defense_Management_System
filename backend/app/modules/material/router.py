@@ -381,7 +381,7 @@ def _review_material(db: Session, material_id: int, user: CurrentUser,
         GraduationWorkflowService.on_stage_approved(db, m.student_id, ProcessStage.MATERIAL, cycle_id=m.cycle_id)
     ProgressService.recompute(db, m.student_id, cycle_id=m.cycle_id)
     student_user_id = db.execute(select(StudentProfile.user_id).where(StudentProfile.id == m.student_id)).scalar()
-    result_cn = {"approve": "通过, 恭喜完成毕业设计!", "reject": "被驳回",
+    result_cn = {"approve": "通过，请在「毕业成果」查看归档条件", "reject": "被驳回",
                  "request_revision": "被要求修改后重新提交"}[decision]
     push_notification(db, user_id=student_user_id, type="REVIEW_RESULT",
                       title="毕业材料审核结果",

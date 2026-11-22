@@ -11,6 +11,8 @@ import json
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -36,10 +38,12 @@ from app.models.user import College, Major, StudentProfile, SysUser, TeacherProf
 from app.modules.archive import router as archive_router
 from app.modules.archive.router import (
     ArchiveApprove,
+    ArchiveCreate,
     StudentArchiveFile,
     StudentArchiveSubmit,
     approve_package,
     archive_transition,
+    create_archive,
     search_packages,
     student_archive_eligibility,
     submit_archive_package,
@@ -325,6 +329,56 @@ class ApproveTest(ArchiveBaseCase):
         self.assertIsNotNone(pkg.archived_at)
         self.assertIsNotNone(process.completed_at, "approve 后必须 recompute, completed_at 由空变非空")
         self.assertEqual(process.progress_percent, 100)
+
+    def test_withdrawn_result_blocks_approval_and_hides_score(self):
+        from app.modules.defense.service import withdraw_result
+
+        pkg = body_json(self.submit())
+        withdraw_result(self.db, 1, ADMIN, "需要复核")
+        self.db.commit()
+        r = self.client(ADMIN).post(f"/api/v1/archive-packages/{pkg['id']}/approve", json={})
+        self.assertEqual(r.status_code, 400)
+        detail = body_json(self.client(STUDENT_A).get(f"/api/v1/archive-packages/{pkg['id']}"))
+        self.assertEqual(detail["status"], "PENDING")
+        self.assertIsNone(detail["result_score"])
+        self.assertIsNone(detail["result_decision"])
+
+    def test_returned_package_can_replace_files_and_keep_previous_feedback(self):
+        pkg = body_json(self.submit(file_ids=(1, 2)))
+        admin = self.client(ADMIN)
+        student = self.client(STUDENT_A)
+        path = f"/api/v1/archive-packages/{pkg['id']}"
+        # 学院先读申请文件，再决定是否退回修改。
+        details = body_json(admin.get(path))
+        self.assertTrue(details["can_download"])
+        with TemporaryDirectory() as folder:
+            sample = Path(folder) / "sample.pdf"
+            sample.write_bytes(b"submitted thesis")
+            with patch.object(archive_router.storage, "abs_path", return_value=sample):
+                response = admin.get(details["files"][0]["url"])
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.content, b"submitted thesis")
+        self.assertEqual(admin.post(path + "/return", json={"comment": "请更换终稿"}).status_code, 200)
+        returned = body_json(student.get(path))
+        self.assertEqual(returned["status"], "REVOKED")
+        self.assertEqual(returned["review_comment"], "请更换终稿")
+        self.assertEqual(returned["title"], "毕业设计成果")
+        available = body_json(student.get("/api/v1/student/archive/eligibility"))["files"]
+        self.assertEqual({file["file_id"] for file in available}, {1, 2})
+        updated = body_json(self.submit(file_ids=(2,)))
+        self.assertEqual(updated["id"], pkg["id"])
+        self.assertEqual(updated["status"], "PENDING")
+        self.assertEqual([file["file_id"] for file in body_json(admin.get(path))["files"]], [2])
+        self.assertEqual(admin.post(path + "/approve", json={}).status_code, 200)
+        self.assertEqual(admin.post(path + "/return", json={"comment": "重复退回"}).status_code, 400)
+
+    def test_admin_archive_recomputes_progress_immediately(self):
+        create_archive(ArchiveCreate(cycle_id=1, files=[{"file_id": 1, "file_role": "THESIS"}]),
+                       user=ADMIN, db=self.db)
+        self.db.expire_all()
+        process = self.db.get(GraduationProcess, 1)
+        self.assertEqual(process.progress_percent, 100)
+        self.assertIsNotNone(process.completed_at)
 
     def test_approve_twice_is_40003(self):
         self.submit()

@@ -39,8 +39,8 @@ from app.models.defense import (
     DefenseExaminer,
     DefenseResult,
 )
-from app.models.enums import ArchiveStatus, ConsentVisibility, ResultStatus
-from app.models.system import OperationLog, SysFile, TopicAttachment
+from app.models.enums import ArchiveStatus, BusinessType, ConsentVisibility, ResultStatus
+from app.models.system import OperationLog, ReviewRecord, SysFile, TopicAttachment
 from app.models.user import College, Major, StudentProfile, SysUser, TeacherProfile
 from app.shared import state_machine as sm
 from app.shared.cycle import get_active_cycle
@@ -85,6 +85,12 @@ class ArchiveView:
     def detail(self) -> bool:
         """作者本人/导师/评委/管理员: 可看成绩与答辩结论."""
         return self.is_admin or self.is_owner or self.is_supervisor or self.is_examiner
+
+    def can_download(self, status: str) -> bool:
+        if status == ArchiveStatus.PENDING.value:
+            return self.is_admin or self.is_owner
+        return status == ArchiveStatus.ARCHIVED.value and (
+            self.is_admin or self.is_owner or self.is_supervisor or self.published)
 
     @property
     def identity(self) -> bool:
@@ -169,9 +175,18 @@ def _package_item(db: Session, pkg: ArchivePackage, viewer: CurrentUser | None =
         ).scalar() if cycle.teacher_id else None
     if view.detail:
         result = db.get(DefenseResult, pkg.result_id) if pkg.result_id else None
-        item["result_score"] = result.score if result else None
-        item["result_decision"] = result.decision if result else None
+        published = result is not None and result.status == ResultStatus.PUBLISHED.value
+        item["result_score"] = result.score if published else None
+        item["result_decision"] = result.decision if published else None
+        if pkg.status == ArchiveStatus.REVOKED.value:
+            item["review_comment"] = db.scalar(
+                select(ReviewRecord.comment).where(
+                    ReviewRecord.business_type == BusinessType.ARCHIVE_PACKAGE.value,
+                    ReviewRecord.business_id == pkg.id, ReviewRecord.action == "REVOKE",
+                ).order_by(ReviewRecord.id.desc()).limit(1)
+            )
     if view.summary:
+        item["title"] = pkg.title
         item["abstract"] = pkg.abstract
         item["keywords"] = pkg.keywords
     return item
@@ -198,25 +213,27 @@ class ArchiveCreate(BaseModel):
     files: list[dict] = Field(min_length=1, description='[{"file_id":1,"file_role":"THESIS"}]')
 
 
-def _validate_archive_eligible(db: Session, cycle_id: int) -> tuple[GraduationCycle, DefenseResult]:
+def _validate_archive_eligible(
+    db: Session, cycle_id: int, *, lock: bool = False,
+) -> tuple[GraduationCycle, DefenseResult]:
     cycle = db.get(GraduationCycle, cycle_id)
     if cycle is None:
         raise ResourceNotFoundException("流程实例不存在")
     # 1. 正式结论已发布且通过
-    row = db.execute(
-        select(DefenseResult)
-        .join(DefenseAssignment, DefenseAssignment.id == DefenseResult.assignment_id)
-        .where(DefenseResult.cycle_id == cycle_id, DefenseResult.stage == "FINAL")
-        .order_by(DefenseResult.id.desc())
-    ).scalars().first()
+    result_query = select(DefenseResult).where(
+        DefenseResult.cycle_id == cycle_id, DefenseResult.stage == "FINAL"
+    ).order_by(DefenseResult.id.desc()).limit(1)
+    material_query = select(GraduationMaterial).where(GraduationMaterial.cycle_id == cycle_id)
+    if lock:
+        result_query = result_query.with_for_update().execution_options(populate_existing=True)
+        material_query = material_query.with_for_update().execution_options(populate_existing=True)
+    row = db.scalar(result_query)
     if row is None or row.status != ResultStatus.PUBLISHED.value:
         raise BusinessException("归档前置条件不满足: 该流程尚无已发布的正式终期答辩结论")
     if row.decision != "PASS":
         raise BusinessException("归档前置条件不满足: 正式答辩结论未通过")
     # 2. 毕业材料审核通过
-    material = db.execute(
-        select(GraduationMaterial).where(GraduationMaterial.cycle_id == cycle_id)
-    ).scalar_one_or_none()
+    material = db.scalar(material_query)
     if material is None or material.status != "APPROVED":
         raise BusinessException("归档前置条件不满足: 毕业材料尚未审核通过")
     return cycle, row
@@ -229,7 +246,7 @@ def create_archive(body: ArchiveCreate, user: CurrentUser = Depends(require_admi
     ArchivePackage 对 cycle_id 唯一, 撤回后再次提交必须复用同一条记录,
     不能再 INSERT(否则 IntegrityError → 500), 也不能悄悄留下两条。
     """
-    cycle, result = _validate_archive_eligible(db, body.cycle_id)
+    cycle, result = _validate_archive_eligible(db, body.cycle_id, lock=True)
     pkg = db.execute(
         select(ArchivePackage).where(ArchivePackage.cycle_id == body.cycle_id).with_for_update()
     ).scalars().first()
@@ -270,6 +287,7 @@ def create_archive(body: ArchiveCreate, user: CurrentUser = Depends(require_admi
     # 归档由管理员一次性提交并批准: 接口本身即 require_admin, 且归档前置条件(结论已发布且通过、
     # 材料已通过)已在 _validate_archive_eligible 中校验, 故同一事务内完成 approve → ARCHIVED。
     archive_transition(db, pkg, "approve", user)
+    _recompute_progress(db, cycle.id)
     db.add(OperationLog(user_id=user.id, module="ARCHIVE", action="CREATE_PACKAGE",
                         detail=f"归档流程#{body.cycle_id}, 文件数{len(body.files)}"))
     db.commit()
@@ -316,6 +334,9 @@ def _eligible_archive_files(db: Session, user: CurrentUser, cycle_id: int | None
                           .join(GraduationMaterial, GraduationMaterial.id == GraduationMaterialFile.material_id)
                           .where(GraduationMaterial.cycle_id == cycle_id))
         conditions.append(SysFile.id.in_(material_files))
+        returned_files = select(ArchiveFile.file_id).join(ArchivePackage).where(
+            ArchivePackage.cycle_id == cycle_id, ArchivePackage.status == ArchiveStatus.REVOKED.value)
+        conditions.append(SysFile.id.in_(returned_files))
     return list(db.execute(select(SysFile).where(
         SysFile.uploader_id == user.id, SysFile.deleted_at.is_(None), or_(*conditions)
     ).order_by(SysFile.id.desc()).limit(_STUDENT_FILE_LIMIT)).scalars().all())
@@ -380,7 +401,7 @@ def submit_archive_package(body: StudentArchiveSubmit, user: CurrentUser = Depen
         raise BusinessException("当前没有进行中的毕业流程实例, 无法提交归档")
     if cycle.student_id != user.profile_id:
         raise PermissionDeniedException("只能提交本人的归档")
-    cycle, result = _validate_archive_eligible(db, cycle.id)
+    cycle, result = _validate_archive_eligible(db, cycle.id, lock=True)
 
     pkg = db.execute(
         select(ArchivePackage).where(ArchivePackage.cycle_id == cycle.id).with_for_update()
@@ -532,6 +553,7 @@ def package_detail(package_id: int, user: CurrentUser = Depends(get_current_user
         .where(ArchiveFile.package_id == package_id)
     ).all()
     # 文件清单与敏感字段同一口径: 有权者(本人/导师/评委/管理员)或作者已授权公开全文
+    item["can_download"] = view.can_download(pkg.status)
     item["files"] = [{
         "id": af.id, "file_id": f.id, "file_role": af.file_role, "sha256": af.sha256,
         "original_name": f.original_name, "size": f.size,
@@ -548,12 +570,14 @@ class ConsentRequest(BaseModel):
 def grant_consent(package_id: int, body: ConsentRequest, user: CurrentUser = Depends(require_student),
                   db: Session = Depends(get_db)):
     """学生本人授权公开; 重新授权时旧授权自动失效."""
-    pkg = db.get(ArchivePackage, package_id)
+    pkg = db.get(ArchivePackage, package_id, with_for_update=True)
     if pkg is None:
         raise ResourceNotFoundException("归档包不存在")
     cycle = db.get(GraduationCycle, pkg.cycle_id)
     if cycle.student_id != user.profile_id:
         raise PermissionDeniedException("仅成果作者本人可设置公开范围")
+    if pkg.status != ArchiveStatus.ARCHIVED.value:
+        raise BusinessException("归档确认后才能设置公开范围")
     old = _active_consent(db, package_id)
     if old is not None:
         old.revoked_at = datetime.now()
@@ -593,19 +617,8 @@ def download_archive_file(archive_file_id: int, user: CurrentUser = Depends(get_
     pkg = db.get(ArchivePackage, af.package_id)
     sf = db.get(SysFile, af.file_id)
 
-    allowed = False
-    if pkg.status == ArchiveStatus.ARCHIVED.value and sf is not None:
-        if user.role == "ADMIN":
-            allowed = True
-        else:
-            cycle = db.get(GraduationCycle, pkg.cycle_id)
-            if user.role == "STUDENT" and cycle.student_id == user.profile_id:
-                allowed = True
-            elif user.role == "TEACHER" and cycle.teacher_id == user.profile_id:
-                allowed = True
-            else:
-                consent = _active_consent(db, pkg.id)
-                allowed = bool(consent and consent.visibility == ConsentVisibility.FULL_TEXT.value)
+    cycle = db.get(GraduationCycle, pkg.cycle_id)
+    allowed = sf is not None and _archive_view(db, pkg, cycle, user).can_download(pkg.status)
 
     db.add(ArchiveDownloadLog(package_id=pkg.id, file_id=af.file_id, user_id=user.id, allowed=1 if allowed else 0))
     db.commit()
@@ -652,6 +665,24 @@ def revoke_package(package_id: int, user: CurrentUser = Depends(require_admin), 
     return ResponseUtil.success(message="归档已撤回, 公开授权同步失效")
 
 
+class ArchiveReturn(BaseModel):
+    comment: str = Field(min_length=1, max_length=1000)
+
+
+@router.post("/archive-packages/{package_id}/return")
+def return_package(package_id: int, body: ArchiveReturn, user: CurrentUser = Depends(require_admin),
+                   db: Session = Depends(get_db)):
+    """待确认申请退回后，学生可在同一归档包上修改并重新提交。"""
+    pkg = db.get(ArchivePackage, package_id, with_for_update=True)
+    if pkg is None:
+        raise ResourceNotFoundException("归档包不存在")
+    if pkg.status != ArchiveStatus.PENDING.value:
+        raise BusinessException("仅待确认的申请可退回修改")
+    archive_transition(db, pkg, "revoke", user, comment=body.comment.strip())
+    db.commit()
+    return ResponseUtil.success(message="归档申请已退回修改")
+
+
 class ArchiveApprove(BaseModel):
     comment: str | None = Field(default=None, max_length=1000, description="确认意见(纯文本)")
 
@@ -667,6 +698,8 @@ def approve_package(package_id: int, body: ArchiveApprove | None = None,
     pkg = db.get(ArchivePackage, package_id)
     if pkg is None:
         raise ResourceNotFoundException("归档包不存在")
+    _, result = _validate_archive_eligible(db, pkg.cycle_id, lock=True)
+    pkg.result_id = result.id
     archive_transition(db, pkg, "approve", user, comment=body.comment if body else None)
     _recompute_progress(db, pkg.cycle_id)
     db.add(OperationLog(user_id=user.id, username=user.username, module="ARCHIVE", action="APPROVE_PACKAGE",

@@ -12,7 +12,7 @@ const loading = ref(false)
 const pendingTotal = ref(0)
 const query = reactive({ academic_year: '', keyword: '', status: '', page: 1, page_size: 20 })
 const createVisible = ref(false)
-const createForm = reactive({ cycle_id: '' as any, title: '', abstract: '', keywords: '', files: '1:THESIS' })
+const createForm = reactive({ cycle_id: '' as any, title: '', abstract: '', keywords: '', files: '' })
 const detail = ref<any | null>(null)
 const detailVisible = ref(false)
 
@@ -75,6 +75,16 @@ async function createArchive() {
   })
   ElMessage.success('归档完成')
   createVisible.value = false
+  await Promise.all([load(), loadPendingTotal()])
+}
+
+async function returnPackage(p: any) {
+  const { value } = await ElMessageBox.prompt('请说明需要修改的文件或内容，学生将看到这条意见。', '退回归档申请', {
+    inputType: 'textarea',
+    inputValidator: (text: string) => (Boolean(text?.trim()) && text.trim().length <= 1000) || '请填写 1 至 1000 字的修改意见',
+  })
+  await archiveApi.returnPackage(p.id, value.trim())
+  ElMessage.success('已退回修改')
   await Promise.all([load(), loadPendingTotal()])
 }
 
@@ -149,10 +159,11 @@ onMounted(async () => {
             <el-tag size="small" :type="row.visibility === 'PRIVATE' ? 'info' : 'warning'">{{ row.visibility_cn }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="openDetail(row)">文件</el-button>
             <el-button v-if="row.status === 'PENDING'" size="small" text type="success" @click="approvePackage(row)">确认归档</el-button>
+            <el-button v-if="row.status === 'PENDING'" size="small" text type="warning" @click="returnPackage(row)">退回修改</el-button>
             <el-button v-if="row.status === 'ARCHIVED'" size="small" text type="danger" @click="revokePackage(row)">撤回</el-button>
           </template>
         </el-table-column>
@@ -180,7 +191,7 @@ onMounted(async () => {
           <el-table-column prop="original_name" label="文件" min-width="180" />
           <el-table-column prop="sha256" label="SHA256" width="110" show-overflow-tooltip />
           <el-table-column label="下载" width="70">
-            <template #default="{ row }"><FileDownload :file-id="row.id" :filename="row.original_name" archive /></template>
+            <template #default="{ row }"><FileDownload :file-id="row.id" :filename="row.original_name" :disabled="!detail.can_download" archive /></template>
           </el-table-column>
         </el-table>
       </template>

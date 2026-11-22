@@ -179,9 +179,21 @@ async function revoke(p: any) {
 async function openSubmit() {
   picked.value = []
   form.value = { title: '', abstract: '', keywords: '' }
-  submitVisible.value = true
   if (!policy.value) await loadPolicy()
-  if (!eligibility.value) await loadEligibility()
+  await loadEligibility()
+  if (!canSubmitArchive.value) return
+  const application = eligibility.value
+  if (application?.package_status === 'REVOKED' && application.package_id) {
+    const { data } = await archiveApi.detail(application.package_id)
+    form.value = { title: data.title || '', abstract: data.abstract || '', keywords: data.keywords || '' }
+    const selectable = new Set(availableFiles.value.map(file => file.file_id))
+    for (const file of data.files || []) {
+      if (selectable.has(file.file_id)) {
+        picked.value.push({ file_id: file.file_id, file_role: file.file_role })
+      }
+    }
+  }
+  submitVisible.value = true
 }
 
 /** 现场上传: 先 precheck 再调 /files/upload, 成功即把返回的 id 加入可选列表并自动勾选 */
@@ -290,17 +302,18 @@ onMounted(() => {
       <span>{{ p.file_count }} 个文件</span>
       <el-link type="primary" @click="openDetail(p)">查看文件清单</el-link>
     </div>
+    <el-alert v-if="p.status === 'REVOKED' && p.review_comment" type="warning" :closable="false" :title="p.review_comment" />
     <p v-if="p.abstract" class="pkg-abstract">{{ p.abstract }}</p>
     <p v-if="p.keywords" class="pkg-keywords">关键词：{{ p.keywords }}</p>
 
-    <div v-if="p.visibility === 'PRIVATE'" class="consent-row">
-      <span class="hint">{{ p.status === 'PENDING' ? '学院确认归档后才能设置公开范围：' : '默认仅本人、导师与管理员可见。选择公开范围后其他人才可见：' }}</span>
-      <el-button size="small" plain type="primary" :disabled="p.status === 'PENDING'" @click="grant(p, 'METADATA')">公开题目与摘要</el-button>
-      <el-button size="small" plain type="warning" :disabled="p.status === 'PENDING'" @click="grant(p, 'FULL_TEXT')">公开全文</el-button>
+    <div v-if="p.status === 'ARCHIVED' && p.visibility === 'PRIVATE'" class="consent-row">
+      <span class="hint">默认仅本人、导师与管理员可见。选择公开范围后其他人才可见：</span>
+      <el-button size="small" plain type="primary" @click="grant(p, 'METADATA')">公开题目与摘要</el-button>
+      <el-button size="small" plain type="warning" @click="grant(p, 'FULL_TEXT')">公开全文</el-button>
     </div>
-    <div v-else class="consent-row">
+    <div v-else-if="p.status === 'ARCHIVED'" class="consent-row">
       <span class="hint">当前公开范围：{{ p.visibility_cn }}</span>
-      <el-button size="small" plain type="danger" :disabled="p.status === 'PENDING'" @click="revoke(p)">撤回公开</el-button>
+      <el-button size="small" plain type="danger" @click="revoke(p)">撤回公开</el-button>
     </div>
   </div>
 
@@ -366,7 +379,7 @@ onMounted(() => {
         <el-table-column prop="sha256" label="SHA256" width="120" show-overflow-tooltip />
         <el-table-column label="操作" width="90">
           <template #default="{ row }">
-            <FileDownload :file-id="row.id" :filename="row.original_name" archive />
+            <FileDownload :file-id="row.id" :filename="row.original_name" :disabled="!detail.can_download" archive />
           </template>
         </el-table-column>
       </el-table>

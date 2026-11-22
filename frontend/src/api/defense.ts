@@ -114,6 +114,7 @@ export const archiveApi = {
     ),
   grantConsent: (id: number, visibility: string) => request.post(`/archive-packages/${id}/consent`, { visibility }),
   revokeConsent: (id: number) => request.delete(`/archive-packages/${id}/consent`),
+  returnPackage: (id: number, comment: string) => request.post(`/archive-packages/${id}/return`, { comment }),
   revokePackage: (id: number) => request.post(`/archive-packages/${id}/revoke`),
   exportList: () => request.get('/archive-packages/export/list', { responseType: 'blob' }),
 }
