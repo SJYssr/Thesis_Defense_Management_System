@@ -14,7 +14,7 @@ from app.models.enums import AIDocumentType
 from app.models.system import SysFile
 from app.modules.ai.router import _check_ai_rate
 from app.shared.storage import pathlib_suffix, read_upload, storage
-from app.shared.upload_policy import PRACTICE_EXTENSIONS, ensure_daily_quota, max_upload_size_mb
+from app.shared.upload_policy import PRACTICE_EXTENSIONS, ensure_daily_quota, max_upload_size_mb, practice_upload_limits
 from app.shared.workflow import GraduationWorkflowService
 from app.tasks.dispatcher import index_uploaded_material
 
@@ -30,7 +30,8 @@ def upload_practice_material(file: UploadFile, background_tasks: BackgroundTasks
     extension = pathlib_suffix(file.filename)
     if extension not in PRACTICE_EXTENSIONS[kind]:
         raise FileException("此类练习材料支持 " + "、".join(sorted(PRACTICE_EXTENSIONS[kind])))
-    content, name, mime, size, digest = read_upload(file, max_upload_size_mb(db))
+    limit = practice_upload_limits(max_upload_size_mb(db))[kind]
+    content, name, mime, size, digest = read_upload(file, limit)
     if not size or len(name) > 255:
         raise FileException("请上传非空文件，文件名最多 255 个字符")
     ensure_daily_quota(db, user.id, size)

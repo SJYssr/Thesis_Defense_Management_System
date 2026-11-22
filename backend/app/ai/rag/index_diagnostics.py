@@ -1,10 +1,12 @@
 """Only reviewed, actionable index errors are displayed to students, including for legacy rows."""
 from enum import StrEnum
 
+from app.shared.upload_policy import MAX_SOURCE_ARCHIVE_MB
+
 
 class IndexIssue(StrEnum):
     ARCHIVE_TYPE = "源码分析支持 ZIP，请将项目源码打包为 ZIP 后上传"
-    ARCHIVE_SIZE = "源码分析支持 32 MiB 以内的 ZIP，请仅打包项目源文件"
+    ARCHIVE_SIZE = f"源码分析支持 {MAX_SOURCE_ARCHIVE_MB} MiB 以内的 ZIP，请仅打包项目源文件"
     ARCHIVE_UNREADABLE = "源码 ZIP 无法读取，请重新打包上传"
     ARCHIVE_DIRECTORY = "源码 ZIP 目录过大或格式不支持，请仅打包项目源文件"
     ARCHIVE_CONTENT = "源码 ZIP 没有可分析的 UTF-8 源文件，请检查项目目录、文件格式和大小"

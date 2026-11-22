@@ -136,9 +136,10 @@ class PolicyEndpointTest(unittest.TestCase):
 
         body = json.loads(get_upload_policy(user=STUDENT, db=self.db).body)
         data = body["data"]
-        self.assertEqual(set(data), {"allowed_extensions", "by_kind", "practice",
+        self.assertEqual(set(data), {"allowed_extensions", "by_kind", "practice", "practice_max_upload_size_mb",
                                      "max_upload_size_mb", "max_upload_daily_mb"})
         self.assertEqual(set(data["by_kind"]), {"DOCUMENT", "ARCHIVE", "IMAGE", "MEDIA"})
+        self.assertEqual(data["practice_max_upload_size_mb"], {"REPORT": 7, "SOURCE_CODE": 7})
         self.assertEqual(data["practice"]["SOURCE_CODE"], [".zip"])
         self.assertIn(".pdf", data["practice"]["REPORT"])
         self.assertNotIn(".doc", data["practice"]["REPORT"])
@@ -148,6 +149,11 @@ class PolicyEndpointTest(unittest.TestCase):
         self.assertEqual(data["max_upload_daily_mb"], 123)
         self.assertEqual(set(data["allowed_extensions"]),
                          set().union(*data["by_kind"].values()))
+
+    def test_practice_source_limit_matches_archive_parser(self):
+        from app.shared.upload_policy import MAX_SOURCE_ARCHIVE_MB, practice_upload_limits
+
+        self.assertEqual(practice_upload_limits(50), {"REPORT": 50, "SOURCE_CODE": MAX_SOURCE_ARCHIVE_MB})
 
 
 class SharedLimitTest(unittest.TestCase):

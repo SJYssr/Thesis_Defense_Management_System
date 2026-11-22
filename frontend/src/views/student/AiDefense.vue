@@ -55,6 +55,10 @@ async function loadPolicy() {
   try { policy.value = (await uploadApi.policy()).data } catch { policy.value = null }
 }
 
+function uploadLimit(kind: PracticeMaterialKind) {
+  return policy.value?.practice_max_upload_size_mb?.[kind] ?? policy.value?.max_upload_size_mb ?? 0
+}
+
 async function uploadPractice(kind: PracticeMaterialKind, file: File) {
   if (!policy.value || uploading.value) return false
   const allowed = policy.value.practice?.[kind] || []
@@ -63,7 +67,7 @@ async function uploadPractice(kind: PracticeMaterialKind, file: File) {
     ElMessage.warning('请选择支持的文件格式：' + allowed.join('、'))
     return false
   }
-  const limit = policy.value.max_upload_size_mb
+  const limit = uploadLimit(kind)
   if (limit > 0 && file.size > limit * 1024 * 1024) {
     ElMessage.warning('单文件大小上限为 ' + limit + ' MB')
     return false
@@ -255,11 +259,13 @@ onMounted(() => {
                        :before-upload="(file: File) => uploadPractice(item.kind, file)">
               <el-button :loading="uploading === item.kind" :disabled="!policy?.practice?.[item.kind]?.length || !!uploading || busy || documentsBusy">{{ item.label }}</el-button>
             </el-upload>
-            <small v-if="policy?.practice?.[item.kind]?.length">{{ policy.practice[item.kind].join('、') }}</small>
+            <small v-if="policy?.practice?.[item.kind]?.length">
+              {{ policy.practice[item.kind].join('、') }} · {{ uploadLimit(item.kind) > 0 ? '单文件 ≤ ' + uploadLimit(item.kind) + ' MB' : '单文件不限大小' }}
+            </small>
           </div>
           <el-button v-if="!policy" link type="primary" @click="loadPolicy">重新读取上传设置</el-button>
         </div>
-        <p v-if="documentsLoaded && !eligibleCount">索引完成后即可选择材料开始练习。已提交的阶段报告可在知识准备中同步。</p>
+        <p v-if="documentsLoaded && !eligibleCount">索引完成后即可选择材料开始练习。审核已通过的阶段报告可在知识准备中同步。</p>
         <p v-else-if="eligibleCount">已选 {{ selected.length }} 份材料。题目和评价会附上可核对的原文片段。<span v-if="eligibleCount > maxMaterials">每次最多选 {{ maxMaterials }} 份。</span></p>
         <el-checkbox-group v-if="docs.length" v-model="selected" :max="maxMaterials" class="document-list" @change="questions = []">
           <el-checkbox v-for="d in docs" :key="d.id" :value="d.id" :disabled="!d.practice_eligible || busy || documentsBusy">

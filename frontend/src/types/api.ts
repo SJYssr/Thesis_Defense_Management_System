@@ -154,6 +154,7 @@ export type PracticeMaterialKind = 'REPORT' | 'SOURCE_CODE'
 
 export interface UploadPolicy {
   practice: Record<PracticeMaterialKind, string[]>
+  practice_max_upload_size_mb?: Partial<Record<PracticeMaterialKind, number>>
   allowed_extensions: string[]
   by_kind: Record<UploadKind, string[]>
   max_upload_size_mb: number

@@ -7,9 +7,10 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile, ZipInfo
 
 from app.ai.document.loader import Section
 from app.ai.rag.index_diagnostics import IndexIssue
+from app.shared.upload_policy import MAX_SOURCE_ARCHIVE_MB
 
 # These are extraction budgets, independent of the shared upload policy.
-_MAX_ARCHIVE = 32 << 20
+_MAX_ARCHIVE = MAX_SOURCE_ARCHIVE_MB << 20
 _MAX_MEMBER = 128 << 10
 _READ_BUDGET = 512 << 10
 _MAX_FILES = 96
