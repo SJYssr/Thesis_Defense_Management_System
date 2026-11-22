@@ -8,6 +8,7 @@ macOS 的系统级代理(Clash/Surge 等)会被 urllib 与 httpx 默认读取(ht
 ollama 探测得到 "HTTP Error 502: Bad Gateway" 而不是 Connection refused。
 """
 import urllib.request
+from contextlib import contextmanager
 from urllib.parse import urlparse
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0"})
@@ -49,3 +50,23 @@ def openai_http_client(base_url: str):
     import httpx
 
     return httpx.Client(trust_env=False)
+
+
+@contextmanager
+def provider_errors(capability: str):
+    """只公开可操作的故障原因，避免 SDK 响应正文进入学生提示或探测详情。"""
+    from openai import APIError
+
+    from app.core.exceptions import BusinessException
+
+    try:
+        yield
+    except APIError as exc:
+        status = getattr(exc, "status_code", None)
+        if status in (401, 403):
+            detail = "认证失败，请联系管理员检查供应商绑定"
+        elif status == 429:
+            detail = "调用受限，请稍后重试或联系管理员检查供应商配额"
+        else:
+            detail = "暂时不可用，请稍后重试，持续失败时请联系管理员"
+        raise BusinessException(f"{capability}服务{detail}", 50303) from None

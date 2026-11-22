@@ -70,6 +70,23 @@ class CompletionTest(unittest.TestCase):
             {"role": "system", "content": "答辩教师"}, {"role": "user", "content": "请出题"},
         ])
 
+    def test_provider_error_omits_upstream_body_and_returns_retryable_status(self):
+        import httpx
+        from openai import RateLimitError
+
+        from app.core.exceptions import BusinessException
+
+        with mock.patch("openai.OpenAI") as sdk:
+            service = OpenAICompatibleLLM("https://example.invalid/v1", "test-only", "test-model")
+        response = httpx.Response(429, request=httpx.Request("POST", "https://example.invalid/v1"))
+        sdk.return_value.chat.completions.create.side_effect = RateLimitError(
+            "sensitive-upstream-detail", response=response, body=None)
+        with self.assertRaises(BusinessException) as raised:
+            service.complete("教师", "反馈")
+        self.assertEqual(raised.exception.code, 50303)
+        self.assertIn("供应商配额", raised.exception.message)
+        self.assertNotIn("sensitive-upstream-detail", raised.exception.message)
+
 
 class ProbeBypassesProxyTest(unittest.TestCase):
     """系统代理存在时, ollama 探测不得走 urlopen(默认读系统代理)."""

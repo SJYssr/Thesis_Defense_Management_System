@@ -21,7 +21,7 @@ import urllib.request
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 
-from app.ai.net import open_url, openai_http_client
+from app.ai.net import open_url, openai_http_client, provider_errors
 from app.ai.providers import openai_base_url
 from app.ai.runtime_config import resolve_ai_config
 from app.core.exceptions import BusinessException
@@ -215,19 +215,21 @@ class OpenAICompatibleLLM(BaseLLMService):
         return messages
 
     def complete(self, system: str, user: str, temperature: float = 0.3) -> str:
-        resp = self.client.chat.completions.create(
-            model=self.model, messages=self._messages(system, user), temperature=temperature,
-        )
-        return resp.choices[0].message.content or ""
+        with provider_errors("对话模型"):
+            resp = self.client.chat.completions.create(
+                model=self.model, messages=self._messages(system, user), temperature=temperature,
+            )
+            return resp.choices[0].message.content or ""
 
     def stream(self, system: str, user: str, history: list[dict] | None = None, temperature: float = 0.5):
-        resp = self.client.chat.completions.create(
-            model=self.model, messages=self._messages(system, user, history),
-            temperature=temperature, stream=True,
-        )
-        for chunk in resp:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        with provider_errors("对话模型"):
+            resp = self.client.chat.completions.create(
+                model=self.model, messages=self._messages(system, user, history),
+                temperature=temperature, stream=True,
+            )
+            for chunk in resp:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
 
 
 class OllamaLLM(OpenAICompatibleLLM):

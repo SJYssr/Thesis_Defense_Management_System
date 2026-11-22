@@ -101,20 +101,25 @@ def _cloud_llm_probe(base_url, api_key, model):
     """对云端 OpenAI 兼容接口做一次真实最小补全(1 token), 用于 ok / degraded 判定."""
     from openai import OpenAI
 
+    from app.ai.net import provider_errors
+
     client = OpenAI(base_url=base_url, api_key=api_key,
                     timeout=CLOUD_PROBE_TIMEOUT_SECONDS, max_retries=0)
-    client.chat.completions.create(model=model,
-                                   messages=[{"role": "user", "content": "ping"}],
-                                   max_tokens=1, temperature=0)
+    with provider_errors("对话模型"):
+        client.chat.completions.create(model=model, messages=[{"role": "user", "content": "ping"}],
+                                       max_tokens=1, temperature=0)
     return True, "%s 真实补全成功(模型 %s)" % (base_url, model)
 
 
 def _cloud_embedding_probe(base_url, api_key, model):
     from openai import OpenAI
 
+    from app.ai.net import provider_errors
+
     client = OpenAI(base_url=base_url, api_key=api_key,
                     timeout=CLOUD_PROBE_TIMEOUT_SECONDS, max_retries=0)
-    resp = client.embeddings.create(model=model, input=["ping"])
+    with provider_errors("向量模型"):
+        resp = client.embeddings.create(model=model, input=["ping"])
     dim = len(resp.data[0].embedding) if resp.data else 0
     return True, dim, "%s 真实向量化成功(模型 %s)" % (base_url, model)
 
