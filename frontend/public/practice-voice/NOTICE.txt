@@ -1,0 +1,19 @@
+Offline Mandarin text to speech
+
+This directory distributes the WebAssembly runtime, browser modules, core data and Mandarin/English dictionaries from Spellophone 0.2.1 (eSpeak NG).
+License: GNU GPL version 3 or later. See LICENSE.txt.
+Upstream source and build scripts at the exact revision:
+https://github.com/Spelling-Creator/spellophone/tree/6d51a872d54a773e4969d7130fdaed665b2d6d18
+Source archive:
+https://github.com/Spelling-Creator/spellophone/archive/6d51a872d54a773e4969d7130fdaed665b2d6d18.tar.gz
+Engine and dictionary sources pinned by vendor/espeak-ng.json:
+https://github.com/espeak-ng/espeak-ng/tree/1.52.0
+https://github.com/espeak-ng/espeak-ng/archive/refs/tags/1.52.0.tar.gz
+Build instructions and upstream patches:
+https://github.com/Spelling-Creator/spellophone/blob/6d51a872d54a773e4969d7130fdaed665b2d6d18/README.md#repository
+https://github.com/Spelling-Creator/spellophone/tree/6d51a872d54a773e4969d7130fdaed665b2d6d18/vendor/patches
+
+The distributed upstream files are unmodified from @spelling-creator/spellophone@0.2.1.
+Its npm tarball has SHA-512 integrity VIqceoh9+mdm63S2pY1FGGVH5nateiLZY0PoD+ADFqKWl+zYLnY13zeywVDzc/w+hv9uLTItSC96sHbHBiNPtA==.
+Only the resources required for Mandarin and its default English dictionary are included.
+The site's worker.js is source code and is available under the same license.
