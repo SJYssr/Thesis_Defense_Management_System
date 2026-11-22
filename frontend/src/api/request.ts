@@ -2,11 +2,12 @@ import axios from 'axios'
 import type { AxiosError, AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import { extractBackendMessage, NETWORK_ERROR_MESSAGE, resolveErrorMessage } from '@/utils/error'
-import { API_BASE, handleSessionExpired, refreshAccessToken } from './session'
+import { API_BASE, currentSessionGeneration, isCurrentSession, handleSessionExpired, refreshAccessToken } from './session'
 
 interface RetriableConfig extends InternalAxiosRequestConfig {
   /** 该请求已经因 401 重放过一次，不再重试(D49) */
   _retried?: boolean
+  _sessionGeneration?: number
   /** 静默请求: 失败不弹全局提示，由调用方自行提示 */
   _silent?: boolean
 }
@@ -22,13 +23,15 @@ const request = axios.create({
   timeout: 120000,
 })
 
-request.interceptors.request.use((config) => {
+request.interceptors.request.use((config: RetriableConfig) => {
+  if (!isCurrentSession()) throw new Error('登录会话已变更')
+  config._sessionGeneration = currentSessionGeneration()
   const token = localStorage.getItem('access_token')
-  if (token) {
+  if (token && !String(config.url).includes('/auth/logout')) {
     config.headers.Authorization = 'Bearer ' + token
   }
   return config
-})
+}, undefined, { synchronous: true })
 
 /** 这些端点自身负责 401 语义(密码错误/续期失败/登出)，绝不能再触发 refresh 重放 */
 function isAuthEndpoint(url: string): boolean {
@@ -47,6 +50,7 @@ function notify(message: string, config?: RetriableConfig): void {
 request.interceptors.response.use(
   (response) => {
     const config = response.config as RetriableConfig
+    if (!isCurrentSession(config._sessionGeneration)) throw new Error('登录会话已变更')
     // 文件下载(blob)不解析统一响应体
     if (config.responseType === 'blob') {
       return response.data as unknown as AxiosResponse
@@ -62,6 +66,8 @@ request.interceptors.response.use(
   },
   async (error: AxiosError) => {
     const config = error.config as RetriableConfig | undefined
+    const generation = config?._sessionGeneration
+    if (!isCurrentSession(generation)) return Promise.reject(error)
     const response = error.response
     const status = response?.status ?? null
     const body = response?.data as ApiEnvelope | undefined
@@ -76,10 +82,11 @@ request.interceptors.response.use(
           // 并发去重: 多个 401 共用同一个 refresh Promise
           await refreshAccessToken()
         } catch {
-          handleSessionExpired()
+          if (isCurrentSession(generation)) handleSessionExpired()
           return Promise.reject(error)
         }
         // 续期已成功，重试后的业务错误交给对应状态码处理。
+        if (!isCurrentSession(generation)) return Promise.reject(error)
         return request(config)
       }
       // 已经重放过仍然 401: 说明会话已彻底失效

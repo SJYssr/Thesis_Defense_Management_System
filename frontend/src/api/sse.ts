@@ -6,7 +6,7 @@
  * (先看 exp、过期先 refresh、401 视为会话失效)抽成独立模块，
  * 既给 fetch 复用，也能被脚本直接 import 做验证。
  */
-import { SESSION_EXPIRED_MESSAGE, handleSessionExpired, hasRefreshToken, refreshAccessToken } from './session'
+import { SESSION_EXPIRED_MESSAGE, currentSessionGeneration, isCurrentSession, handleSessionExpired, hasRefreshToken, refreshAccessToken } from './session'
 import { getAccessToken, isTokenExpired } from '@/utils/token'
 
 /**
@@ -16,6 +16,8 @@ import { getAccessToken, isTokenExpired } from '@/utils/token'
  * 返回 null 表示会话已失效(调用方直接放弃本次请求，跳转/提示已由 session 完成)。
  */
 export async function ensureStreamToken(): Promise<string | null> {
+  const generation = currentSessionGeneration()
+  if (!isCurrentSession(generation)) return null
   const current = getAccessToken()
   if (current && !isTokenExpired(current)) return current
   if (!hasRefreshToken()) {
@@ -26,9 +28,10 @@ export async function ensureStreamToken(): Promise<string | null> {
   try {
     refreshed = await refreshAccessToken()
   } catch {
-    handleSessionExpired()
+    if (isCurrentSession(generation)) handleSessionExpired()
     return null
   }
+  if (!isCurrentSession(generation)) return null
   if (!refreshed || isTokenExpired(refreshed)) {
     handleSessionExpired()
     return null
@@ -41,11 +44,13 @@ export async function ensureStreamToken(): Promise<string | null> {
  * 返回 Response(可能是 4xx，由调用方判断)；会话失效时抛 SESSION_EXPIRED_MESSAGE。
  */
 export async function authorizedFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const generation = currentSessionGeneration()
   const token = await ensureStreamToken()
-  if (!token) throw new Error(SESSION_EXPIRED_MESSAGE)
+  if (!isCurrentSession(generation) || !token) throw new Error(SESSION_EXPIRED_MESSAGE)
   const headers = new Headers(init.headers)
   headers.set('Authorization', 'Bearer ' + token)
   const response = await fetch(input, { ...init, headers })
+  if (!isCurrentSession(generation)) throw new Error('登录会话已变更')
   if (response.status === 401) {
     // 流式接口拿不到 axios 拦截器，这里等价于响应拦截器的 401 分支
     handleSessionExpired()

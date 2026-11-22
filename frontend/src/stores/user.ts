@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { authApi } from '@/api/auth'
-import { registerProfileSync, resetSessionExpiredFlag } from '@/api/session'
+import { changeLoginSession, clearLoginSession, isCurrentSession, registerProfileSync } from '@/api/session'
+import { clearAuthStorage, getAccessToken } from '@/utils/token'
 
 interface UserInfo {
   id: number
@@ -44,7 +45,7 @@ export const useUserStore = defineStore('user', {
       })
     },
     setSession(data: { access_token: string; refresh_token?: string; user: UserInfo }) {
-      resetSessionExpiredFlag()
+      clearAuthStorage()
       this.bindProfileSync()
       localStorage.setItem('access_token', data.access_token)
       if (data.refresh_token) {
@@ -52,6 +53,7 @@ export const useUserStore = defineStore('user', {
       }
       this.user = data.user
       localStorage.setItem('user_info', JSON.stringify(data.user))
+      changeLoginSession()
     },
     async refreshProfile() {
       const res = await authApi.getProfile()
@@ -59,10 +61,10 @@ export const useUserStore = defineStore('user', {
       localStorage.setItem('user_info', JSON.stringify(res.data))
     },
     logout() {
-      authApi.logout().catch(() => undefined)
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('refresh_token')
-      localStorage.removeItem('user_info')
+      if (!isCurrentSession()) return
+      const token = getAccessToken()
+      clearLoginSession()
+      if (token) void authApi.logout(token).catch(() => undefined)
       this.user = null
     },
   },
