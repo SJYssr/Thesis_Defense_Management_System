@@ -54,22 +54,34 @@ async function playBuffer(context: AudioContext, buffer: AudioBuffer, signal: Ab
   const source = context.createBufferSource()
   source.buffer = buffer
   source.connect(context.destination)
-  await new Promise<void>((resolve, reject) => {
-    const finish = () => {
-      signal.removeEventListener('abort', cancel)
-      source.onended = null
-      source.disconnect()
-      resolve()
-    }
-    const cancel = () => { source.stop(); finish() }
-    signal.addEventListener('abort', cancel, { once: true })
-    source.onended = finish
-    try { source.start(); onStart?.() } catch (err) {
-      signal.removeEventListener('abort', cancel)
-      source.disconnect()
-      reject(err)
-    }
-  })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let cancel: (() => void) | undefined
+  let started = false
+  try {
+    await new Promise<void>((resolve, reject) => {
+      cancel = () => reject(signal.reason)
+      signal.addEventListener('abort', cancel, { once: true })
+      source.onended = () => resolve()
+      const start = context.currentTime
+      source.start(start)
+      started = true
+      timer = setTimeout(() => {
+        // Sleep or an audio-device interruption can swallow ended. Wall time alone cannot prove playback.
+        if (context.state === 'running' && context.currentTime >= start + buffer.duration) resolve()
+        else {
+          if (audioContext === context) releasePracticeVoice()
+          reject(new Error('朗读已中断'))
+        }
+      }, buffer.duration * 1000 + 1500)
+      onStart?.()
+    })
+  } finally {
+    clearTimeout(timer)
+    if (cancel) signal.removeEventListener('abort', cancel)
+    source.onended = null
+    if (started) source.stop()
+    source.disconnect()
+  }
 }
 
 /** Lease one worker per pending utterance so replies from an aborted turn cannot reach the next. */

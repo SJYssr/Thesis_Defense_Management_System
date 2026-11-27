@@ -3,6 +3,7 @@
 // OFFLINE_TTS=1 tests the bundled voice; OFFLINE_TTS=rate-limit tests its fallback after remote HTTP 429.
 // OFFLINE_TTS=slow races delayed audio against the standby engine; server-only also disables the standby worker.
 // OFFLINE_TTS=leave closes the room before either voice has started.
+// PLAYBACK_FAULT=missing-ended | suspended | stalled | leave-playing exercises the first question's Web Audio player.
 // No real credentials, student material, or speech provider is required.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -23,6 +24,7 @@ const serverOnly = process.env.OFFLINE_TTS === 'server-only'
 const leaveEarly = process.env.OFFLINE_TTS === 'leave'
 const slow = process.env.OFFLINE_TTS === 'slow'
 const lateServer = serverOnly || leaveEarly || slow
+const playbackFault = process.env.PLAYBACK_FAULT || ''
 const deviceScript = `
     localStorage.setItem('user_info', ${JSON.stringify(JSON.stringify(user))});
     localStorage.setItem('access_token', 'fake.' + btoa(JSON.stringify({ sub: '17', exp: 4000000000 })) + '.fake');
@@ -35,7 +37,27 @@ const deviceScript = `
       const record = { start: performance.now(), seconds: this.buffer.duration };
       window.questionAudio.push(record);
       this.addEventListener('ended', () => { record.end = performance.now(); }, { once:true });
+      if (${JSON.stringify(playbackFault)} && window.questionAudio.length === 1) {
+        window.firstPlayback = this;
+        this.onended = null;
+        if (${JSON.stringify(playbackFault)} !== 'missing-ended') void this.context.suspend();
+        if (${JSON.stringify(playbackFault)} === 'stalled') {
+          // Simulate devices that stop rendering while still reporting a running context.
+          const state = Object.getOwnPropertyDescriptor(BaseAudioContext.prototype, 'state').get;
+          Object.defineProperty(this.context, 'state', { get() {
+            return state.call(this) === 'suspended' ? 'running' : state.call(this);
+          } });
+        }
+      } else if (window.firstPlayback) {
+        record.freshContext = this.context !== window.firstPlayback.context;
+      }
       return play.apply(this, args);
+    };
+    window.recorderStarts = 0;
+    const createInput = AudioContext.prototype.createMediaStreamSource;
+    AudioContext.prototype.createMediaStreamSource = function (...args) {
+      window.recorderStarts++;
+      return createInput.apply(this, args);
     };
     if (${serverOnly}) {
       const OriginalWorker = window.Worker;
@@ -227,6 +249,33 @@ try {
     assert.equal(await evaluate('window.questionAudio.length'), 0, 'no stale server or standby audio after exit')
     assert.ok(!calls.some(c => c.endpoint.endsWith('/transcription')))
     console.log('PASS — leaving while both voices are pending cancels playback and releases devices')
+  } else if (playbackFault === 'leave-playing') {
+    await until(async () => await phase() === 'speaking', 'buffer playback before leaving')
+    await click('离开答辩')
+    await wait(2400)
+    assert.equal(await phase(), undefined)
+    assert.equal(await evaluate('window.firstPlayback.context.state'), 'closed')
+    assert.equal(await evaluate('window.questionAudio.length'), 1)
+    assert.equal(await evaluate('window.recorderStarts'), 0)
+    assert.ok(await evaluate('window.practiceTestDevices.getTracks().every(track => track.readyState === "ended")'))
+    assert.ok(!calls.some(c => c.endpoint.endsWith('/transcription')))
+    console.log('PASS — leaving active playback cancels recovery and keeps the microphone closed')
+  } else if (playbackFault === 'suspended' || playbackFault === 'stalled') {
+    await until(async () => await phase() === 'fault', 'recoverable audio interruption')
+    assert.equal(await evaluate('window.recorderStarts'), 0, 'never record after an incomplete question')
+    assert.equal(await evaluate('window.firstPlayback.context.state'), 'closed')
+    assert.ok(!calls.some(c => /transcription$|live\/advance$/.test(c.endpoint)))
+    await click('重试')
+    await until(async () => await phase() === 'listening', 'same question plays on a new context')
+    assert.equal(await evaluate('window.questionAudio[1].freshContext'), true)
+    assert.equal(await evaluate('window.recorderStarts'), 1)
+    assert.deepEqual(calls.filter(c => c.endpoint.endsWith('/speech')).map(c => c.endpoint),
+      Array(2).fill('/ai/defense/sessions/42/turns/1/speech'))
+    await evaluate('window.practiceTestSpeak()')
+    await until(() => calls.some(c => c.endpoint.endsWith('/live/advance')), 'single answer accepted')
+    await click('离开答辩')
+    assert.equal(calls.filter(c => c.endpoint.endsWith('/live/advance')).length, 1)
+    console.log('PASS — frozen audio faults without recording, then a gesture replays the current turn once')
   } else {
     await verifyInterview()
   }
@@ -235,6 +284,10 @@ try {
     await until(async () => await phase() === 'speaking', 'opener playback')
     await checkRoom()
     await until(async () => await phase() === 'listening', 'automatic recording')
+    if (playbackFault === 'missing-ended') {
+      assert.ok(await evaluate('window.questionAudio[0].end'), 'the source finished before microphone capture')
+      assert.equal(await evaluate('window.recorderStarts'), 1)
+    }
     await evaluate('window.practiceTestSpeak()')
     await until(async () => await phase() === 'speaking', 'answer-aware follow-up playback')
     await checkRoom()
