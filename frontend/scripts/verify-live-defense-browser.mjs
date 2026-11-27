@@ -1,6 +1,8 @@
 // Run after npm run build: CHROMIUM_BINARY=/path/to/chromium node scripts/verify-live-defense-browser.mjs
 // Uses Chromium's fake camera, a synthetic microphone signal, and a local HTTP stub.
 // OFFLINE_TTS=1 tests the bundled voice; OFFLINE_TTS=rate-limit tests its fallback after remote HTTP 429.
+// OFFLINE_TTS=slow races delayed audio against the standby engine; server-only also disables the standby worker.
+// OFFLINE_TTS=leave closes the room before either voice has started.
 // No real credentials, student material, or speech provider is required.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -17,12 +19,33 @@ const user = { id: 17, username: 'test-student', real_name: '模拟学生', role
 const calls = []
 const offline = process.env.OFFLINE_TTS === '1'
 const rateLimited = process.env.OFFLINE_TTS === 'rate-limit'
+const serverOnly = process.env.OFFLINE_TTS === 'server-only'
+const leaveEarly = process.env.OFFLINE_TTS === 'leave'
+const slow = process.env.OFFLINE_TTS === 'slow'
+const lateServer = serverOnly || leaveEarly || slow
 const deviceScript = `
     localStorage.setItem('user_info', ${JSON.stringify(JSON.stringify(user))});
     localStorage.setItem('access_token', 'fake.' + btoa(JSON.stringify({ sub: '17', exp: 4000000000 })) + '.fake');
     // Browser-provided cloud speech must never receive private question text.
     Object.defineProperty(window.speechSynthesis, 'getVoices', { value: () => [{ lang: 'zh-CN', localService: false }] });
     Object.defineProperty(window.speechSynthesis, 'speak', { value: () => { window.practiceLeakedToCloudVoice = true; } });
+    window.questionAudio = [];
+    const play = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args) {
+      const record = { start: performance.now(), seconds: this.buffer.duration };
+      window.questionAudio.push(record);
+      this.addEventListener('ended', () => { record.end = performance.now(); }, { once:true });
+      return play.apply(this, args);
+    };
+    if (${serverOnly}) {
+      const OriginalWorker = window.Worker;
+      window.Worker = class extends OriginalWorker {
+        postMessage(...args) {
+          if (typeof args[0] === 'string') { this.dispatchEvent(new ErrorEvent('error')); return; }
+          super.postMessage(...args);
+        }
+      };
+    }
     const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async constraints => {
       const stream = await original({ ...constraints, audio: false });
@@ -83,6 +106,7 @@ const server = createServer(async (req, res) => {
       }
       if (endpoint.endsWith('/speech')) {
         if (rateLimited) return res.writeHead(429, { 'Retry-After': '60' }).end()
+        if (lateServer) await wait(slow ? 8000 : 3500)
         return res.writeHead(200, { 'Content-Type': 'audio/wav' }).end(wave())
       }
       if (endpoint.endsWith('/transcription')) {
@@ -195,33 +219,54 @@ try {
     assert.doesNotMatch(await visible(), new RegExp(`${opener}|${followup}|Redis`))
     assert.equal(await evaluate("!!document.querySelector('dialog textarea, dialog input')"), false)
   }
-  await until(async () => await phase() === 'speaking', 'opener playback')
-  await checkRoom()
-  await until(async () => await phase() === 'listening', 'automatic recording')
-  await evaluate('window.practiceTestSpeak()')
-  await until(async () => await phase() === 'speaking', 'answer-aware follow-up playback')
-  await checkRoom()
-  await until(async () => await phase() === 'listening', 'automatic recording of follow-up')
-  await evaluate('window.practiceTestSpeak()')
-  await until(() => evaluate("document.querySelector('dialog [aria-label=\"答辩已结束\"]') !== null"), 'finish while no report has been generated')
-  assert.equal(reportReads, 0)
-  assert.ok(await evaluate('window.practiceTestDevices.getTracks().every(track => track.readyState === "ended")'))
-  assert.equal(calls.filter(x => x.endpoint === '/ai/defense/live/start').length, 1)
-  assert.equal(calls.filter(x => x.endpoint.endsWith('/live/advance')).length, 2)
-  assert.equal(calls.filter(x => x.endpoint.endsWith('/speech')).length, offline ? 0 : rateLimited ? 1 : 2)
-  assert.ok(await evaluate('!window.practiceLeakedToCloudVoice'))
-  assert.equal(calls.filter(x => /generate$|\/answer$|\/next$/.test(x.endpoint)).length, 0)
-  assert.deepEqual(await evaluate("performance.getEntriesByType('measure').filter(e => e.name.startsWith('practice:')).map(e => e.name)"),
-    ['practice:devices-ready-to-question-audio-start', 'practice:endpoint-to-question-audio-start'])
-  await click('查看练习报告')
-  await until(() => evaluate('document.body?.innerText.includes("正在后台评阅")'), 'pending report UI')
-  allowReportFailure = true
-  await until(() => evaluate('document.body?.innerText.includes("后台评阅没有完成")'), 'failed report UI')
-  await click('重试生成报告')
-  await until(() => evaluate(`document.body?.innerText.includes(${JSON.stringify(summary)})`), 'ready report UI')
-  assert.equal(calls.filter(x => x.endpoint.endsWith('/report/retry')).length, 1)
-  assert.ok(await evaluate('document.body.innerText.includes("只按主问题计分")'))
-  console.log('PASS — camera, two voice-only turns, timing, released devices, pending/failed/ready report, explicit retry')
+  if (leaveEarly) {
+    await until(() => calls.some(c => c.endpoint.endsWith('/speech')), 'pending server speech')
+    await click('离开答辩')
+    await wait(3800)
+    assert.ok(await evaluate('window.practiceTestDevices.getTracks().every(track => track.readyState === "ended")'))
+    assert.equal(await evaluate('window.questionAudio.length'), 0, 'no stale server or standby audio after exit')
+    assert.ok(!calls.some(c => c.endpoint.endsWith('/transcription')))
+    console.log('PASS — leaving while both voices are pending cancels playback and releases devices')
+  } else {
+    await verifyInterview()
+  }
+
+  async function verifyInterview() {
+    await until(async () => await phase() === 'speaking', 'opener playback')
+    await checkRoom()
+    await until(async () => await phase() === 'listening', 'automatic recording')
+    await evaluate('window.practiceTestSpeak()')
+    await until(async () => await phase() === 'speaking', 'answer-aware follow-up playback')
+    await checkRoom()
+    await until(async () => await phase() === 'listening', 'automatic recording of follow-up')
+    assert.equal(await evaluate('window.questionAudio.length'), 2, 'each question plays once even if a late response arrives')
+    await evaluate('window.practiceTestSpeak()')
+    await until(() => evaluate("document.querySelector('dialog [aria-label=\"答辩已结束\"]') !== null"), 'finish while no report has been generated')
+    assert.equal(reportReads, 0)
+    assert.ok(await evaluate('window.practiceTestDevices.getTracks().every(track => track.readyState === "ended")'))
+    assert.equal(calls.filter(x => x.endpoint === '/ai/defense/live/start').length, 1)
+    assert.equal(calls.filter(x => x.endpoint.endsWith('/live/advance')).length, 2)
+    assert.equal(calls.filter(x => x.endpoint.endsWith('/speech')).length, offline ? 0 : rateLimited || slow ? 1 : 2)
+    const playback = await evaluate('window.questionAudio.slice(0,2)')
+    // Both test questions are single-phrase utterances. The completion announcement is separate.
+    assert.ok(playback[0].end <= playback[1].start, 'one player at a time')
+    for (const entry of playback)
+      assert.equal(Math.abs(entry.seconds - 1 / 3) < .01, !(offline || rateLimited || slow),
+        'a fast server or a working server with an unavailable standby should use the server WAV')
+    assert.ok(await evaluate('!window.practiceLeakedToCloudVoice'))
+    assert.equal(calls.filter(x => /generate$|\/answer$|\/next$/.test(x.endpoint)).length, 0)
+    assert.deepEqual(await evaluate("performance.getEntriesByType('measure').filter(e => e.name.startsWith('practice:')).map(e => e.name)"),
+      ['practice:devices-ready-to-question-audio-start', 'practice:endpoint-to-question-audio-start'])
+    await click('查看练习报告')
+    await until(() => evaluate('document.body?.innerText.includes("正在后台评阅")'), 'pending report UI')
+    allowReportFailure = true
+    await until(() => evaluate('document.body?.innerText.includes("后台评阅没有完成")'), 'failed report UI')
+    await click('重试生成报告')
+    await until(() => evaluate(`document.body?.innerText.includes(${JSON.stringify(summary)})`), 'ready report UI')
+    assert.equal(calls.filter(x => x.endpoint.endsWith('/report/retry')).length, 1)
+    assert.ok(await evaluate('document.body.innerText.includes("只按主问题计分")'))
+    console.log('PASS — camera, two voice-only turns, timing, released devices, pending/failed/ready report, explicit retry')
+  }
 } finally {
   socket?.close()
   if (browser && browser.exitCode === null && browser.pid) {

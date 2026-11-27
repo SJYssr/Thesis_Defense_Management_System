@@ -5,7 +5,7 @@ import request from '@/api/request'
 import type { ApiEnvelope, PracticeSpeechCapabilities } from '@/types/api'
 import type { ObservationSignal } from '@/api/practiceObservations'
 import PracticeObservation from './PracticeObservation.vue'
-import { activeContext, playQuestionAudio, primePracticeVoice, speakLocally } from '@/utils/practiceVoice'
+import { activeContext, localMandarinVoice, primePracticeVoice, speakLocally, speakWithServer } from '@/utils/practiceVoice'
 import { recordAnswer } from '@/utils/practiceRecorder'
 
 const props = defineProps<{
@@ -39,7 +39,7 @@ const fault = computed(() => !!props.parentError || videoFault.value || stage.va
 const retryIndex = ref(0)
 const videoAttempt = ref(0)
 let cachedSpeech: Blob | null = null
-let preferOfflineAfterFault = false
+let retryServerAfter = 0
 let retryAudio: Blob | null = null
 let endpointedAt = 0
 let key = ''
@@ -70,35 +70,25 @@ async function ask(path: string, question: string, signal: AbortSignal, serverSp
   }
   // A verified device-local Mandarin voice avoids the round trip for a full WAV.
   // An unverified or cloud-backed system voice never receives student-specific questions.
-  const hasLocalMandarin = window.speechSynthesis?.getVoices().some(v => v.localService && /^(zh|cmn)/i.test(v.lang))
-  const localFirst = !serverSpeech || hasLocalMandarin || preferOfflineAfterFault
+  const localFirst = !serverSpeech || !!localMandarinVoice() || performance.now() < retryServerAfter
   if (localFirst) {
-    try {
-      await speakLocally(question, signal, started)
-      return
-    } catch (error) {
+    try { await speakLocally(question, signal, started); return }
+    catch (error) {
       signal.throwIfAborted()
       if (!serverSpeech || reported) throw error
-      preferOfflineAfterFault = false
     }
   }
-  try {
-    const options = { responseType: 'blob' as const, _silent: true, signal, timeout: 10000 }
-    const audio = cachedSpeech || await request.get<Blob, Blob>(path + '/speech', options)
-    signal.throwIfAborted()
-    await playQuestionAudio(audio, signal, started)
-    signal.throwIfAborted()
-    cachedSpeech = audio
-  } catch (error) {
-    signal.throwIfAborted()
-    const status = (error as { response?: { status?: number } }).response?.status
-    // Ownership/configuration errors stay errors. A synthesis-only rate limit
-    // needn't pause playback: this turn already came from the authorized server.
-    if (localFirst || reported || (status && status >= 400 && status < 500 && status !== 429)) throw error
-    // Only device-local and same-origin offline voices may receive the question.
-    await speakLocally(question, signal, started)
-    if (!signal.aborted) preferOfflineAfterFault = true
-  }
+  let candidate = cachedSpeech
+  const voice = await speakWithServer(question, signal, async preparing => {
+    const options = { responseType: 'blob' as const, _silent: true, signal: preparing, timeout: 60000 }
+    candidate ??= await request.get<Blob, Blob>(path + '/speech', options)
+    preparing.throwIfAborted()
+    return candidate
+  }, started)
+  signal.throwIfAborted()
+  if (voice === 'server') cachedSpeech = candidate
+  // Avoid submitting another slow synthesis on every turn; try the bound service again after a minute.
+  retryServerAfter = voice === 'offline' ? performance.now() + 60000 : 0
 }
 
 async function transcribe(path: string, wav: Blob, signal: AbortSignal) {
