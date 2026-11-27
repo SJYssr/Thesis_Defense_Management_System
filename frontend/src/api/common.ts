@@ -1,5 +1,11 @@
+import type { AxiosRequestConfig } from 'axios'
 import request from './request'
-import { clampPageSize, type AiDocument, type AiDocumentType, type ApiEnvelope, type PageResult, type PracticeMaterialKind, type UploadPolicy, type UploadResult } from '@/types/api'
+import { clampPageSize, type AiDocument, type AiDocumentType, type ApiEnvelope, type PageResult, type PracticeAdvance, type PracticeMaterialKind, type PracticeReport, type PracticeSessionDetail, type PracticeSpeechCapabilities, type PracticeStart, type UploadPolicy, type UploadResult } from '@/types/api'
+
+// The live room handles failures through its own accessible audio/video controls.
+function oralRequest(signal?: AbortSignal, retryOralRateLimit = true): AxiosRequestConfig & { _silent: boolean; _retryOralRateLimit: boolean } {
+  return { signal, _silent: true, _retryOralRateLimit: retryOralRateLimit }
+}
 
 export const aiApi = {
   /**
@@ -25,17 +31,28 @@ export const aiApi = {
     body.append('file', file)
     return request.post('/ai/defense/materials', body, { params: { kind } })
   },
-  generateQuestions: (documentIds: number[], questionCount: number) =>
-    request.post('/ai/defense/questions/generate', { document_ids: documentIds, question_count: questionCount }),
-  createSession: (questionCount: number, questionIds?: number[]) =>
-    request.post(`/ai/defense/sessions?question_count=${questionCount}`, questionIds ? { question_ids: questionIds } : undefined),
-  startSession: (id: number) => request.post(`/ai/defense/sessions/${id}/start`),
-  answer: (id: number, data: { question: string; answer: string }) =>
-    request.post(`/ai/defense/sessions/${id}/answer`, data),
-  next: (id: number) => request.post(`/ai/defense/sessions/${id}/next`),
+  generateQuestions: (questionCount: number, signal?: AbortSignal) =>
+    request.post('/ai/defense/questions/generate', { question_count: questionCount }, { ...oralRequest(signal), timeout: 240000 }),
+  createSession: (questionCount: number, questionIds?: number[], signal?: AbortSignal) =>
+    request.post(`/ai/defense/sessions?question_count=${questionCount}`, questionIds ? { question_ids: questionIds } : undefined, oralRequest(signal)),
+  startLive: (requestId: string, questionCount: number, signal: AbortSignal) =>
+    request.post<unknown, ApiEnvelope<PracticeStart>>('/ai/defense/live/start',
+      { request_id: requestId, question_count: questionCount }, { ...oralRequest(signal), timeout: 15000 }),
+  advanceLive: (id: number, data: { turn_no: number; answer: string }, signal: AbortSignal) =>
+    request.post<unknown, ApiEnvelope<PracticeAdvance>>(`/ai/defense/sessions/${id}/live/advance`, data, { ...oralRequest(signal), timeout: 15000 }),
+  speechCapabilities: (signal: AbortSignal) =>
+    request.get<unknown, ApiEnvelope<PracticeSpeechCapabilities>>('/ai/defense/speech-capabilities',
+      { ...oralRequest(signal, false), timeout: 10000 }),
+  startSession: (id: number, signal?: AbortSignal) => request.post(`/ai/defense/sessions/${id}/start`, undefined, oralRequest(signal)),
+  answer: (id: number, data: { question: string; answer: string }, signal?: AbortSignal) =>
+    request.post(`/ai/defense/sessions/${id}/answer`, data, oralRequest(signal)),
+  next: (id: number, signal?: AbortSignal) => request.post(`/ai/defense/sessions/${id}/next`, undefined, oralRequest(signal)),
   sessions: () => request.get('/ai/defense/sessions'),
-  sessionDetail: (id: number) => request.get(`/ai/defense/sessions/${id}`),
-  report: (id: number) => request.get(`/ai/defense/sessions/${id}/report`),
+  sessionDetail: (id: number, signal?: AbortSignal) => request.get<unknown, ApiEnvelope<PracticeSessionDetail>>(`/ai/defense/sessions/${id}`, oralRequest(signal)),
+  report: (id: number, signal?: AbortSignal) =>
+    request.get<unknown, ApiEnvelope<PracticeReport>>(`/ai/defense/sessions/${id}/report`, { ...oralRequest(signal), timeout: 15000 }),
+  retryReport: (id: number, signal: AbortSignal) =>
+    request.post(`/ai/defense/sessions/${id}/report/retry`, undefined, oralRequest(signal)),
   pptOutline: () => request.post('/ai/ppt-outline/generate'),
   exportPptx: (data: unknown) => request.post('/ai/ppt-outline/export', data, { responseType: 'blob' }),
   analyseProgress: (studentId: number) => request.post(`/ai/progress/student/${studentId}/analyse`),

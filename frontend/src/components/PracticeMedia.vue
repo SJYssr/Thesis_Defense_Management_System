@@ -1,222 +1,226 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { CloseBold, Loading, Microphone, RefreshRight, Warning, Headset } from '@element-plus/icons-vue'
 import request from '@/api/request'
-import PracticeAnswerInput from '@/components/PracticeAnswerInput.vue'
-import { playQuestionAudio, playOfflineSpeech, primePracticeVoice, releasePracticeVoice, speechPhrases } from '@/utils/practiceVoice'
+import type { ApiEnvelope, PracticeSpeechCapabilities } from '@/types/api'
+import type { ObservationSignal } from '@/api/practiceObservations'
+import PracticeObservation from './PracticeObservation.vue'
+import { activeContext, localMandarinVoice, primePracticeVoice, speakLocally, speakWithServer } from '@/utils/practiceVoice'
+import { recordAnswer } from '@/utils/practiceRecorder'
 
-const props = defineProps<{ question: string; sessionId: number; turnNo: number; turnKey: string; canDictate: boolean; autoRead: boolean }>()
-const emit = defineEmits<{ transcript: [text: string]; submitTranscript: []; 'update:autoRead': [enabled: boolean] }>()
-
-const synth = window.speechSynthesis
-const answerInput = ref<InstanceType<typeof PracticeAnswerInput> | null>(null)
-const canUseCamera = Boolean(navigator.mediaDevices?.getUserMedia)
-const voices = ref<SpeechSynthesisVoice[]>([])
-const voice = computed(() => {
-  const local = voices.value.filter(v => v.localService)
-  return local.find(v => /^(zh[-_](CN|Hans)|cmn)/i.test(v.lang))
-    || local.find(v => /^zh(?:$|[-_](TW|SG|Hant))/i.test(v.lang))
+const props = defineProps<{
+  stream: MediaStream; sessionId: number | null; turnNo: number | null; question: string
+  active: boolean; parentError?: string; observe?: boolean; getCapabilities: () => Promise<PracticeSpeechCapabilities>
+}>()
+const emit = defineEmits<{
+  answer: [text: string, endpointedAt: number]; audioStart: []; retry: []; leave: []; signal: [kind: ObservationSignal]
+}>()
+const video = ref<HTMLVideoElement | null>(null)
+const videoReady = ref(false)
+const videoFault = ref(false)
+const stage = ref<'waiting' | 'speaking' | 'listening' | 'transcribing' | 'fault'>('waiting')
+const parentGuidance = computed(() => {
+  const error = props.parentError || ''
+  if (!error) return ''
+  if (/材料.{0,8}(不足|不够|已更新|已移除)|没有可核对|缺少可核对|补充材料/.test(error))
+    return '当前材料无法支持这次练习。请退出答辩，检查或补充自己的材料后重新开始。'
+  if (/繁忙|频繁|限流|超时/.test(error))
+    return '答辩服务暂时繁忙，请稍候点击重试。'
+  if (/未配置|未绑定|尚未绑定/.test(error))
+    return '答辩服务还没有准备好，请联系管理员后重试。'
+  return '答辩暂时中断，请点击重试，或退出后继续这场练习。'
 })
-const speaking = ref(false)
-const voiceStatus = ref('')
-let cachedQuestionAudio: Blob | null = null
-const cameraPending = ref(false)
-const cameraOn = ref(false)
-const camera = ref<HTMLVideoElement | null>(null)
-const message = ref('')
-let speech: SpeechSynthesisUtterance | null = null
-let playback: AbortController | null = null
-let readTurn = ''
-let stream: MediaStream | null = null
-let cameraRequest = 0
+const status = computed(() => {
+  if (videoFault.value) return '视频预览中断，请重试'
+  if (parentGuidance.value) return parentGuidance.value
+  return { waiting: '请稍候', speaking: '老师正在提问', listening: '请回答，讲完后停顿三秒', transcribing: '正在识别回答', fault: '语音中断，请重试' }[stage.value]
+})
+const fault = computed(() => !!props.parentError || videoFault.value || stage.value === 'fault')
+const retryIndex = ref(0)
+const videoAttempt = ref(0)
+let cachedSpeech: Blob | null = null
+let retryServerAfter = 0
+let retryAudio: Blob | null = null
+let endpointedAt = 0
+let key = ''
+let delivered = false
 
-function loadVoices() { voices.value = synth?.getVoices() || [] }
+watch([video, () => props.stream, videoAttempt], async ([el, stream], _, cleanup) => {
+  videoReady.value = false
+  videoFault.value = false
+  if (!el) return
+  let current = true
+  el.srcObject = stream
+  const failed = () => { videoReady.value = false; videoFault.value = true }
+  el.addEventListener('error', failed)
+  cleanup(() => {
+    current = false
+    el.removeEventListener('error', failed)
+    el.srcObject = null
+  })
+  try { await el.play(); if (current) videoReady.value = true } catch { if (current) failed() }
+}, { flush: 'post' })
 
-function stopSpeech() {
-  playback?.abort()
-  playback = null
-  speaking.value = false
-  if (voiceStatus.value === '正在生成题目语音…') voiceStatus.value = ''
-  if (speech) {
-    speech.onend = speech.onerror = null
-    speech = null
-    synth.cancel()
+async function ask(path: string, question: string, signal: AbortSignal, serverSpeech: boolean) {
+  let reported = false
+  const started = () => {
+    stage.value = 'speaking'
+    if (!reported) emit('audioStart')
+    reported = true
   }
+  // A verified device-local Mandarin voice avoids the round trip for a full WAV.
+  // An unverified or cloud-backed system voice never receives student-specific questions.
+  const localFirst = !serverSpeech || !!localMandarinVoice() || performance.now() < retryServerAfter
+  if (localFirst) {
+    try { await speakLocally(question, signal, started); return }
+    catch (error) {
+      signal.throwIfAborted()
+      if (!serverSpeech || reported) throw error
+    }
+  }
+  let candidate = cachedSpeech
+  const voice = await speakWithServer(question, signal, async preparing => {
+    const options = { responseType: 'blob' as const, _silent: true, signal: preparing, timeout: 60000 }
+    candidate ??= await request.get<Blob, Blob>(path + '/speech', options)
+    preparing.throwIfAborted()
+    return candidate
+  }, started)
+  signal.throwIfAborted()
+  if (voice === 'server') cachedSpeech = candidate
+  // Avoid submitting another slow synthesis on every turn; try the bound service again after a minute.
+  retryServerAfter = voice === 'offline' ? performance.now() + 60000 : 0
 }
 
-async function readQuestion() {
-  if (speaking.value) { stopSpeech(); return }
-  if (!props.question || document.hidden) return
-  readTurn = props.turnKey
-  answerInput.value?.cancel()
-  const attempt = new AbortController()
-  playback = attempt
-  message.value = ''
-  speaking.value = true
-  voiceStatus.value = '正在生成题目语音…'
-  const complete = () => {
-    if (playback === attempt) { playback = null; speaking.value = false; speech = null }
-  }
+async function transcribe(path: string, wav: Blob, signal: AbortSignal) {
+  const form = new FormData()
+  form.append('file', wav, 'answer.wav')
+  const options = { signal, _silent: true, _retryOralRateLimit: true, timeout: 120000 }
   try {
-    const options = { responseType: 'blob' as const, _silent: true, signal: attempt.signal, timeout: 70000 }
-    const audio = cachedQuestionAudio || await request.get<Blob, Blob>(
-      `/ai/defense/sessions/${props.sessionId}/turns/${props.turnNo}/speech`, options)
-    attempt.signal.throwIfAborted()
-    await playQuestionAudio(audio, attempt.signal, () => {
-      cachedQuestionAudio = audio
-      voiceStatus.value = '语音来源：自托管语音模型'
-    })
-    complete()
-    return
-  } catch {
-    if (attempt.signal.aborted) return
+    const { data } = await request.post<unknown, ApiEnvelope<{ text: string }>>(path + '/transcription', form, options)
+    return data.text.trim()
+  } catch (error) {
+    const status = (error as { response?: { status?: number } }).response?.status
+    // An unintelligible recording needs a new attempt. Transport failures keep the original WAV.
+    if (status === 422) return ''
+    throw error
   }
-  const offline = async (text: string) => {
-    try {
-      await playOfflineSpeech(text, attempt.signal, () => { voiceStatus.value = '语音来源：本机离线普通话' })
-    }
-    catch (err) {
-      if (attempt.signal.aborted) return
-      voiceStatus.value = ''
-      message.value = err instanceof Error && err.message === 'activation'
-        ? '浏览器需要你先点击「朗读题目」开启声音。'
-        : '离线语音未能播放，请检查声音设置后点击「朗读题目」重试。'
-    } finally { complete() }
-  }
-
-  const native = voice.value
-  const phrases = speechPhrases(props.question)
-  if (!native || !window.SpeechSynthesisUtterance) { void offline(props.question); return }
-  const next = () => {
-    if (attempt.signal.aborted) return
-    const phrase = phrases.shift()
-    if (phrase === undefined) { complete(); return }
-    speech = new SpeechSynthesisUtterance(phrase)
-    speech.lang = native.lang
-    speech.voice = native
-    speech.onstart = () => { if (!attempt.signal.aborted) voiceStatus.value = '语音来源：设备中文语音' }
-    speech.onend = next
-    const fallback = () => {
-      if (attempt.signal.aborted) return
-      speech = null
-      void offline(phrase + phrases.join(''))
-    }
-    speech.onerror = fallback
-    try { synth.speak(speech) } catch { fallback() }
-  }
-  next()
 }
 
-function manualRead() {
+async function conduct(sid: number, turn: number, question: string, stream: MediaStream, signal: AbortSignal) {
+  const path = `/ai/defense/sessions/${sid}/turns/${turn}`
+  const caps = await props.getCapabilities()
+  signal.throwIfAborted()
+  if (!caps.transcription) throw new Error('请在系统设置绑定语音转写服务')
+  const maxSeconds = Math.max(1, Math.min(90, Math.floor(caps.max_recording_seconds || 90)))
+  if (!retryAudio) await ask(path, question, signal, caps.speech)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    signal.throwIfAborted()
+    if (!retryAudio) {
+      const context = await activeContext(signal)
+      const wav = await recordAnswer(stream, context, maxSeconds, signal, () => { stage.value = 'listening' })
+      signal.throwIfAborted()
+      endpointedAt = performance.now()
+      retryAudio = wav
+    }
+    if (retryAudio) {
+      stage.value = 'transcribing'
+      const text = await transcribe(path, retryAudio, signal)
+      signal.throwIfAborted()
+      retryAudio = null
+      if (text) {
+        delivered = true
+        stage.value = 'waiting'
+        emit('answer', text, endpointedAt)
+        return
+      }
+    }
+    if (attempt < 2) {
+      stage.value = 'speaking'
+      await speakLocally('刚才没有听清，请再说一遍。', signal)
+    }
+  }
+  throw new Error('没有听清回答')
+}
+
+watch([() => props.sessionId, () => props.turnNo, () => props.question, () => props.active,
+       () => props.parentError, () => props.stream, videoReady, retryIndex], async (
+  [sid, turn, question, active, error, stream, ready], _, cleanup
+) => {
+  const turnKey = `${sid}-${turn}-${question}`
+  if (turnKey !== key) {
+    key = turnKey
+    cachedSpeech = retryAudio = null
+    delivered = false
+  }
+  stage.value = 'waiting'
+  if (!sid || !turn || !question || !active || error || !ready || delivered || document.hidden) return
+  const controller = new AbortController()
+  cleanup(() => controller.abort())
+  try {
+    await conduct(sid, turn, question, stream, controller.signal)
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      stage.value = 'fault'
+      const spokenError = capsErrorMessage(error)
+      void speakLocally(spokenError, controller.signal).catch(() => {})
+    }
+  }
+}, { immediate: true })
+
+function capsErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message.startsWith('请在系统设置'))
+    return '语音转写还没有设置好，请联系管理员。'
+  return '语音暂时中断，请点击重试。'
+}
+
+watch(parentGuidance, (message, _, cleanup) => {
+  if (!message || document.hidden) return
+  const prompt = new AbortController()
+  cleanup(() => prompt.abort())
+  void speakLocally(message, prompt.signal).catch(() => {})
+}, { immediate: true })
+
+function retry() {
   primePracticeVoice()
-  readQuestion()
+  if (videoFault.value) videoAttempt.value++
+  else if (props.parentError) emit('retry')
+  else retryIndex.value++
 }
 
-function changeAutoRead(enabled: boolean) {
-  if (enabled) primePracticeVoice()
-  emit('update:autoRead', enabled)
-}
-
-function stopCamera() {
-  cameraRequest++
-  cameraPending.value = false
-  cameraOn.value = false
-  stream?.getTracks().forEach(track => { track.onended = null; track.stop() })
-  stream = null
-  if (camera.value) camera.value.srcObject = null
-}
-
-async function toggleCamera() {
-  if (cameraOn.value || cameraPending.value) { stopCamera(); return }
-  const request = ++cameraRequest
-  cameraPending.value = true
-  message.value = ''
-  try {
-    const candidate = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
-    if (cameraRequest !== request) { candidate.getTracks().forEach(t => t.stop()); return }
-    stream = candidate
-    candidate.getVideoTracks().forEach(t => { t.onended = stopCamera })
-    cameraOn.value = true
-    await nextTick()
-    if (camera.value && cameraRequest === request) {
-      camera.value.srcObject = candidate
-      await camera.value.play()
-    }
-  } catch (err) {
-    if (cameraRequest !== request) return
-    stopCamera()
-    message.value = err instanceof DOMException && err.name === 'NotAllowedError'
-      ? '未获得摄像头权限，你可以直接作答。'
-      : '未能打开摄像头，请检查设备或直接作答。'
-  } finally {
-    if (cameraRequest === request) cameraPending.value = false
-  }
-}
-
-function requestCamera() {
-  if (!cameraOn.value && !cameraPending.value) void toggleCamera()
-}
-
-function stopDevices() { stopSpeech(); answerInput.value?.cancel(); stopCamera() }
-function onVisibility() { if (document.hidden) stopDevices() }
-watch(() => props.turnKey, () => {
-  stopSpeech(); answerInput.value?.cancel(); message.value = ''
-  cachedQuestionAudio = null
-  voiceStatus.value = ''
-})
-watch(() => props.canDictate, allowed => { if (!allowed) { answerInput.value?.cancel(); stopSpeech() } })
-watch(() => props.autoRead, enabled => {
-  if (!enabled) stopSpeech()
-  else readTurn = speaking.value ? props.turnKey : ''
-})
-function autoReadIfReady() {
-  if (props.autoRead && props.canDictate && props.turnKey !== readTurn && !document.hidden) readQuestion()
-}
-watch(() => [props.turnKey, props.autoRead, props.canDictate], autoReadIfReady, { flush: 'post' })
-onMounted(() => {
-  loadVoices()
-  autoReadIfReady()
-  synth?.addEventListener('voiceschanged', loadVoices)
-  document.addEventListener('visibilitychange', onVisibility)
-  window.addEventListener('pagehide', stopDevices)
-})
-onBeforeUnmount(() => {
-  stopDevices()
-  releasePracticeVoice()
-  synth?.removeEventListener('voiceschanged', loadVoices)
-  document.removeEventListener('visibilitychange', onVisibility)
-  window.removeEventListener('pagehide', stopDevices)
-})
+onBeforeUnmount(() => { retryAudio = cachedSpeech = null })
 </script>
 
 <template>
-  <div class="practice-media">
-    <div class="tools">
-      <el-switch :model-value="autoRead" aria-label="连续语音提问" active-text="连续语音提问" @update:model-value="changeAutoRead($event === true)" />
-      <el-button size="small" :aria-pressed="speaking" @click="manualRead">{{ speaking ? '停止朗读' : '朗读题目' }}</el-button>
-      <el-button size="small" :disabled="!canUseCamera" :aria-pressed="cameraOn" @click="toggleCamera">{{ cameraPending ? '取消开启' : cameraOn ? '关闭摄像头' : '预览摄像头' }}</el-button>
+  <section class="oral-stage" aria-label="视频模拟答辩" :data-phase="fault ? 'fault' : stage">
+    <video ref="video" autoplay playsinline muted aria-label="本人摄像头画面" />
+    <div class="vignette" aria-hidden="true"></div>
+    <div class="room-controls">
+      <div class="room-status" :class="{ listening: stage === 'listening' && !fault }" role="status" :aria-label="status">
+        <Warning v-if="fault" />
+        <Microphone v-else-if="stage === 'listening'" />
+        <Headset v-else-if="stage === 'speaking'" />
+        <Loading v-else class="rotating" />
+      </div>
+      <button v-if="fault" type="button" class="room-action" aria-label="重试" @click="retry"><RefreshRight /></button>
+      <button type="button" class="room-action leave" aria-label="离开答辩" @click="emit('leave')"><CloseBold /></button>
     </div>
-    <p v-if="voiceStatus" role="status">{{ voiceStatus }} <a v-if="voiceStatus === '语音来源：本机离线普通话'" href="/practice-voice/NOTICE.txt" target="_blank" rel="noopener">语音组件来源与许可</a></p>
-    <PracticeAnswerInput ref="answerInput" :session-id="sessionId" :turn-no="turnNo" :can-dictate="canDictate"
-                         @recording-start="stopSpeech" @transcript="emit('transcript', $event)"
-                         @submit-transcript="emit('submitTranscript')" />
-    <p v-if="!canUseCamera">摄像头需要支持视频采集的浏览器及 HTTPS 或本机地址。</p>
-    <p v-else-if="cameraPending" role="status">等待摄像头授权…</p>
-    <figure v-if="cameraOn">
-      <video ref="camera" autoplay muted playsinline aria-label="本机摄像头预览" />
-      <figcaption>本机镜头预览，仅供练习仪态。画面不录制、不上传。</figcaption>
-    </figure>
-    <slot name="observation" :video="camera" :request-camera="requestCamera" :release-camera="stopCamera" />
-    <p v-if="message" role="status" class="device-message">{{ message }}</p>
-  </div>
+    <PracticeObservation v-if="observe && sessionId" :key="sessionId" :video="video" :session-id="sessionId"
+                         :active="active && videoReady" @signal="emit('signal', $event)" />
+  </section>
 </template>
 
 <style scoped>
-.practice-media { margin: 0 0 16px; }
-.tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.tools .el-button { margin: 0; }
-.practice-media p, figcaption { font-size: 12px; color: #58687c; margin: 6px 0 0; line-height: 1.55; }
-.practice-media .device-message { color: #85560d; }
-figure { margin: 10px 0 0; }
-video { width: min(100%, 320px); max-height: 200px; border-radius: 8px; background: #182736; transform: scaleX(-1); object-fit: contain; }
+.oral-stage { position: absolute; inset: 0; overflow: hidden; background: #11191b; color: #fff; }
+.oral-stage video { display: block; width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1); }
+.vignette { position: absolute; inset: 60% 0 0; background: linear-gradient(transparent, rgb(0 0 0 / .36)); pointer-events: none; }
+.room-controls { position: absolute; bottom: max(28px, env(safe-area-inset-bottom)); inset-inline: 0; display: flex; align-items: center; justify-content: center; gap: 14px; }
+.room-status, .room-action { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; background: #202e31; color: white; }
+.room-action { border: 1px solid rgb(255 255 255 / .45); cursor: pointer; }
+.room-action:focus-visible { outline: 3px solid white; outline-offset: 3px; }
+.room-controls svg { width: 23px; height: 23px; }
+.room-status.listening { background: #15614f; box-shadow: 0 0 0 5px rgb(94 222 168 / .24); }
+.room-action.leave { background: #a53a3c; }
+.rotating { animation: rotate 1.8s linear infinite; }
+@keyframes rotate { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .rotating { animation: none; } }
 </style>

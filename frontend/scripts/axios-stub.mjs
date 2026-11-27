@@ -63,6 +63,7 @@ function dispatch(cfg) {
           const res = err && err.response
             ? makeResponse(cfg, err.response.status, err.response.data)
             : null
+          if (res && err.response.headers) res.headers = err.response.headers
           reject(new AxiosError((err && err.message) || 'adapter error', cfg, res))
         },
       )

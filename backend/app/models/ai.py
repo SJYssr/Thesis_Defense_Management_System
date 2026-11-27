@@ -1,7 +1,7 @@
 """AI/RAG 模型: 知识文档/Chunk元数据/对话/答辩会话/用量."""
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, SmallInteger, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, SmallInteger, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, BigIntPK, TimestampMixin
@@ -84,6 +84,10 @@ class AIDefenseQuestion(Base, TimestampMixin):
 
 class AIDefenseSession(Base, TimestampMixin):
     __tablename__ = "ai_defense_session"
+    __table_args__ = (
+        UniqueConstraint("student_id", "live_request_id", name="uq_defense_live_request"),
+        Index("ix_defense_report_due", "report_status", "report_lease_until"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     student_id: Mapped[int] = mapped_column(BigInteger, index=True)
@@ -95,6 +99,12 @@ class AIDefenseSession(Base, TimestampMixin):
     answered_count: Mapped[int] = mapped_column(Integer, default=0)
     overall_score: Mapped[int | None] = mapped_column(Integer)
     summary: Mapped[str | None] = mapped_column(Text, comment="答辩报告 JSON")
+    live_request_id: Mapped[str | None] = mapped_column(String(36))
+    live_document_ids: Mapped[str | None] = mapped_column(Text)
+    report_status: Mapped[str | None] = mapped_column(String(16))
+    report_lease_until: Mapped[datetime | None] = mapped_column(DateTime)
+    report_claim: Mapped[str | None] = mapped_column(String(36))
+    report_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class AIDefenseObservation(Base):

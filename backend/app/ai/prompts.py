@@ -64,11 +64,13 @@ _RAG_ANSWER_CORE = """你是毕业设计智能助手。
 _DEFENSE_QUESTION_CORE = """你是毕业设计模拟答辩教师，负责根据学生上传的报告和源码生成问题库。
 从提供的材料中选择具体的设计主张、实验结果或代码行为提问。若有源码和报告，两类都须覆盖，
 并用一道题让学生对照文中设计和实现。材料只有设计设想时，不能假定已经实现。
-按输入 question_count 生成指定数量的不同问题，覆盖基础理解、技术选型、设计、实现、测试、局限与扩展。每题只问一个明确的问题。
+按输入 question_count 生成不同的问题。以学生亲自完成这个项目为前提，优先让他解释一个有依据的设计决定、
+分析一个具体输入如何影响结果，或用自己的测试说明实现的边界。把“材料说做了什么”推进到“为何这样设计、换个条件会怎样、如何验证”。
+同一个事实只考一次。避免有标准选项的选择题、填空题和逐字默写；简短的事实核对可以作为追问。每次只问一个问题。
 输出 JSON 对象 {"questions":[{"question":"问题","question_type":"DESIGN","difficulty":"MEDIUM",
 "source_ids":[123],"rubric":[{"expectation":"逐字摘录该题所考查的事实或代码","source_ids":[123]}]}]}。
 每题独立选择1至3个最相关的预期要点。expectation 必须是其引用 excerpt 中连续的原文（2至220字符），不得改写、截拼或引用其他题的材料。source_ids 必须选自输入 chunks 中的 chunk_id。
-题干可指明章节、文件、函数及所问行为，但不要直接给出期望学生回答的结论。
+题干是一位现场评委直接说给学生听的一句简短中文问话。用业务角色、约束、观测值、边界情况和可验证的结果提问。将实现翻译成它做了什么；不要报出章节、文件、路径、代码符号、Markdown 或引用编号，也不要念评分要点。
 """
 
 _DEFENSE_EVALUATE_CORE = """你是毕业设计模拟答辩教师，结合当前题目的材料和学生本轮实际回答给出练习反馈。
@@ -83,6 +85,7 @@ _DEFENSE_EVALUATE_CORE = """你是毕业设计模拟答辩教师，结合当前�
 学生没提到材料中本题明确考查的要点是 missing；额外说法无法从材料验证时不据此判错。仅当要点本身欠缺材料依据时标记 insufficient_evidence。
 学生用自己的话准确说明材料含义也算 supported，不要求背诵原文。
 准确性由服务器按可判断要点折算；逻辑、表达、深度仅评价回答和材料所问的内容。
+追问直接用口语接住学生刚才的具体说法，追究一个材料能核对的事实。避免路径、函数名、代码、标题、引文编号和泛泛的“根据材料说明”。
 需要追问时为追问独立选择1至3个能从本次 source_ids 引文中逐字核对的要点，每项2至220字符。
 引用的 source_ids 必须选自输入 chunks 中的 chunk_id，不能杜撰材料、路径或实验结果。
 """
@@ -178,6 +181,19 @@ PROMPT_SPECS: dict[str, PromptSpec] = {
                    _DEFENSE_QUESTION_CORE, untrusted=True),
         PromptSpec("DEFENSE_EVALUATE_ANSWER", "回答评价", "按准确性/逻辑/表达/深度四维评分并决定是否追问",
                    _DEFENSE_EVALUATE_CORE, untrusted=True),
+        PromptSpec("DEFENSE_LEGACY_RUBRIC", "历史口试评分要点",
+                   "从学生材料中为旧题选出可核对的原文要点",
+                   """为给定问题选择一至三个可核对的事实。只读 chunks 和题目，每个要点直接摘录一个 excerpt 内连续的 2 至 220 个字符。
+每条摘录应能用来判断考生是否回答了问题；保留原文的标点、空格和大小写。只输出 JSON 对象
+{"rubric":[{"expectation":"逐字摘录","source_ids":[该条摘录的chunk_id]}]}。""", untrusted=True),
+        PromptSpec("DEFENSE_OFFLINE_GRADE", "视频口试逐轮评阅",
+                   "按本题固定的原文和实际转写逐项评分",
+                   """你负责毕业设计口试结束后的评分。输入 rubric 是本题已核定的材料要点，逐个评价，不增删或修改。
+输出 JSON 对象，包含整数 accuracy (0..35)、logic (0..25)、clarity (0..20)、depth (0..20)，
+feedback（一段有依据的中文反馈）、source_ids（1至5个真实 chunk_id）及 assessment 数组。
+每个要点返回 {"id":输入要点的整数编号,"verdict":"判定","reason":"具体理由","answer_quote":"学生回答中的连续原文"}。
+verdict 仅用 supported、partial、missing、contradicted、insufficient_evidence。前两种及 contradicted 须引用学生连续原话，
+保持拼写、空格和标点；未提到的要点用 missing 并将 answer_quote 置为空字符串。语义正确即可计分。""", untrusted=True),
         PromptSpec("DEFENSE_REPORT", "答辩报告", "整场模拟答辩结束后的五维报告生成",
                    _DEFENSE_REPORT_CORE),
         PromptSpec("PPT_OUTLINE", "PPT 大纲生成", "12~15页答辩PPT大纲(含页面目标/要点/讲稿/建议图表)",
@@ -240,10 +256,22 @@ def invalidate_prompt_cache(code: str) -> None:
 
 # ---------- User Prompt 构建(数据组装逻辑, 不随模板配置) ----------
 
-def defense_question_prompt(topic_title: str, sources: list[dict], question_count: int) -> str:
+def defense_question_prompt(topic_title: str, sources: list[dict], question_count: int, *,
+                            avoid: list[str] | None = None, required: list[str] | None = None,
+                            preceding: dict | None = None) -> str:
     return json.dumps({"topic_title": topic_title, "chunks": sources, "question_count": question_count,
+                       "already_asked": avoid or [], "required_materials": required or [],
+                       "follow_up_to": preceding,
                        "output_contract": "每道题返回 source_ids 和 rubric 数组，每项含 expectation 与 source_ids。"
-                                          "expectation 是所引 excerpt 中2至220字的连续原文。题干不直接给出预期结论。"}, ensure_ascii=False)
+                                          "expectation 是所引 excerpt 中2至220字的连续原文。"
+                                          "每题单独口头可理解，约20至60字，不复述答案；将源码翻译为具体行为或场景。"
+                                          "重点考查能用原文核对的方案理由、实现取舍、边界或测试。有资料仅描述实现时，可以追问这一行为如何影响一个具体用例，"
+                                          "勿假定文中未提到的动机。同一事实不要换种说法再问。题干不要列选项、提示答案或反复问某个返回值。"
+                                          "所有题面禁用文件名、目录路径、函数调用、标题、代码及逐字摘录。"
+                                          "围绕材料中确实存在的选择或条件提问，不得编造测试和数据。"
+                                          "补充问题时用“如何”“为什么”或“会发生什么”口头发问，避免以“还是”“是否”列出选项。"
+                                          "避开 already_asked 中的问题。覆盖 required_materials 中的材料。"
+                                          "若有 follow_up_to，请针对其中回答与材料之间最值得澄清的细节追问。"}, ensure_ascii=False)
 
 
 def defense_evaluate_prompt(topic_title: str, question: str, answer: str, sources: list[dict],
@@ -253,6 +281,7 @@ def defense_evaluate_prompt(topic_title: str, question: str, answer: str, source
                        "output_contract": "对 rubric 每项返回 assessment 对象，包含 id、verdict（supported/partial/missing/"
                                           "contradicted/insufficient_evidence）、reason、answer_quote（学生连续原话或空串）。"
                                           "意思准确即可计分。缺少明确考查的事实判 missing；材料之外的补充说法不据此判错。"
+                                          "追问用简短中文直接就回答追问一个具体行为或取舍，不念路径、文件、代码、标题和引文编号。"
                                           "需要追问时返回 follow_up_rubric，格式为 expectation 和 source_ids；"
                                           "要点必须逐字引自本次返回 source_ids 对应片段。"}, ensure_ascii=False)
 

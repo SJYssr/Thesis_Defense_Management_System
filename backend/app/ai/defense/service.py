@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.ai.defense.dialogue import LiveQuestion, choose_question, usable_question, usable_quote
+from app.ai.defense.oral import offers_choices, oral_question, question_key
 from app.ai.defense.rubric import accuracy_from_evidence, assess_points, mark_snapshot, marking_points, snapshot
 from app.ai.llm.factory import LLMFactory, extract_json
 from app.ai.prompts import (
@@ -22,7 +24,7 @@ from app.ai.prompts import (
     resolve_system_prompt,
 )
 from app.ai.rag.rag_service import RAGService
-from app.ai.rag.retriever import RetrievedChunk
+from app.ai.rag.retriever import HybridRetriever, RetrievedChunk
 from app.core.exceptions import BusinessException, ResourceNotFoundException
 from app.models.ai import (
     AIDefenseObservation,
@@ -158,78 +160,70 @@ class DefenseService:
             raise BusinessException("当前毕业流程尚无可读取的材料，请上传报告或源码并完成索引")
         return sources
 
+    def _draft_questions(self, student_id: int, user_id: int | None, title: str, sources: list[dict],
+                         count: int, *, preceding: dict | None = None,
+                         avoid: list[str] | None = None) -> list[AIDefenseQuestion]:
+        by_id = {s["chunk_id"]: s for s in sources}
+        available = {s["document_type"] == "SOURCE_CODE" for s in sources}
+        required = available if count >= len(available) else set()
+        representatives = {}
+        rows = []
+        closed_count = 0
+        seen = {question_key(q) for q in avoid or []}
+        llm = LLMFactory.get()
+        system = resolve_system_prompt(self.db, "DEFENSE_GENERATE_QUESTIONS")
+        for _ in range(2):
+            missing = required - representatives.keys()
+            needed = max(count - len(rows), len(missing))
+            prompt = defense_question_prompt(title, sources, needed, avoid=[*(avoid or []), *(r.question for r in rows)],
+                                             required=["项目实现" if k else "书面材料" for k in sorted(missing)],
+                                             preceding=preceding)
+            started = datetime.now()
+            raw = llm.complete(system, prompt)
+            self.db.add(AIUsageLog(user_id=user_id, scene="GENERATE_QUESTIONS", model=llm.name,
+                                   input_tokens=len(prompt), output_tokens=len(raw),
+                                   latency_ms=int((datetime.now() - started).total_seconds() * 1000)))
+            try:
+                data = extract_json(raw)
+            except ValueError:
+                data = {}
+            items = data.get("questions") if isinstance(data, dict) else None
+            for item in items if isinstance(items, list) else ():
+                if not isinstance(item, dict) or not oral_question(item.get("question")):
+                    continue
+                question = item["question"].strip()
+                key = question_key(question)
+                cited = _citations(item.get("source_ids"), by_id)
+                points = marking_points(item.get("rubric"), cited)
+                closed = offers_choices(question)
+                if count >= 3 and closed and closed_count >= max(1, count // 3):
+                    continue
+                if not points or key in seen:
+                    continue
+                seen.add(key)
+                closed_count += int(closed)
+                qtype, difficulty = item.get("question_type"), item.get("difficulty")
+                row = AIDefenseQuestion(student_id=student_id, question=question,
+                                        question_type=qtype if qtype in tuple(QuestionType) else "BASIC",
+                                        difficulty=difficulty if difficulty in ("EASY", "MEDIUM", "HARD") else "MEDIUM",
+                                        reference_chunks=mark_snapshot(cited, points),
+                                        reference_answer="；".join(p["expectation"] for p in points))
+                rows.append(row)
+                for point in points:
+                    for cid in point["source_ids"]:
+                        representatives.setdefault(by_id[cid]["document_type"] == "SOURCE_CODE", row)
+                if len(rows) >= count and required <= representatives.keys():
+                    # Start with evidence from both report and implementation when available.
+                    first = list(dict.fromkeys(representatives[k] for k in sorted(representatives)))
+                    return (first + [r for r in rows if r not in first])[:count]
+        raise BusinessException(f"模型提供了 {len(rows)} 道可核对的口头问题，未能按材料完整生成 {count} 道。"
+                                "请重试，或补充项目设计、实现和测试依据。", 50302)
+
     def generate_questions(self, student_id: int, user_id: int, document_ids: list[int] | None = None,
                            question_count: int | None = None) -> list[dict]:
         topic = self._get_topic(student_id)
         sources = self._generation_sources(student_id, document_ids)
-        requested = question_count or 22
-        prompt = defense_question_prompt(topic.title, sources, requested)
-        llm = LLMFactory.get()
-        started = datetime.now()
-        raw = llm.complete(resolve_system_prompt(self.db, "DEFENSE_GENERATE_QUESTIONS"), prompt)
-        try:
-            data = extract_json(raw)
-        except ValueError:
-            data = {}
-        supplied = data.get("questions") if isinstance(data, dict) else None
-        by_id = {s["chunk_id"]: s for s in sources}
-        rows = []
-        seen = set()
-        for candidate in supplied if isinstance(supplied, list) else []:
-            if not isinstance(candidate, dict):
-                continue
-            question = candidate.get("question")
-            cited = _citations(candidate.get("source_ids"), by_id)
-            if not isinstance(question, str) or not question.strip() or not cited:
-                continue
-            normalized = _normalize_question(question)
-            if normalized in seen:
-                continue
-            rubric = marking_points(candidate.get("rubric"), cited)
-            if not rubric:
-                continue
-            seen.add(normalized)
-            qtype = candidate.get("question_type")
-            difficulty = candidate.get("difficulty")
-            rows.append(AIDefenseQuestion(student_id=student_id, question=question.strip()[:1200],
-                                          question_type=qtype if qtype in tuple(QuestionType) else "BASIC",
-                                          difficulty=difficulty if difficulty in ("EASY", "MEDIUM", "HARD") else "MEDIUM",
-                                          reference_chunks=mark_snapshot(cited, rubric),
-                                          reference_answer="；".join(p["expectation"] for p in rubric)))
-            if len(rows) == requested:
-                break
-        if question_count is not None and len(rows) < requested:
-            raise BusinessException(f"本次模型返回了 {len(rows)} 道可核对且不重复的题目，未达到所选 {requested} 道。"
-                                    "请重试、减少题数或补充材料。", 50302)
-        has_generated_questions = bool(rows)
-        # 当模型没有给出可核对的题目，使用实际选段发问；确保代码和书面报告各有入口。
-        available = {s["document_type"] == "SOURCE_CODE" for s in sources}
-        covered = {s["document_type"] == "SOURCE_CODE" for r in rows for s in _stored_sources(r.reference_chunks)}
-        for code in sorted(available - covered):
-            source = next(s for s in sources if (s["document_type"] == "SOURCE_CODE") == code)
-            anchor = source["section"] or source["document_name"]
-            rubric = marking_points([{"expectation": source["excerpt"][:160], "source_ids": [source["chunk_id"]]}], [source])
-            if not rubric:
-                continue
-            angles = (("IMPLEMENTATION", "这段逻辑解决了什么问题"), ("TEST", "如何验证这段逻辑的边界情况"),
-                      ("LIMITATION", "这段实现在哪种情况下需要修改")) if code else (
-                ("DESIGN", "这一设计在整体架构中承担什么职责"), ("TEST", "如何验证这一设计满足预期"),
-                ("LIMITATION", "哪些输入或使用场景可能影响预期结果"))
-            for qtype, angle in angles[:1] if has_generated_questions else angles:
-                rows.insert(0, AIDefenseQuestion(student_id=student_id, question=f"请先概述《{anchor}》所引片段的内容，再说明{angle}？",
-                                                  question_type=qtype, difficulty="MEDIUM",
-                                                  reference_chunks=mark_snapshot([source], rubric),
-                                                  reference_answer=rubric[0]["expectation"]))
-        # 把两类材料的代表题排在前面，即使只练习三题也能覆盖实现与设计。
-        representatives = []
-        for code in sorted(available):
-            representative = next((r for r in rows if any(
-                (s["document_type"] == "SOURCE_CODE") == code for s in _stored_sources(r.reference_chunks))), None)
-            if representative is not None and representative not in representatives:
-                representatives.append(representative)
-        rows = (representatives + [r for r in rows if r not in representatives])[:requested]
-        if not rows:
-            raise BusinessException("材料片段不足以形成可核对的评分要点，请补充报告或源码后重试", 50302)
+        rows = self._draft_questions(student_id, user_id, topic.title, sources, question_count or 22)
         self.db.execute(select(StudentProfile.id).where(StudentProfile.id == student_id).with_for_update())
         replaceable = delete(AIDefenseQuestion).where(AIDefenseQuestion.student_id == student_id,
                                                        AIDefenseQuestion.session_id.is_(None),
@@ -243,9 +237,6 @@ class DefenseService:
             replaceable = replaceable.where(AIDefenseQuestion.reference_chunks.is_not(None))
         self.db.execute(replaceable)
         self.db.add_all(rows)
-        self.db.add(AIUsageLog(user_id=user_id, scene="GENERATE_QUESTIONS", model=llm.name,
-                               input_tokens=len(prompt), output_tokens=len(raw),
-                               latency_ms=int((datetime.now() - started).total_seconds() * 1000)))
         self.db.flush()
         items = [{"id": q.id, "question": q.question, "question_type": q.question_type, "difficulty": q.difficulty,
                   "sources": _stored_sources(q.reference_chunks)} for q in rows]
@@ -285,6 +276,202 @@ class DefenseService:
         self.db.commit()
         return {"session_id": session.id, "question_count": len(selected), "available_questions": len(available)}
 
+    def _live_material(self, student_id, document_ids, previous, answer=""):
+        """Select authorized report and code excerpts; revisit exact anchors of cached questions."""
+        docs = [d for d in self.rag.practice_documents(student_id) if d.id in document_ids]
+        opened = [snapshot(t.reference_chunks) for t in previous]
+        seen_docs = [src["document_id"] for turn in opened for src in turn["sources"]]
+        seen_chunks = [src["chunk_id"] for turn in opened for src in turn["sources"]]
+        used = {p["expectation"] for turn in opened for p in turn.get("rubric", [])
+                if isinstance(p, dict) and isinstance(p.get("expectation"), str)}
+        keys = {question_key(t.question) for t in previous}
+        docs.sort(key=lambda d: (seen_docs.count(d.id), d.id))
+        # Include both kinds even when the student has many report versions.
+        chosen = [group[0] for code in (False, True) if (group := [
+            d for d in docs if (d.document_type == "SOURCE_CODE") == code])]
+        chosen += [d for d in docs if d not in chosen]
+        chunk_ids = []
+        for doc in chosen[:8]:
+            ids = list(self.db.scalars(select(AIDocumentChunk.id).where(
+                AIDocumentChunk.document_id == doc.id, AIDocumentChunk.student_id == student_id,
+                AIDocumentChunk.scope == "STUDENT"
+            ).order_by(AIDocumentChunk.id.in_(seen_chunks), AIDocumentChunk.id).limit(5)))
+            chunk_ids.extend(ids)
+        sources = [_source(s) for s in self.rag.practice_chunks(student_id, chunk_ids) if s.content.strip()]
+        sources.sort(key=lambda s: (seen_docs.count(s["document_id"]), seen_chunks.count(s["chunk_id"])))
+        # Interleave documents instead of spending the entire prompt on the first report.
+        first_per_doc = {}
+        for source in sources:
+            first_per_doc.setdefault(source["document_id"], source)
+        # Search the entire authorized project for the latest spoken answer (including implementation
+        # details deep in a source archive); no embedding request is required during the conversation.
+        matches = []
+        if answer and docs:
+            ranked = HybridRetriever(self.db, document_ids=[d.id for d in docs]).keyword_search(
+                answer[:500], student_id, None, top_k=4)
+            matches = [_source(hit) for hit in self.rag.practice_chunks(student_id, [cid for cid, _ in ranked])]
+        sample = matches + [s for s in first_per_doc.values() if s not in matches]
+        sample += [s for s in sources if s not in sample]
+        cached = None
+        allowed = {d.id for d in docs}
+        candidates = self.db.scalars(select(AIDefenseQuestion).where(
+            AIDefenseQuestion.student_id == student_id, AIDefenseQuestion.reference_chunks.is_not(None)
+        ).order_by(AIDefenseQuestion.id.desc()).limit(64))
+        for row in candidates:
+            evidence = snapshot(row.reference_chunks)
+            points = evidence.get("rubric")
+            pinned = evidence["sources"]
+            if (not points or not pinned or not usable_question(row.question, keys)
+                    or not {s["document_id"] for s in pinned} <= allowed
+                    or not isinstance(points, list)
+                    or any(not isinstance(p, dict) or not isinstance(p.get("expectation"), str)
+                           or p["expectation"] in used for p in points)):
+                continue
+            current = [_source(s) for s in self.rag.practice_chunks(student_id, [s["chunk_id"] for s in pinned])]
+            by_id = {src["chunk_id"]: src for src in current}
+            if (len(current) == len(pinned) and marking_points(points, current) == points
+                    and all(usable_quote(by_id[cid], point["expectation"])
+                            for point in points for cid in point["source_ids"])):
+                cached = LiveQuestion(row.question, False, mark_snapshot(current, points))
+                break
+        return sample[:10], used, cached
+
+    def _ask_live(self, student_id, title, sources, used, cached, *, asked, question, answer, may_follow, may_advance):
+        draft = choose_question(title=title, sources=sources, question=question, answer=answer, asked=asked, used=used,
+                                may_follow=may_follow, may_advance=may_advance, cached=cached)
+        if draft or not may_advance:
+            return draft
+        # Unfamiliar code may have no spoken equivalent without a translator. Request one grounded
+        # main question when the low-latency path could not interpret a still-unused code passage.
+        untranslated = [s for s in sources if (s["document_type"] == "SOURCE_CODE" or
+                        not re.search(r"[\u3400-\u9fff]", s["excerpt"]))
+                        and usable_quote(s, s["excerpt"]) and not any(quote in s["excerpt"] for quote in used)]
+        if untranslated:
+            row, = self._draft_questions(student_id, None, title, untranslated, 1, avoid=asked)
+            generated = snapshot(row.reference_chunks)
+            current = {s["chunk_id"]: s for s in generated["sources"]}
+            if (usable_question(row.question, {question_key(q) for q in asked}) and
+                    all(usable_quote(current[cid], p["expectation"])
+                        for p in generated["rubric"] for cid in p["source_ids"])):
+                return LiveQuestion(row.question, False, row.reference_chunks)
+            raise BusinessException("未能将本人的材料转换为可口述的问题，请重试或补充设计说明", 50302)
+        return None
+
+    def start_live(self, student_id: int, request_id: str, question_count: int) -> dict:
+        def existing():
+            return self.db.scalar(select(AIDefenseSession).where(
+                AIDefenseSession.student_id == student_id, AIDefenseSession.live_request_id == request_id))
+        session = existing()
+        if session:
+            return self._live_current(session)
+        topic = self._get_topic(student_id)
+        title, topic_id = topic.title, topic.id
+        doc_ids = [d.id for d in self.rag.practice_documents(student_id)]
+        sources, used, cached = self._live_material(student_id, doc_ids, [])
+        self.db.rollback()
+        draft = self._ask_live(student_id, title, sources, used, cached, question="", answer="", asked=[],
+                               may_follow=False, may_advance=True)
+        if not draft:
+            raise BusinessException("未能从本人的报告或源码生成可核对的首题，请重试或补充材料", 50302)
+        self.db.execute(select(StudentProfile.id).where(StudentProfile.id == student_id).with_for_update())
+        session = existing()
+        if session:
+            result = self._live_current(session)
+            self.db.commit()
+            return result
+        self._confirm_live_evidence(student_id, doc_ids, draft)
+        session = AIDefenseSession(student_id=student_id, topic_id=topic_id, status="CREATED",
+                                   question_count=question_count, live_request_id=request_id,
+                                   live_document_ids=json.dumps(doc_ids))
+        self.db.add(session)
+        self.db.flush()
+        transition(self.db, PRACTICE_SESSION, session, "start", None)
+        session.started_at = datetime.now()
+        turn = AIDefenseTurn(session_id=session.id, turn_no=1, question=draft.text, is_follow_up=0,
+                             reference_chunks=draft.evidence)
+        self.db.add(turn)
+        self.db.flush()
+        result = {"session_id": session.id, "finished": False, **self._turn_item(turn)}
+        self.db.commit()
+        return result
+
+    def _confirm_live_evidence(self, student_id, doc_ids, draft):
+        evidence = snapshot(draft.evidence)
+        sources = [_source(hit) for hit in self.rag.practice_chunks(student_id, [
+            s["chunk_id"] for s in evidence["sources"]])]
+        if (not sources or not {s["document_id"] for s in sources} <= set(doc_ids)
+                or marking_points(evidence["rubric"], sources) != evidence["rubric"]):
+            raise BusinessException("本轮材料已更新，请重新进入本人的视频答辩", 40900)
+
+    def _live_current(self, session: AIDefenseSession) -> dict:
+        if session.status == "FINISHED":
+            return {"session_id": session.id, "finished": True}
+        turn = self.db.scalar(select(AIDefenseTurn).where(
+            AIDefenseTurn.session_id == session.id, AIDefenseTurn.student_answer.is_(None)
+        ).order_by(AIDefenseTurn.turn_no.desc()).limit(1))
+        if turn is None:
+            raise BusinessException("没有可继续的问答轮次", 40900)
+        return {"session_id": session.id, "finished": False, **self._turn_item(turn)}
+
+    def _live_answer(self, session: AIDefenseSession, turn_no: int, answer: str, *, lock: bool = False):
+        if not session.live_request_id:
+            raise BusinessException("该练习不是实时答辩，请通过原有流程继续", 40900)
+        query = select(AIDefenseTurn).where(AIDefenseTurn.session_id == session.id,
+                                            AIDefenseTurn.turn_no == turn_no)
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        turn = self.db.scalar(query)
+        if turn is None:
+            raise BusinessException("回答与当前轮次不一致", 40900)
+        if turn.student_answer == answer:
+            return None  # Idempotent replay, including a lost last-turn response.
+        if turn.student_answer is not None or session.status != "RUNNING":
+            raise BusinessException("该轮已结束，请继续当前问题", 40900)
+        return turn
+
+    def advance_live(self, student_id: int, session_id: int, turn_no: int, answer: str) -> dict:
+        session = self._own_session(student_id, session_id)
+        turn = self._live_answer(session, turn_no, answer)
+        if turn is None:
+            return self._live_current(session)
+        previous = list(self.db.scalars(select(AIDefenseTurn).where(
+            AIDefenseTurn.session_id == session_id).order_by(AIDefenseTurn.turn_no)))
+        main_index = (session.answered_count or 0) + int(not turn.is_follow_up)
+        may_advance, may_follow = main_index < session.question_count, not turn.is_follow_up
+        decision = None
+        if may_advance or may_follow:
+            topic = self.db.get(GraduationTopic, session.topic_id)
+            doc_ids = json.loads(session.live_document_ids or "[]")
+            sources, used, cached = self._live_material(student_id, doc_ids, previous, answer)
+            title, question = topic.title if topic else "", turn.question
+            asked = [t.question for t in previous]
+            self.db.rollback()
+            decision = self._ask_live(student_id, title, sources, used, cached, question=question,
+                                      answer=answer, asked=asked, may_follow=may_follow, may_advance=may_advance)
+        # Commit the answer and its successor (or completion) together. Recheck after model I/O.
+        session = self._own_session(student_id, session_id, lock=True)
+        turn = self._live_answer(session, turn_no, answer, lock=True)
+        if turn is not None:
+            turn.student_answer = answer
+            if not turn.is_follow_up:
+                session.answered_count = (session.answered_count or 0) + 1
+            if decision is None:
+                session.finished_at = datetime.now()
+                session.question_count = session.answered_count
+                session.report_status = "pending"
+                transition(self.db, PRACTICE_SESSION, session, "finish", None)
+            else:
+                self._confirm_live_evidence(student_id, doc_ids, decision)
+                if decision.follow:
+                    turn.follow_up_question = decision.text
+                self.db.add(AIDefenseTurn(session_id=session_id, turn_no=turn_no + 1,
+                                          is_follow_up=int(decision.follow), question=decision.text,
+                                          reference_chunks=decision.evidence))
+            self.db.flush()
+        result = self._live_current(session)
+        self.db.commit()
+        return result
+
     def start_session(self, student_id: int, session_id: int) -> dict:
         session = self._own_session(student_id, session_id, lock=True)
         transition(self.db, PRACTICE_SESSION, session, "start", None)
@@ -292,8 +479,32 @@ class DefenseService:
         turn = self._next_turn(self.db, session)
         if turn is None:
             raise BusinessException("没有可用的问题")
+        self._prepare_spoken_turn(session, turn)
         self.db.commit()
         return {"session_id": session.id, **self._turn_item(turn)}
+
+    def _prepare_spoken_turn(self, session: AIDefenseSession, turn: AIDefenseTurn) -> None:
+        """Repair old, unspoken prompts from the same still-authorized passages."""
+        if oral_question(turn.question):
+            return
+        pinned = _stored_sources(turn.reference_chunks)
+        hits = self.rag.practice_chunks(session.student_id, [s["chunk_id"] for s in pinned]) if pinned else []
+        if not hits or len(hits) != len(pinned):
+            raise BusinessException("旧题缺少可核对的材料，请重新开始一次视频答辩", 40900)
+        previous = list(self.db.scalars(select(AIDefenseTurn).where(
+            AIDefenseTurn.session_id == session.id, AIDefenseTurn.turn_no < turn.turn_no
+        ).order_by(AIDefenseTurn.turn_no)))
+        preceding = None
+        if turn.is_follow_up and previous:
+            preceding = {"question": previous[-1].question, "answer": previous[-1].student_answer}
+        topic = self.db.get(GraduationTopic, session.topic_id)
+        user_id = self.db.scalar(select(StudentProfile.user_id).where(StudentProfile.id == session.student_id))
+        draft, = self._draft_questions(session.student_id, user_id, topic.title if topic else "",
+                                       [_source(hit) for hit in hits], 1, preceding=preceding,
+                                       avoid=[t.question for t in previous])
+        turn.question, turn.reference_chunks = draft.question, draft.reference_chunks
+        if turn.is_follow_up and previous:
+            previous[-1].follow_up_question = turn.question
 
     def _own_session(self, student_id: int, session_id: int, *, lock: bool = False) -> AIDefenseSession:
         query = select(AIDefenseSession).where(AIDefenseSession.id == session_id,
@@ -388,20 +599,51 @@ class DefenseService:
 
     def evaluate_answer(self, student_id: int, session_id: int, question: str, answer: str, user_id: int) -> dict:
         session = self._own_session(student_id, session_id, lock=True)
-        if session.status != "RUNNING":
-            raise BusinessException("会话不在进行中")
+        if session.live_request_id or session.status != "RUNNING":
+            raise BusinessException("会话不在原有评分流程中", 40900)
         answer = answer.strip()
         turn = self.db.scalar(select(AIDefenseTurn).where(AIDefenseTurn.session_id == session_id)
                               .order_by(AIDefenseTurn.id.desc()).limit(1))
         if turn is None or _normalize_question(question) != _normalize_question(turn.question):
             raise BusinessException("提交的题目与当前轮次不一致，请刷新后重试", 40003)
-        if len(answer) < 5:
-            raise BusinessException("请至少输入五个字符的回答")
+        if not answer:
+            raise BusinessException("没有识别到回答，请再回答一次")
         if turn.student_answer is not None:
             if answer == turn.student_answer:
                 return {**self._turn_item(turn), "feedback": turn.ai_feedback, "finished": False}
             raise BusinessException("此轮已评分，请查看反馈并继续下一题", 40900)
 
+        self._grade(session, turn, answer, user_id)
+        self.db.commit()
+        return {**self._turn_item(turn), "feedback": turn.ai_feedback, "finished": False}
+
+    def _claimed(self, session_id: int, claim: str, *, lock: bool = False) -> AIDefenseSession:
+        query = select(AIDefenseSession).where(AIDefenseSession.id == session_id,
+            AIDefenseSession.status == "FINISHED", AIDefenseSession.report_status == "pending",
+            AIDefenseSession.report_claim == claim, AIDefenseSession.report_lease_until > datetime.now())
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        session = self.db.scalar(query)
+        if session is None:
+            raise BusinessException("当前评分任务的租约已失效", 40900)
+        return session
+
+    def score_live_turn(self, session_id: int, claim: str, turn_id: int) -> None:
+        session = self._claimed(session_id, claim)
+        turn = self.db.scalar(select(AIDefenseTurn).where(AIDefenseTurn.id == turn_id,
+            AIDefenseTurn.session_id == session_id, AIDefenseTurn.student_answer.is_not(None)))
+        if turn is None:
+            raise ResourceNotFoundException("评分轮次不存在")
+        if turn.total_score is not None:
+            return
+        user_id = self.db.scalar(select(StudentProfile.user_id).where(StudentProfile.id == session.student_id))
+        self._grade(session, turn, turn.student_answer, user_id, claim=claim)
+        self.db.commit()
+
+    def _grade(self, session: AIDefenseSession, turn: AIDefenseTurn, answer: str, user_id: int | None,
+               *, claim: str | None = None) -> None:
+        student_id, session_id, turn_id = session.student_id, session.id, turn.id
+        deferred = claim is not None
         pinned = _stored_sources(turn.reference_chunks)
         if pinned:
             hits = self.rag.practice_chunks(student_id, [s["chunk_id"] for s in pinned])
@@ -410,29 +652,63 @@ class DefenseService:
                 raise BusinessException("本题的材料已更新或移除，请使用最新材料重新生成练习")
         else:
             # 兼容升级前已在进行中的练习。无已授权的真实材料时保留待答状态。
-            hits = self.rag.retrieve_practice(turn.question, student_id, top_k=4)
+            document_ids = json.loads(session.live_document_ids or "[]") if deferred else None
+            hits = self.rag.retrieve_practice(turn.question, student_id, top_k=4, document_ids=document_ids)
         if not hits:
             raise BusinessException("缺少可核对的报告或源码，请先完成材料索引再作答")
         sources = [_source(hit) for hit in hits]
         docs = list(dict.fromkeys(hit.document_id for hit in hits))
-        further = self.rag.retrieve_practice(turn.question + " " + answer[:240], student_id, top_k=3, document_ids=docs)
-        seen = {s["chunk_id"] for s in sources}
-        sources.extend(_source(hit) for hit in further if hit.chunk_id not in seen)
+        rubric = snapshot(turn.reference_chunks).get("rubric", [])
+        if not deferred or not rubric:
+            query = turn.question if deferred else turn.question + " " + answer[:240]
+            further = self.rag.retrieve_practice(query, student_id, top_k=3, document_ids=docs)
+            seen = {s["chunk_id"] for s in sources}
+            sources.extend(_source(hit) for hit in further if hit.chunk_id not in seen)
         previous = self.db.scalars(select(AIDefenseTurn).where(
-            AIDefenseTurn.session_id == session_id, AIDefenseTurn.student_answer.is_not(None)
-        ).order_by(AIDefenseTurn.id.desc()).limit(4)).all()
+            AIDefenseTurn.session_id == session_id, AIDefenseTurn.student_answer.is_not(None),
+            AIDefenseTurn.turn_no < turn.turn_no
+        ).order_by(AIDefenseTurn.turn_no.desc()).limit(4)).all()
         history = "\n".join(f"问：{t.question[:100]}\n答：{t.student_answer[:200]}" for t in reversed(previous))
         topic = self.db.get(GraduationTopic, session.topic_id)
-        rubric = snapshot(turn.reference_chunks).get("rubric", [])
         if rubric and marking_points(rubric, sources) != rubric:
             raise BusinessException("本题材料与已固定的要点发生变化，请使用最新材料重新生成练习")
-        prompt = defense_evaluate_prompt(topic.title if topic else "", turn.question, answer, sources, history, rubric)
         llm = LLMFactory.get()
+        if deferred:
+            context = {"topic_title": topic.title if topic else "", "question": turn.question, "chunks": sources}
+            system = resolve_system_prompt(self.db, "DEFENSE_OFFLINE_GRADE")
+            rubric_system = resolve_system_prompt(self.db, "DEFENSE_LEGACY_RUBRIC") if not rubric else None
+            self.db.rollback()
+            if rubric_system:
+                # Older recordings have no anchors. Select them without seeing the answer,
+                # and persist under the lease before grading so a retry uses the same criteria.
+                rubric_prompt = json.dumps(context, ensure_ascii=False)
+                began = datetime.now()
+                rubric_raw = llm.complete(rubric_system, rubric_prompt)
+                try:
+                    draft = extract_json(rubric_raw)
+                except (TypeError, ValueError):
+                    draft = None
+                rubric = marking_points(draft.get("rubric") if isinstance(draft, dict) else None, sources)
+                if not rubric:
+                    raise BusinessException("没有取得与本轮问题可核对的材料要点", 50302)
+                self._claimed(session_id, claim, lock=True)
+                turn = self.db.get(AIDefenseTurn, turn_id, populate_existing=True)
+                turn.reference_chunks = mark_snapshot(sources, rubric)
+                self.db.add(AIUsageLog(user_id=user_id, scene="DEFENSE_QA", model=llm.name,
+                                       input_tokens=len(rubric_prompt), output_tokens=len(rubric_raw),
+                                       latency_ms=int((datetime.now() - began).total_seconds() * 1000)))
+                self.db.commit()
+            prompt = json.dumps({**context, "student_answer": answer, "rubric": rubric,
+                                 "previous_turns": history}, ensure_ascii=False)
+        else:
+            prompt = defense_evaluate_prompt(topic.title if topic else "", turn.question, answer, sources, history, rubric)
+            system = resolve_system_prompt(self.db, "DEFENSE_EVALUATE_ANSWER")
         started = datetime.now()
-        raw = llm.complete(resolve_system_prompt(self.db, "DEFENSE_EVALUATE_ANSWER"), prompt)
+        raw = llm.complete(system, prompt)
         try:
             payload = extract_json(raw)
-            evaluation = _Evaluation.model_validate(payload)
+            evaluation = _Evaluation.model_validate({**payload, "follow_up_needed": False, "follow_up_question": None}
+                                                    if deferred else payload)
         except (ValueError, TypeError) as exc:
             raise BusinessException("AI 没有返回完整有效的分项评分，请保持本题并重试", 50302) from exc
         cited = _citations(evaluation.source_ids, {s["chunk_id"]: s for s in sources})
@@ -440,15 +716,28 @@ class DefenseService:
             raise BusinessException("AI 反馈未引用本题可核对的材料，请重试", 50302)
         assessment = assess_points(payload.get("assessment"), rubric, answer) if rubric else []
         next_rubric = []
-        if evaluation.follow_up_needed and not turn.is_follow_up:
+        if not deferred and evaluation.follow_up_needed and not turn.is_follow_up:
             next_rubric = marking_points(payload.get("follow_up_rubric"), cited)
             if rubric and not next_rubric:
                 raise BusinessException("追问缺少可核对的专属材料要点，请重试", 50302)
+            if not oral_question(evaluation.follow_up_question):
+                draft, = self._draft_questions(student_id, user_id, topic.title if topic else "", cited, 1,
+                                               preceding={"question": turn.question, "answer": answer},
+                                               avoid=[turn.question, *(t.question for t in previous)])
+                evaluation.follow_up_question = draft.question
+                next_rubric = snapshot(draft.reference_chunks)["rubric"]
         # Preserve every immutable marking anchor even when the model cites fewer passages in feedback.
         needed = {i for point in rubric for i in point["source_ids"]}
         cited_ids = {s["chunk_id"] for s in cited}
         cited.extend(s for s in sources if s["chunk_id"] in needed - cited_ids)
         accuracy = accuracy_from_evidence(assessment) if rubric else evaluation.accuracy
+        if deferred:
+            claimed_session = self._claimed(session_id, claim, lock=True)
+            turn = self.db.get(AIDefenseTurn, turn_id, populate_existing=True)
+            if turn.total_score is not None:
+                return
+            claimed_session.report_attempts = 0
+            claimed_session.report_claim = claimed_session.report_lease_until = None
         turn.student_answer = answer
         turn.ai_feedback = evaluation.feedback
         turn.accuracy_score = accuracy
@@ -457,18 +746,18 @@ class DefenseService:
         turn.depth_score = evaluation.depth
         turn.total_score = turn.accuracy_score + evaluation.logic + evaluation.clarity + evaluation.depth
         turn.reference_chunks = mark_snapshot(cited, rubric, assessment=assessment, follow_up_rubric=next_rubric)
-        if evaluation.follow_up_needed and not turn.is_follow_up:
+        if not deferred and evaluation.follow_up_needed and not turn.is_follow_up:
             turn.follow_up_question = evaluation.follow_up_question
-        if not turn.is_follow_up:
+        if not deferred and not turn.is_follow_up:
             session.answered_count = (session.answered_count or 0) + 1
         self.db.add(AIUsageLog(user_id=user_id, scene="DEFENSE_QA", model=llm.name,
                                input_tokens=len(prompt), output_tokens=len(raw),
                                latency_ms=int((datetime.now() - started).total_seconds() * 1000)))
-        self.db.commit()
-        return {**self._turn_item(turn), "feedback": turn.ai_feedback, "finished": False}
 
     def next_question(self, student_id: int, session_id: int) -> dict:
         session = self._own_session(student_id, session_id, lock=True)
+        if session.live_request_id:
+            return self._live_current(session)
         if session.status == "FINISHED":
             return {"finished": True, "report": json.loads(session.summary)}
         if session.status != "RUNNING":
@@ -476,6 +765,8 @@ class DefenseService:
         last_turn = self.db.scalar(select(AIDefenseTurn).where(AIDefenseTurn.session_id == session_id)
                                    .order_by(AIDefenseTurn.id.desc()).limit(1))
         if last_turn and last_turn.student_answer is None:
+            self._prepare_spoken_turn(session, last_turn)
+            self.db.commit()
             return {**self._turn_item(last_turn), "finished": False}
         if last_turn and last_turn.follow_up_question and not last_turn.is_follow_up:
             prior = snapshot(last_turn.reference_chunks)
@@ -490,6 +781,7 @@ class DefenseService:
             turn = self._next_turn(self.db, session) if answered < session.question_count else None
             if turn is None:
                 return {"finished": True, "report": self.finish_session(student_id, session_id)}
+        self._prepare_spoken_turn(session, turn)
         self.db.commit()
         return {**self._turn_item(turn), "finished": False}
 
@@ -497,13 +789,41 @@ class DefenseService:
         session = self._own_session(student_id, session_id, lock=True)
         if session.status == "FINISHED":
             return json.loads(session.summary)
+        data = self._compose_report(session)
+        session.finished_at = datetime.now()
+        session.overall_score = data["overall_score"]
+        session.summary = json.dumps(data, ensure_ascii=False)
+        transition(self.db, PRACTICE_SESSION, session, "finish", None)
+        self.db.commit()
+        return data
+
+    def build_live_report(self, session_id: int, claim: str) -> None:
+        session = self._claimed(session_id, claim)
+        data = self._compose_report(session, deferred=True)
+        session = self._claimed(session_id, claim, lock=True)
+        session.overall_score = data["overall_score"]
+        session.summary = json.dumps(data, ensure_ascii=False)
+        session.report_status = "ready"
+        session.report_attempts = 0
+        session.report_claim = session.report_lease_until = None
+        self.db.commit()
+
+    def _compose_report(self, session: AIDefenseSession, *, deferred: bool = False) -> dict:
+        student_id, session_id = session.student_id, session.id
         turns = self.db.scalars(select(AIDefenseTurn).where(
             AIDefenseTurn.session_id == session_id, AIDefenseTurn.student_answer.is_not(None)
-        ).order_by(AIDefenseTurn.id)).all()
+        ).order_by(AIDefenseTurn.turn_no)).all()
         if not turns or any(t.total_score is None for t in turns):
             raise BusinessException("当前会话尚无完整的评分记录")
         topic = self.db.get(GraduationTopic, session.topic_id)
-        overall_score = round(sum(t.total_score for t in turns) / len(turns))
+        # New practice sessions use a fixed set of main questions for the composite.
+        # Adaptive follow-ups retain their own scores without moving the main-question baseline.
+        scored = [t for t in turns if not t.is_follow_up] if deferred else turns
+        overall_score = round(sum(t.total_score for t in scored) / len(scored))
+        fallback = _scored_report(scored)
+        if deferred:
+            fallback["summary"] = (f"AI 文字总评暂不可用。本次完成 {len(scored)} 道正题、{len(turns) - len(scored)} 道追问。"
+                                   "综合分及维度分仅基于正题，追问得分单独展示。")
         records = [{"turn_no": t.turn_no, "question": t.question, "student_answer": t.student_answer[:1100],
                     "feedback": (t.ai_feedback or "")[:500], "total_score": t.total_score,
                     "scores": {"accuracy": t.accuracy_score, "logic": t.logic_score,
@@ -512,6 +832,9 @@ class DefenseService:
                                 for s in _stored_sources(t.reference_chunks)]} for t in turns]
         system = resolve_system_prompt(self.db, "DEFENSE_REPORT")
         prompt = defense_report_prompt(topic.title if topic else "", records, overall_score)
+        user_id = self.db.scalar(select(StudentProfile.user_id).where(StudentProfile.id == student_id))
+        if deferred:
+            self.db.rollback()
         started = datetime.now()
         llm, raw = None, ""
         try:
@@ -521,27 +844,36 @@ class DefenseService:
             data["summary_source"] = "model"
         except (ValueError, TypeError):
             logger.warning("模拟答辩文字总评格式无效，保留逐轮评分汇总 session_id=%s", session_id)
-            data = _scored_report(turns)
+            data = fallback
         except BusinessException as exc:
             if exc.code not in (50301, 50303):
                 raise
             logger.warning("模拟答辩文字总评服务不可用 session_id=%s code=%s", session_id, exc.code)
-            data = _scored_report(turns)
+            data = fallback
         if llm is not None:
-            user_id = self.db.scalar(select(StudentProfile.user_id).where(StudentProfile.id == student_id))
             self.db.add(AIUsageLog(user_id=user_id, scene="DEFENSE_REPORT", model=llm.name,
                                    input_tokens=len(prompt), output_tokens=len(raw),
                                    latency_ms=int((datetime.now() - started).total_seconds() * 1000)))
         data["overall_score"] = overall_score
-        session.finished_at = datetime.now()
-        session.overall_score = overall_score
-        session.summary = json.dumps(data, ensure_ascii=False)
-        transition(self.db, PRACTICE_SESSION, session, "finish", None)
-        self.db.commit()
+        if deferred:
+            data["dimension_scores"] = fallback["dimension_scores"]
         return data
+
+    def retry_live_report(self, student_id: int, session_id: int) -> dict:
+        session = self._own_session(student_id, session_id, lock=True)
+        if session.status != "FINISHED" or session.report_status is None:
+            raise BusinessException("没有可以重试的实时答辩报告", 40900)
+        if session.report_status == "failed":
+            session.report_status = "pending"
+            session.report_attempts = 0
+            session.report_claim = session.report_lease_until = None
+        self.db.commit()
+        return {"session_id": session_id, "report_status": session.report_status}
 
     def get_report(self, student_id: int, session_id: int) -> dict:
         session = self._own_session(student_id, session_id)
+        if session.status == "FINISHED" and session.report_status in {"pending", "failed"}:
+            return {"session_id": session_id, "report_status": session.report_status}
         if session.status != "FINISHED" or not session.summary:
             raise BusinessException("该会话尚未结束, 暂无答辩报告")
         turns = self.db.execute(
@@ -549,6 +881,9 @@ class DefenseService:
                                         AIDefenseTurn.student_answer.is_not(None)).order_by(AIDefenseTurn.id)
         ).scalars().all()
         report = json.loads(session.summary)
+        if session.report_status == "ready":
+            report["report_status"] = "ready"
+            report["score_basis"] = "main_questions"
         report["turns"] = [self._turn_item(t) for t in turns]
         report["observation_counts"] = self._observation_counts(session.id)
         report["session_id"] = session.id
@@ -563,7 +898,7 @@ class DefenseService:
         ).scalars().all()
         return [{
             "id": s.id, "status": s.status, "question_count": s.question_count,
-            "answered_count": s.answered_count, "overall_score": s.overall_score,
+            "answered_count": s.answered_count, "overall_score": s.overall_score, "report_status": s.report_status,
             "started_at": s.started_at.isoformat() if s.started_at else None,
             "finished_at": s.finished_at.isoformat() if s.finished_at else None,
         } for s in sessions]
@@ -575,6 +910,7 @@ class DefenseService:
         ).scalars().all()
         return {
             "id": session.id, "status": session.status, "question_count": session.question_count,
+            "live": bool(session.live_request_id),
             "answered_count": session.answered_count,
             "turns": [self._turn_item(t) for t in turns],
         }
@@ -614,7 +950,8 @@ class DefenseService:
         context = self.rag.build_context(chunks)
         last_session = self.db.execute(
             select(AIDefenseSession).where(AIDefenseSession.student_id == student_id,
-                                           AIDefenseSession.status == "FINISHED")
+                                           AIDefenseSession.status == "FINISHED",
+                                           AIDefenseSession.summary.is_not(None))
             .order_by(AIDefenseSession.id.desc())
         ).scalars().first()
         defense_summary = ""

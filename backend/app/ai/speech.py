@@ -39,14 +39,14 @@ class SpeechService:
     def __init__(self, slot: AISlot):
         self.slot = slot
 
-    def _request(self, path: str, max_bytes: int, **payload) -> bytes:
+    async def _request(self, path: str, max_bytes: int, **payload) -> bytes:
         headers = {"Authorization": "Bearer " + self.slot.api_key} if self.slot.api_key else {}
         try:
-            with httpx.Client(timeout=httpx.Timeout(65, connect=5), trust_env=not is_loopback_url(self.slot.openai_base)) as client:
-                with client.stream("POST", self.slot.openai_base + path, headers=headers, **payload) as resp:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(65, connect=5), trust_env=not is_loopback_url(self.slot.openai_base)) as client:
+                async with client.stream("POST", self.slot.openai_base + path, headers=headers, **payload) as resp:
                     resp.raise_for_status()
                     body = bytearray()
-                    for chunk in resp.iter_bytes(65536):
+                    async for chunk in resp.aiter_bytes(65536):
                         if len(body) + len(chunk) > max_bytes:
                             raise BusinessException("语音服务返回的数据过大，请稍后重试", 50303)
                         body.extend(chunk)
@@ -56,17 +56,17 @@ class SpeechService:
         except httpx.HTTPError:
             raise BusinessException("语音服务暂不可用，请稍后重试或联系管理员检查绑定", 50303) from None
 
-    def synthesize(self, question: str) -> bytes:
+    async def synthesize(self, question: str) -> bytes:
         if not question.strip() or len(question) > MAX_QUESTION_CHARS:
             raise BusinessException("这道题的文本长度超出语音服务支持范围，可直接阅读题目", 42200)
         payload = {"model": self.slot.model, "input": question, "voice": "default", "response_format": "wav"}
-        data = self._request("/audio/speech", MAX_WAV_BYTES, json=payload)
+        data = await self._request("/audio/speech", MAX_WAV_BYTES, json=payload)
         _validate_wav(data)
         return data
 
-    def transcribe(self, recording: bytes) -> str:
+    async def transcribe(self, recording: bytes) -> str:
         _validate_wav(recording, recording=True)
-        raw = self._request("/audio/transcriptions", 65536, data={"model": self.slot.model, "language": "zh"},
+        raw = await self._request("/audio/transcriptions", 65536, data={"model": self.slot.model, "language": "zh"},
                             files={"file": ("answer.wav", recording, "audio/wav")})
         try:
             text = json.loads(raw)["text"]

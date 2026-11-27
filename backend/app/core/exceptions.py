@@ -15,7 +15,9 @@ class BusinessException(Exception):
     code = 400
     message = "业务处理失败"
 
-    def __init__(self, message: str | None = None, code: int | None = None):
+    def __init__(self, message: str | None = None, code: int | None = None, *,
+                 headers: dict[str, str] | None = None):
+        self.headers = headers or {}
         self.message = message or self.message
         self.code = code or self.code
         super().__init__(self.message)
@@ -61,7 +63,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(BusinessException)
     async def business_handler(request: Request, exc: BusinessException):
         # ResponseUtil.error 内部完成 code -> HTTP 状态码映射
-        return ResponseUtil.error(exc.message, exc.code)
+        response = ResponseUtil.error(exc.message, exc.code)
+        response.headers.update(exc.headers)
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(request: Request, exc: RequestValidationError):

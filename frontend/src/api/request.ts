@@ -7,6 +7,7 @@ import { API_BASE, currentSessionGeneration, isCurrentSession, handleSessionExpi
 interface RetriableConfig extends InternalAxiosRequestConfig {
   /** 该请求已经因 401 重放过一次，不再重试(D49) */
   _retried?: boolean
+  _retryOralRateLimit?: boolean
   _sessionGeneration?: number
   /** 静默请求: 失败不弹全局提示，由调用方自行提示 */
   _silent?: boolean
@@ -47,6 +48,29 @@ function notify(message: string, config?: RetriableConfig): void {
   if (!isSilentRequest(config)) ElMessage.error(message)
 }
 
+// Redis uses a fixed 60-second rate window. A proxy may give a more precise HTTP Retry-After.
+function oralRetryDelay(header: unknown): number {
+  const value = String(header ?? '').trim()
+  if (/^\d+$/.test(value)) return Number(value) * 1000
+  const delay = /^[a-z]{3}/i.test(value) ? Date.parse(value) - Date.now() : NaN
+  return Number.isFinite(delay) ? Math.max(0, delay) : 60250
+}
+
+function waitForRetry(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', cancel)
+      resolve()
+    }, ms)
+    const cancel = () => {
+      clearTimeout(timer)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', cancel, { once: true })
+  })
+}
+
 request.interceptors.response.use(
   (response) => {
     const config = response.config as RetriableConfig
@@ -73,6 +97,17 @@ request.interceptors.response.use(
     const body = response?.data as ApiEnvelope | undefined
     const code = typeof body?.code === 'number' ? body.code : null
     const url = String(config?.url || '')
+
+    if (status === 429 && config?._retryOralRateLimit && config.signal instanceof AbortSignal) {
+      const wait = oralRetryDelay(response?.headers?.['retry-after'])
+      if (wait <= 120000) {
+        config._retryOralRateLimit = false
+        await waitForRetry(wait, config.signal)
+        config.signal.throwIfAborted()
+        if (!isCurrentSession(generation)) return Promise.reject(error)
+        return request(config)
+      }
+    }
 
     // ===== D49: 401 恢复路径 =====
     if (status === 401 && !isAuthEndpoint(url)) {

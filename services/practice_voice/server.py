@@ -1,15 +1,14 @@
 """Loopback OpenAI-compatible voice provider. Run separately from the grading API."""
 import argparse
+import asyncio
 import json
 import os
-import subprocess
 import sys
-import threading
 from pathlib import Path
 from typing import Annotated, Literal
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from worker import ASR_MODEL, MAX_INPUT_WAV, TTS_MODEL
 
@@ -22,21 +21,45 @@ class SpeechRequest(BaseModel):
 
 def create_app(models: Path) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None)
-    available = threading.BoundedSemaphore(1)
+    available = asyncio.Lock()
 
-    def infer(task: str, payload: bytes) -> bytes:
-        if not available.acquire(timeout=3):
-            raise HTTPException(503, "语音服务繁忙，请稍后重试")
+    async def infer(task: str, payload: bytes, request: Request) -> bytes:
         try:
-            # Workers exit after each request so the web service never retains two models in memory.
-            proc = subprocess.run([sys.executable, str(Path(__file__).with_name("worker.py")), task, str(models)],
-                                  input=payload, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=55, check=False,
-                                  env={**os.environ, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"})
-            if proc.returncode or not proc.stdout:
-                raise HTTPException(503, "语音生成或识别未完成")
-            return proc.stdout
-        except subprocess.TimeoutExpired:
-            raise HTTPException(503, "语音服务超时") from None
+            await asyncio.wait_for(available.acquire(), timeout=3)
+        except TimeoutError:
+            raise HTTPException(503, "语音服务繁忙，请稍后重试") from None
+        try:
+            if await request.is_disconnected():
+                raise HTTPException(499)
+            # A single disposable process bounds memory on small hosts. The business
+            # API closes this connection when the browser stops waiting for a question.
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, str(Path(__file__).with_name("worker.py")), task, str(models),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                env={**os.environ, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
+            )
+            output = asyncio.create_task(proc.communicate(payload))
+            try:
+                async with asyncio.timeout(55):
+                    while not output.done():
+                        if await request.is_disconnected():
+                            raise HTTPException(499)
+                        await asyncio.wait({output}, timeout=0.1)
+                audio, _ = output.result()
+                if proc.returncode or not audio:
+                    raise HTTPException(503, "语音生成或识别未完成")
+                return audio
+            except TimeoutError:
+                raise HTTPException(503, "语音服务超时") from None
+            finally:
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                # Drain the pipes and reap the job before giving its memory slot to ASR.
+                await asyncio.gather(output, return_exceptions=True)
+                await proc.wait()
         finally:
             available.release()
 
@@ -50,18 +73,18 @@ def create_app(models: Path) -> FastAPI:
         return {"object": "list", "data": [{"id": model, "object": "model", "owned_by": "local"} for model in found]}
 
     @app.post("/v1/audio/speech")
-    def speech(body: SpeechRequest):
+    async def speech(body: SpeechRequest, request: Request):
         if not body.input.strip():
             raise HTTPException(422, "题目为空")
-        audio = infer("speak", body.input.encode("utf-8"))
+        audio = await infer("speak", body.input.encode("utf-8"), request)
         return Response(audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
     @app.post("/v1/audio/transcriptions")
-    def transcription(file: Annotated[UploadFile, File()], model: Annotated[Literal["vosk-small-cn"], Form()]):
-        payload = file.file.read(MAX_INPUT_WAV + 1)
+    async def transcription(request: Request, file: Annotated[UploadFile, File()], model: Annotated[Literal["vosk-small-cn"], Form()]):
+        payload = await file.read(MAX_INPUT_WAV + 1)
         if len(payload) > MAX_INPUT_WAV:
             raise HTTPException(413, "录音过长")
-        return json.loads(infer("listen", payload))
+        return json.loads(await infer("listen", payload, request))
 
     return app
 

@@ -1,13 +1,46 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { aiApi, listKnowledgeMaterials } from '@/api/common'
+import { aiApi, listKnowledgeMaterials, uploadApi } from '@/api/common'
+import type { PracticeMaterialKind, UploadPolicy } from '@/types/api'
 import StatusTag from '@/components/StatusTag.vue'
 
 const TYPE_CN: Record<string, string> = {
   PRACTICE_REPORT: '练习报告', SOURCE_CODE: '源代码', DESIGN: '设计作品', MANUAL: '说明文档', THESIS: '论文', OPENING_REPORT: '开题报告', MIDTERM_REPORT: '中期报告', FINAL_REPORT: '终期报告',
   TOPIC: '题目信息', TEACHER_COMMENT: '教师评语', DEFENSE_RULE: '答辩规范', REFERENCE: '参考资料',
 }
+const policy = ref<UploadPolicy | null>(null)
+const uploading = ref<PracticeMaterialKind | null>(null)
+const kinds = [{ kind: 'REPORT', label: '上传报告草稿' }, { kind: 'SOURCE_CODE', label: '上传项目源码' }] as const
+
+async function loadPolicy() {
+  try { policy.value = (await uploadApi.policy()).data } catch { policy.value = null }
+}
+
+async function upload(kind: PracticeMaterialKind, file: File) {
+  if (!policy.value || uploading.value) return false
+  const extensions = policy.value.practice?.[kind] || []
+  const limit = policy.value.practice_max_upload_size_mb?.[kind] ?? policy.value.max_upload_size_mb
+  if (!extensions.some(ext => file.name.toLowerCase().endsWith(ext.toLowerCase()))) {
+    ElMessage.warning('请选择支持的文件格式：' + extensions.join('、'))
+    return false
+  }
+  if (limit && file.size > limit * 1024 * 1024) {
+    ElMessage.warning('单文件大小上限为 ' + limit + ' MB')
+    return false
+  }
+  uploading.value = kind
+  try {
+    await aiApi.uploadPracticeMaterial(kind, file)
+    ElMessage.success('已添加到个人练习材料库')
+  } catch { /* 请求层显示上传失败原因。 */ }
+  finally {
+    uploading.value = null
+    await load()
+  }
+  return false
+}
+
 const docs = ref<any[]>([])
 const config = ref<any>(null)
 const busy = ref(false)
@@ -45,6 +78,7 @@ async function index(id?: number) {
   }
 }
 onMounted(() => {
+  void loadPolicy()
   load()
   timer = setInterval(() => { if (!busy.value && docs.value.some(d => ['WAITING', 'PROCESSING'].includes(d.index_status))) load() }, 5000)
 })
@@ -53,7 +87,16 @@ onUnmounted(() => clearInterval(timer))
 <template>
   <header class="student-heading"><h1>AI 知识准备</h1><p>查看毕业论文、阶段报告和源码的索引。已有材料可在此补建索引。</p></header>
   <section class="page-card knowledge-panel">
-    <h3 class="block-title">知识来源</h3>
+    <h3 class="block-title">答辩材料</h3>
+    <p>上传本人的报告或源码后，系统会为当前毕业课题建立索引，供视频答辩自动取用。</p>
+    <div class="practice-uploads">
+      <el-upload v-for="item in kinds" :key="item.kind" :show-file-list="false"
+                 :accept="policy?.practice?.[item.kind]?.join(',')" :disabled="!policy?.practice?.[item.kind]?.length || !!uploading"
+                 :before-upload="(file: File) => upload(item.kind, file)">
+        <el-button :loading="uploading === item.kind" :disabled="!policy?.practice?.[item.kind]?.length || !!uploading">{{ item.label }}</el-button>
+      </el-upload>
+      <el-button v-if="!policy" link type="primary" @click="loadPolicy">重新读取上传设置</el-button>
+    </div>
     <el-table :data="docs">
       <el-table-column prop="document_name" label="文档" min-width="220" />
       <el-table-column label="类型" width="110">
@@ -88,6 +131,7 @@ onUnmounted(() => clearInterval(timer))
   </section>
 </template>
 <style scoped>
+.practice-uploads { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0 18px; }
 .knowledge-panel { min-height: 650px; }
 .knowledge-info { margin-top: 40px; }
 .knowledge-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }

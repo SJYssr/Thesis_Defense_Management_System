@@ -103,9 +103,13 @@ class _RecordingPipe:
         self.calls.append(("incr", dict(key=key, **kwargs)))
         return self
 
+    def ttl(self, key):
+        self.calls.append(("ttl", dict(key=key)))
+        return self
+
     def execute(self):
         self.calls.append(("execute", {}))
-        return [True, 1]
+        return [True, 1, 37]
 
 
 class _RecordingRedis:
@@ -245,7 +249,7 @@ class AiDefenseBoundaryTest(unittest.TestCase):
 
         self.assertEqual(recorder.pipeline_kwargs.get("transaction"), True, "必须用事务型 pipeline")
         names = [name for name, _ in recorder.pipe.calls]
-        self.assertEqual(names, ["set", "incr", "execute"], "顺序必须是 set → incr → execute")
+        self.assertEqual(names, ["set", "incr", "ttl", "execute"], "计数和剩余时间在同一事务中获取")
         set_kwargs = recorder.pipe.calls[0][1]
         self.assertIs(set_kwargs.get("nx"), True, "首次写入必须是 NX, 不能覆盖已有 TTL")
         self.assertEqual(set_kwargs.get("ex"), 60, "TTL 必须与限流窗口一致(60s)")
@@ -278,8 +282,11 @@ class AiDefenseBoundaryTest(unittest.TestCase):
                 def incr(self, *a, **k):
                     return self
 
+                def ttl(self, *a):
+                    return self
+
                 def execute(self):
-                    return [True, current]
+                    return [True, current, 37]
 
             return mock.Mock(pipeline=lambda **k: _P())
 
@@ -303,13 +310,17 @@ class AiDefenseBoundaryTest(unittest.TestCase):
             def incr(self, *a, **k):
                 return self
 
+            def ttl(self, *a):
+                return self
+
             def execute(self):
-                return [True, 5]
+                return [True, 5, 11]
 
         with mock.patch("app.modules.ai.router.redis_client", mock.Mock(pipeline=lambda **k: _Pipe())):
             with self.assertRaises(BusinessException) as ctx:
                 _check_ai_rate(_fake_user(), self.db)
         self.assertEqual(ctx.exception.code, 42901)
+        self.assertEqual(ctx.exception.headers["Retry-After"], "11")
 
     # ---------- D51: 两轮题型策略 ----------
 
@@ -503,6 +514,33 @@ class AiDefenseBoundaryTest(unittest.TestCase):
             self.assertEqual(follow_up["sources"], graded["sources"])
             self.assertEqual(self.db.scalar(select(func.count()).select_from(AIDefenseTurn)), 2)
 
+    def test_path_based_follow_up_is_rephrased_with_own_evidence_and_spoken_answer(self):
+        session = self._session()
+        question = "接口层会区分输入和存储吗？"
+        turn = AIDefenseTurn(session_id=session.id, turn_no=1, question=question)
+        self.db.add(turn)
+        self.db.commit()
+        point = {"expectation": "分层设计", "source_ids": [10]}
+        grade = {"accuracy": 22, "logic": 13, "clarity": 12, "depth": 9, "feedback": "可以进一步解释边界",
+                 "follow_up_needed": True, "source_ids": [10], "follow_up_rubric": [point],
+                 "follow_up_question": "请根据 backend/app/ai/llm/factory.py，说明其具体实现？"}
+        repaired = "如果输入无效，接口层应该怎样处理？"
+        llm = mock.Mock(wraps=MockLLM())
+        llm.name = "test"
+        llm.complete.side_effect = [
+            json.dumps(grade), json.dumps({"questions": [{"question": repaired, "source_ids": [10], "rubric": [point]}]})]
+        svc = DefenseService(self.db)
+        with mock.patch.object(RAGService, "retrieve_practice", return_value=[self._hit()]), \
+                mock.patch.object(LLMFactory, "get", return_value=llm):
+            svc.evaluate_answer(STUDENT, session.id, question, "是", USER_ID)
+            follow_up = svc.next_question(STUDENT, session.id)
+        self.assertEqual(follow_up["question"], repaired)
+        self.assertTrue(follow_up["is_follow_up"])
+        self.assertEqual(turn.student_answer, "是")
+        prompt = json.loads(llm.complete.call_args.args[1])
+        self.assertEqual(prompt["follow_up_to"], {"question": question, "answer": "是"})
+        self.assertEqual([c["chunk_id"] for c in prompt["chunks"]], [10])
+
     def test_marking_points_reject_fabricated_references_quotes_and_verdicts(self):
         from app.ai.defense.rubric import accuracy_from_evidence, assess_points, marking_points
 
@@ -603,17 +641,74 @@ class AiDefenseBoundaryTest(unittest.TestCase):
 
     # ---------- D48: LLM 非 JSON 兜底 ----------
 
-    def test_generate_questions_falls_back_on_non_json(self):
-        """D48: 问题生成返回非 JSON 时回落固定模板, 不 500."""
+    def test_non_json_never_turns_into_a_template_question(self):
         self._student_context()
-        with mock.patch.object(LLMFactory, "get", return_value=_FakeLLM("抱歉, 这里不是 JSON")), \
+        llm = mock.Mock(wraps=MockLLM())
+        llm.name = "test"
+        llm.complete.return_value = "not JSON"
+        with mock.patch.object(LLMFactory, "get", return_value=llm), \
                 mock.patch.object(DefenseService, "_generation_sources", return_value=[self._source()]):
-            items = DefenseService(self.db).generate_questions(STUDENT, USER_ID)
+            with self.assertRaises(BusinessException) as exc:
+                DefenseService(self.db).generate_questions(STUDENT, USER_ID)
+        self.assertEqual(exc.exception.code, 50302)
+        self.assertEqual(llm.complete.call_count, 2)
+        self.assertEqual(self.db.scalar(select(func.count()).select_from(AIDefenseQuestion)), 0)
 
-        self.assertEqual(len(items), 3, items)
-        self.assertTrue(all("架构" in item["question"] and item["sources"] for item in items))
-        self.assertTrue(all(self._source()["excerpt"] not in item["question"] for item in items))
-        self.assertTrue(all(i["question_type"] for i in items))
+    def test_rejected_path_question_replaced_using_same_source_and_unspoken_rubric(self):
+        self._student_context()
+        svc = DefenseService(self.db)
+        source = self._source()
+        source.update(section="backend/app/ai/llm/factory.py L17-31", document_type="SOURCE_CODE")
+        good = "同一条无效输入在接口层和存储层分别会怎样处理？"
+        dirty = "## 请根据 backend/app/ai/llm/factory.py"
+        def reply(q):
+            return json.dumps({"questions": [{"question": q, "source_ids": [10],
+                               "rubric": [{"expectation": "分层设计", "source_ids": [10]}]}]})
+        llm = mock.Mock(wraps=MockLLM())
+        llm.name = "test"
+        llm.complete.side_effect = [reply(dirty), reply(good)]
+        with mock.patch.object(LLMFactory, "get", return_value=llm), \
+                mock.patch.object(DefenseService, "_generation_sources", return_value=[source]):
+            bank = svc.generate_questions(STUDENT, USER_ID, question_count=1)
+        self.assertEqual([item["question"] for item in bank], [good])
+        self.assertEqual(bank[0]["sources"][0]["section"], source["section"])
+
+        session = self._session()
+        turn = AIDefenseTurn(session_id=session.id, turn_no=1, question=dirty,
+                             reference_chunks=json.dumps([source]))
+        self.db.add(turn)
+        self.db.commit()
+        llm.complete.side_effect = [reply(good)]
+        with mock.patch.object(LLMFactory, "get", return_value=llm), \
+                mock.patch.object(RAGService, "practice_chunks", return_value=[self._hit()]) as lookup:
+            restored = svc.next_question(STUDENT, session.id)
+            repeated = svc.next_question(STUDENT, session.id)
+        lookup.assert_called_once_with(STUDENT, [10])
+        self.assertEqual(restored, repeated)
+        self.assertEqual(restored["question"], good)
+        self.assertEqual(restored["turn_no"], 1)
+        self.db.expire_all()
+        self.assertEqual(turn.question, good)
+        self.assertIsNone(turn.student_answer)
+
+    def test_model_must_supplement_a_bank_of_only_binary_choices(self):
+        self._student_context()
+        def reply(questions):
+            return json.dumps({"questions": [{"question": q, "source_ids": [10],
+                              "rubric": [{"expectation": "分层设计", "source_ids": [10]}]} for q in questions]})
+        llm = mock.Mock(wraps=MockLLM())
+        llm.name = "test"
+        llm.complete.side_effect = [
+            reply(["输入异常时是否继续入库？", "接口层会不会校验编号？", "存储层取第一条还是最后一条？"]),
+            reply(["接口层如何判断温度记录可以入库？", "哪种输入能检验接口与存储之间的边界？"])]
+        with mock.patch.object(LLMFactory, "get", return_value=llm), \
+                mock.patch.object(DefenseService, "_generation_sources", return_value=[self._source()]):
+            bank = DefenseService(self.db).generate_questions(STUDENT, USER_ID, question_count=3)
+        second = json.loads(llm.complete.call_args.args[1])
+        self.assertEqual(second["question_count"], 2)
+        self.assertEqual(second["already_asked"], ["输入异常时是否继续入库？"])
+        self.assertEqual([q["question"] for q in bank], ["输入异常时是否继续入库？", "接口层如何判断温度记录可以入库？",
+                                                        "哪种输入能检验接口与存储之间的边界？"])
 
     def test_requested_count_rejects_short_bank_and_preserves_existing_questions(self):
         self._student_context()
