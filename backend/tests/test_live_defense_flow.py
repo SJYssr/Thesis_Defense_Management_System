@@ -42,6 +42,23 @@ def choose(answer, *, may_follow=True, may_advance=True, passages=None):
 
 
 class LiveDialogueTest(unittest.TestCase):
+    def test_grounded_mechanism_followup_does_not_wait_for_remote_provider(self):
+        with patch("app.ai.defense.dialogue.LLMFactory.get") as provider:
+            draft = choose("我用Redis做权限缓存")
+            provider.assert_not_called()
+        self.assertTrue(draft.follow)
+        self.assertEqual(snapshot(draft.evidence)["rubric"][0]["source_ids"], [1])
+        with patch("app.ai.defense.dialogue.LLMFactory.get", side_effect=BusinessException("慢", 50303)):
+            self.assertFalse(choose("我没有使用任务队列").follow)
+
+    def test_spoken_scenario_uses_the_condition_without_reading_the_expected_answer(self):
+        fact = "重复申请时拒绝本次请求，返回重复错误，原申请继续等待。"
+        with patch("app.ai.defense.dialogue.LLMFactory.get", side_effect=BusinessException("慢", 50303)):
+            draft = choose("", may_follow=False, passages=[fact])
+        self.assertIn("重复申请", draft.text)
+        self.assertNotIn("拒绝", draft.text)
+        self.assertEqual(snapshot(draft.evidence)["rubric"][0]["expectation"], fact.rstrip("。"))
+
     def test_slow_model_can_only_ask_about_supported_answer_specific_facts(self):
         with patch("app.ai.defense.dialogue.LLMFactory.get", side_effect=BusinessException("慢", 50303)):
             cache = choose("我用Redis做权限缓存")

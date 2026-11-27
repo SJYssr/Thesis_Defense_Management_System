@@ -94,14 +94,17 @@ def _fallback(sources, asked, used):
         for fact in _passages(source):
             if fact in used:
                 continue
-            condition = re.search(r"^(?:如果|当|若|一旦)?(.{4,30}?)(?:时[，,]|之后[，,]|后[，,])", fact)
+            condition = re.search(r"^(?:如果|当|若|一旦)?([^，,]{2,30}?)(?:时|后)(?:[，,]|(?=拒绝|返回|通知|优先|允许|保留|删除|更新))", fact)
+            requirement = re.fullmatch(r"([^，,]{1,12}?)必须(出示|提供|提交|持有)([^，,]{2,16})", fact)
             means = re.search(r"(?:采取|采用|通过|使用)(.{2,20}?)(?:来|以便|以防|防止|避免|保证|确保|从而|实现)", fact)
             if condition:
                 text = f"{condition[1]}时，你的系统是怎么处理的？"
+            elif requirement:
+                text = f"{requirement[1]}没有{requirement[3]}时，系统会怎样处理？"
             elif means:
                 text = f"你为什么采用{means[1]}？"
             else:
-                text = f"你提到“{fact}”，能举个例子说明它在系统里是怎么起作用的吗？"
+                text = f"能举例说明“{fact}”吗？"
             if usable_question(text, asked):
                 return _ground(text, False, source, fact)
     return None
@@ -138,10 +141,15 @@ def choose_question(*, title, sources, question, answer, asked, used, may_follow
     if not question and cached:
         return cached
     focus = next((f for f in _FOCUS if re.search(f[0], answer) and re.search(f[1], answer, re.I)), None)
-    supported = []
-    if focus and may_follow and not re.search(r"删除|清除|过期后|令牌版本|幂等键|去重|对照组", answer):
+    denied = re.search(r"(?:没有|并未|并不|没|未|不)(?:使用|采用|用到|用)", answer)
+    explained = re.search(r"删除|清除|过期后|令牌版本|幂等键|去重|唯一.{0,5}(?:编号|标识)|对照组", answer)
+    if focus and may_follow and not denied and not explained and usable_question(focus[3], keys):
+        # The follow-up and marking point are already determined by this answer and its own evidence.
         for source in sources:
-            supported.extend((source, fact) for fact in _focus_passages(source, focus))
+            for fact in _focus_passages(source, focus):
+                draft = _ground(focus[3], True, source, fact)
+                if draft:
+                    return draft
     payload = {"项目": title, "材料": [{"id": s["chunk_id"], "原文": s["excerpt"]} for s in sources],
                "本轮问题": question, "最新回答": answer[:1800], "最近问过": asked[-8:],
                "可追问": may_follow, "可换题": may_advance}
@@ -156,22 +164,15 @@ def choose_question(*, title, sources, question, answer, asked, used, may_follow
         if (source and usable_question(text, keys) and isinstance(topic, str) and 2 <= len(topic) <= 32
                 and topic not in _VAGUE and topic in text and isinstance(quote, str)
                 and (topic in quote or source["document_type"] == "SOURCE_CODE" or not re.search(r"[\u3400-\u9fff]", quote))):
-            if action == "next" and may_advance and quote not in used and not supported:
+            if action == "next" and may_advance and quote not in used:
                 draft = _ground(text, False, source, quote)
                 if draft:
                     return draft
             if (action == "follow_up" and may_follow and isinstance(anchor, str) and 2 <= len(anchor) <= 32
-                    and anchor not in _VAGUE and anchor in answer and anchor in text and (not focus or
-                    any(source == s and quote in fact and re.search(focus[2], quote, re.I) and re.search(focus[2], text, re.I)
-                        for s, fact in supported))):
+                    and anchor not in _VAGUE and anchor in answer and anchor in text and not focus):
                 draft = _ground(text, True, source, quote)
                 if draft:
                     return draft
-    if supported and usable_question(focus[3], keys):
-        for source, fact in supported:
-            draft = _ground(focus[3], True, source, fact)
-            if draft:
-                return draft
     if may_advance:
         return cached or _fallback(sources, keys, used)
     return None
