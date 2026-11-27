@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { aiApi } from '@/api/common'
 import { syncObservations } from '@/api/practiceObservations'
+import type { PracticeReadyReport } from '@/types/api'
 import { useUserStore } from '@/stores/user'
 import MarkdownViewer from '@/components/MarkdownViewer.vue'
 import PracticeAssessment from '@/components/PracticeAssessment.vue'
@@ -25,33 +26,84 @@ const unavailable = computed(() => sessionsReady.value && route.query.session !=
 function selectReport(id: number) {
   void router.push({ query: { ...route.query, session: String(id) } })
 }
-const report = ref<any>(null)
+const report = ref<PracticeReadyReport | null>(null)
+const reportStatus = ref<'pending' | 'failed' | null>(null)
+const requeueFailed = ref(false)
+const requeueBusy = ref(false)
 const loading = ref(false)
 const dimensions = computed(() => Object.entries(report.value?.dimension_scores || {}).map(([key, value]) => ({ key, label: DIM_CN[key] || key, value: Number(value) })))
 const weakest = computed(() => {
   const dims = dimensions.value
   return dims.length ? dims.reduce((min, d) => (d.value < min.value ? d : min)).key : null
 })
-let requestId = 0
+let reportRequest: AbortController | null = null
+let pollTimer: ReturnType<typeof setTimeout> | undefined
 const loadFailed = ref(false)
+
+function stopReport() {
+  clearTimeout(pollTimer)
+  reportRequest?.abort()
+  reportRequest = null
+}
+
 async function loadReport() {
-  const id = ++requestId
+  stopReport()
   const sessionId = selected.value
-  report.value = null
-  loadFailed.value = false
+  report.value = reportStatus.value = null
+  loadFailed.value = requeueFailed.value = requeueBusy.value = observationsPending.value = false
   loading.value = Boolean(sessionId)
   if (!sessionId) return
-  try {
-    const owner = userStore.user?.id
-    const saved = owner ? await syncObservations(owner, sessionId) : true
-    if (id !== requestId) return
-    observationsPending.value = !saved
-    const { data } = await aiApi.report(sessionId)
-    if (id === requestId) report.value = data
-  } catch {
-    if (id === requestId) loadFailed.value = true
-  } finally { if (id === requestId) loading.value = false }
+  const controller = new AbortController()
+  reportRequest = controller
+  const current = () => reportRequest === controller && selected.value === sessionId
+  const owner = userStore.user?.id
+  if (owner) {
+    void syncObservations(owner, sessionId).then(saved => {
+      if (current()) {
+        observationsPending.value = !saved
+        // Refresh already-loaded counts once after the pending observations are committed.
+        if (saved && report.value) void poll()
+      }
+    }).catch(() => { if (current()) observationsPending.value = true })
+  }
+  let delay = 3000
+  async function poll() {
+    try {
+      const { data } = await aiApi.report(sessionId!, controller.signal)
+      if (!current()) return
+      if (data.report_status === 'pending' || data.report_status === 'failed') {
+        reportStatus.value = data.report_status
+        if (data.report_status === 'pending') {
+          pollTimer = setTimeout(() => void poll(), delay)
+          delay = Math.min(12000, delay * 2)
+        }
+      } else {
+        reportStatus.value = null
+        report.value = data as PracticeReadyReport
+      }
+    } catch {
+      if (current()) loadFailed.value = true
+    } finally { if (current()) loading.value = false }
+  }
+  await poll()
 }
+
+async function retryReport() {
+  const sessionId = selected.value
+  if (!sessionId || !reportRequest || requeueBusy.value) return
+  const controller = reportRequest
+  requeueBusy.value = true
+  requeueFailed.value = false
+  try {
+    await aiApi.retryReport(sessionId, controller.signal)
+    if (reportRequest === controller) await loadReport()
+  } catch {
+    if (reportRequest === controller) requeueFailed.value = true
+  } finally {
+    if (reportRequest === controller) requeueBusy.value = false
+  }
+}
+
 async function loadSessions() {
   sessionsFailed.value = false
   try {
@@ -63,12 +115,13 @@ async function loadSessions() {
 }
 watch(selected, loadReport, { flush: 'sync' })
 onMounted(loadSessions)
+onBeforeUnmount(stopReport)
 </script>
 <template>
   <header class="student-heading report-heading"><div><h1>AI 模拟答辩报告</h1><p>基于答辩表现整理能力评估与复习建议（练习结果，不计入正式成绩）</p></div><el-select v-if="sessions.length" :model-value="selected" placeholder="选择本人的报告" style="width:230px" @change="selectReport"><el-option v-for="s in sessions" :key="s.id" :value="s.id" :label="`答辩 #${s.id} · ${(s.finished_at || '').slice(0, 10)}`" /></el-select></header>
   <div v-loading="loading" v-if="report">
     <div class="report-top">
-      <section class="page-card score-card"><h3 class="block-title">综合得分</h3><strong>{{ report.overall_score }}</strong><span>{{ report.overall_score >= 80 ? '良好' : report.overall_score >= 60 ? '合格' : '继续加油' }}</span></section>
+      <section class="page-card score-card"><h3 class="block-title">综合得分</h3><p v-if="report.score_basis === 'main_questions'" class="report-summary score-basis">只按主问题计分，追问单独反馈。</p><strong>{{ report.overall_score }}</strong><span>{{ report.overall_score >= 80 ? '良好' : report.overall_score >= 60 ? '合格' : '继续加油' }}</span></section>
       <section class="page-card">
         <h3 class="block-title">能力维度</h3>
         <div v-for="d in dimensions" :key="d.key" class="dimension">
@@ -128,6 +181,14 @@ onMounted(loadSessions)
     该报告不可用。<span v-if="sessions.length">请从上方选择本人的练习报告。</span>
     <el-button v-else @click="$router.push('/student/ai-defense')">前往模拟答辩</el-button>
   </section>
+  <section v-else-if="reportStatus === 'failed'" class="page-card" role="status">
+    后台评阅没有完成，已保存本次回答，无需重新答辩。
+    <el-button :loading="requeueBusy" @click="retryReport">重试生成报告</el-button>
+    <p v-if="requeueFailed">未能提交重试，请稍后再试。</p>
+  </section>
+  <section v-else-if="reportStatus === 'pending' && !loadFailed" class="page-card" role="status">
+    答辩已经结束，正在后台评阅。你可以先离开，稍后再看报告。
+  </section>
   <section v-else-if="!sessionsReady || loading || loadFailed" class="page-card" role="status">
     {{ loadFailed ? '报告读取失败。' : '正在读取练习报告…' }}
     <el-button v-if="loadFailed" @click="loadReport">重试</el-button>
@@ -137,6 +198,7 @@ onMounted(loadSessions)
 <style scoped>
 .report-heading { display: flex; justify-content: space-between; gap: 20px; }
 .report-top { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 22px; margin-bottom: 22px; }
+.score-card .score-basis { text-align: center; }
 .score-card strong { font-size: 64px; color: #1878fd; display: block; text-align: center; margin-top: 25px; }
 .score-card > span { display: block; text-align: center; color: #16b782; margin-bottom: 25px; }
 .dimension { display: flex; align-items: center; gap: 16px; margin: 14px 0; }

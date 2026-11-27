@@ -99,6 +99,33 @@ export interface PracticeSession {
   finished_at?: string | null
 }
 
+export type PracticeLiveTurn = PracticeTurn & { finished: false }
+export type PracticeAdvance = PracticeLiveTurn | { finished: true }
+export type PracticeStart = PracticeAdvance & { session_id: number }
+export type PracticeSessionDetail = PracticeSession & { live?: boolean; turns: PracticeTurn[] }
+
+export interface PracticeSpeechCapabilities {
+  speech: boolean
+  transcription: boolean
+  max_recording_seconds: number
+}
+
+export interface PracticeReadyReport {
+  report_status?: 'ready'
+  score_basis?: 'main_questions'
+  overall_score: number
+  dimension_scores: Record<string, number>
+  summary: string
+  strengths: string[]
+  weaknesses: string[]
+  risky_questions: string[]
+  suggestions: string[]
+  turns: PracticeTurn[]
+  observation_counts?: { no_face: number; multiple_faces: number; tab_hidden: number } | null
+}
+
+export type PracticeReport = PracticeReadyReport | { report_status: 'pending' | 'failed'; session_id: number }
+
 /** 分页查询通用参数: 后端一律 page(从 1 开始, ge=1) + page_size(ge=1, le=100) */
 export interface PageQuery {
   page?: number

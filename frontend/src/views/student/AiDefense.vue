@@ -6,7 +6,7 @@ import { aiApi, listKnowledgeMaterials } from '@/api/common'
 import { createObservationRecorder, syncObservations, type ObservationSignal } from '@/api/practiceObservations'
 import PracticeMedia from '@/components/PracticeMedia.vue'
 import { useUserStore } from '@/stores/user'
-import type { PracticeSession, PracticeTurn } from '@/types/api'
+import type { PracticeSession, PracticeSpeechCapabilities, PracticeTurn } from '@/types/api'
 import { speakLocally, primePracticeVoice, releasePracticeVoice } from '@/utils/practiceVoice'
 
 const router = useRouter()
@@ -28,6 +28,10 @@ const busy = ref(false)
 const parentError = ref('')
 const completionAudio = shallowRef<AbortController | null>(null)
 let pendingAnswer = ''
+let live = false
+let requestId: string | null = null
+let capabilities: Promise<PracticeSpeechCapabilities> | null = null
+let audibleStart: { name: string; start: number } | null = null
 let roomRequests: AbortController | null = null
 let generation = 0
 let deviceRequest = 0
@@ -64,6 +68,7 @@ function stopDevices() {
 }
 
 function closeMedia() {
+  audibleStart = null
   stopDevices()
   completionAudio.value?.abort()
   completionAudio.value = null
@@ -86,6 +91,8 @@ async function leaveRoom() {
   dialog.value?.close()
   room.value = paused.value = finished.value = busy.value = false
   parentError.value = pendingAnswer = ''
+  capabilities = null
+  requestId = null
   turn.value = null
   sessionId.value = null
   observationRecorder = null
@@ -100,6 +107,7 @@ function openReport(id: number) {
 }
 
 function complete() {
+  audibleStart = null
   finished.value = true
   stopDevices()
   if (sessionId.value && user.user?.id) void syncObservations(user.user.id, sessionId.value)
@@ -120,12 +128,15 @@ async function advance() {
   parentError.value = ''
   try {
     if (sessionId.value === null) {
-      const bank = await aiApi.generateQuestions(8, signal)
+      requestId ??= crypto.randomUUID()
+      const { data } = await aiApi.startLive(requestId, 8, signal)
       if (!currentRun()) return
-      const created = await aiApi.createSession(8, bank.data.questions.map((q: { id: number }) => q.id), signal)
-      if (!currentRun()) return
-      sessionId.value = created.data.session_id
-      await router.replace({ query: { session: String(sessionId.value) } })
+      sessionId.value = data.session_id
+      live = true
+      if (data.finished) complete()
+      else turn.value = data
+      void router.replace({ query: { session: String(data.session_id) } }).catch(() => {})
+      return
     }
     const id = sessionId.value
     if (!id || !currentRun()) return
@@ -133,6 +144,7 @@ async function advance() {
       const { data } = await aiApi.sessionDetail(id, signal)
       if (!currentRun()) return
       if (data.status === 'FINISHED') { complete(); return }
+      live = data.live === true
       if (data.status === 'CREATED') {
         const started = await aiApi.startSession(id, signal)
         if (currentRun()) turn.value = started.data
@@ -140,6 +152,14 @@ async function advance() {
       }
     }
     if (pendingAnswer && turn.value) {
+      if (live) {
+        const { data } = await aiApi.advanceLive(id, { turn_no: turn.value.turn_no, answer: pendingAnswer }, signal)
+        if (!currentRun()) return
+        pendingAnswer = ''
+        if (data.finished) complete()
+        else turn.value = data
+        return
+      }
       await aiApi.answer(id, { question: turn.value.question, answer: pendingAnswer }, signal)
       if (!currentRun()) return
       pendingAnswer = ''
@@ -156,10 +176,38 @@ async function advance() {
   } finally { if (currentRun()) busy.value = false }
 }
 
-function submitSpeech(text: string) {
+function submitSpeech(text: string, endpointedAt: number) {
   if (!turn.value || busy.value || pendingAnswer || paused.value || finished.value || !text.trim()) return
   pendingAnswer = text.trim().slice(0, 8000)
+  audibleStart = { name: 'practice:endpoint-to-question-audio-start', start: endpointedAt }
   void advance()
+}
+
+function preloadCapabilities(signal: AbortSignal) {
+  if (!capabilities) {
+    const pending = aiApi.speechCapabilities(signal).then(({ data }) => data)
+    capabilities = pending
+    // Permission prompts can outlast an HTTP failure. Observe it immediately and
+    // retry on the first real turn, without blocking the camera preview.
+    const reset = () => { if (capabilities === pending) capabilities = null }
+    void pending.then(caps => { if (!caps.transcription) reset() }, reset)
+  }
+  return capabilities
+}
+
+function getCapabilities(): Promise<PracticeSpeechCapabilities> {
+  return roomRequests ? preloadCapabilities(roomRequests.signal) : Promise.reject(new Error('练习已退出'))
+}
+
+function questionAudioStarted() {
+  const sample = audibleStart
+  audibleStart = null
+  // Measure actual player start, not HTTP completion. Endpoint marks are emitted
+  // after the recorder's silence detection; they do not represent last voiced PCM.
+  if (sample && !paused.value) {
+    try { performance.measure(sample.name, { start: sample.start, end: performance.now() }) }
+    catch { /* Timing must never interrupt playback on browsers with older User Timing APIs. */ }
+  }
 }
 
 async function acquire() {
@@ -180,6 +228,8 @@ async function acquire() {
       devices.getTracks().forEach(track => track.stop())
       throw new Error('摄像头或麦克风不可用。请连接设备后重新进入。')
     }
+    if (!turn.value && !pendingAnswer)
+      audibleStart = { name: 'practice:devices-ready-to-question-audio-start', start: performance.now() }
     stream.value = devices
     devices.getTracks().forEach(track => { track.onended = pauseRoom })
     if (!turn.value || pendingAnswer || parentError.value) await advance()
@@ -195,11 +245,14 @@ async function acquire() {
 }
 
 function enter(id: number | null = null) {
-  if (room.value || loading.value) return
+  if (room.value) return
   sessionId.value = id
   turn.value = null
   pendingAnswer = parentError.value = lobbyError.value = ''
   roomRequests = new AbortController()
+  live = false
+  requestId = null
+  void preloadCapabilities(roomRequests.signal)
   room.value = true
   generation++
   void nextTick(() => { if (room.value && !dialog.value?.open) dialog.value?.showModal() })
@@ -238,7 +291,8 @@ onBeforeUnmount(() => {
     <div class="lobby-actions">
       <el-button v-if="requestedSession?.status === 'FINISHED'" type="primary" @click="openReport(requestedSession.id)">查看练习报告</el-button>
       <el-button v-else-if="requestedSession" type="primary" :loading="loading" @click="enter(requestedSession.id)">继续视频答辩</el-button>
-      <el-button v-else type="primary" :loading="loading" :disabled="!materialCount" @click="enter()">开始视频答辩</el-button>
+      <el-button v-else-if="route.query.session === undefined" type="primary" :disabled="materialCount === 0" @click="enter()">开始视频答辩</el-button>
+      <el-button v-else-if="unavailable" type="primary" @click="router.replace({ query: {} })">返回练习列表</el-button>
       <el-button @click="router.push('/student/ai-knowledge')">管理练习材料</el-button>
       <el-button v-if="!materialCount || lobbyError" link @click="lobbyError = ''; loadLobby()">刷新</el-button>
     </div>
@@ -262,7 +316,8 @@ onBeforeUnmount(() => {
       </section>
       <PracticeMedia v-else-if="stream && !paused" :stream="stream" :session-id="sessionId" :turn-no="turn?.turn_no ?? null"
                      :question="turn?.question || ''" :active="!!turn && !busy && !parentError" :parent-error="parentError"
-                     :observe="observe" @answer="submitSpeech" @retry="advance" @leave="leaveRoom" @signal="recordObservation" />
+                     :observe="observe" :get-capabilities="getCapabilities" @audio-start="questionAudioStarted"
+                     @answer="submitSpeech" @retry="advance" @leave="leaveRoom" @signal="recordObservation" />
       <section v-else class="room-overlay" :aria-label="paused ? '已暂停答辩' : '等待摄像头和麦克风授权'">
         <el-icon class="device-icon"><Microphone /></el-icon>
         <div class="room-buttons">

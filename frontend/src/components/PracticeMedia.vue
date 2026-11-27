@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { CloseBold, Loading, Microphone, RefreshRight, Warning, Headset } from '@element-plus/icons-vue'
 import request from '@/api/request'
-import type { ApiEnvelope } from '@/types/api'
+import type { ApiEnvelope, PracticeSpeechCapabilities } from '@/types/api'
 import type { ObservationSignal } from '@/api/practiceObservations'
 import PracticeObservation from './PracticeObservation.vue'
 import { activeContext, playQuestionAudio, primePracticeVoice, speakLocally } from '@/utils/practiceVoice'
@@ -10,9 +10,11 @@ import { recordAnswer } from '@/utils/practiceRecorder'
 
 const props = defineProps<{
   stream: MediaStream; sessionId: number | null; turnNo: number | null; question: string
-  active: boolean; parentError?: string; observe?: boolean
+  active: boolean; parentError?: string; observe?: boolean; getCapabilities: () => Promise<PracticeSpeechCapabilities>
 }>()
-const emit = defineEmits<{ answer: [text: string]; retry: []; leave: []; signal: [kind: ObservationSignal] }>()
+const emit = defineEmits<{
+  answer: [text: string, endpointedAt: number]; audioStart: []; retry: []; leave: []; signal: [kind: ObservationSignal]
+}>()
 const video = ref<HTMLVideoElement | null>(null)
 const videoReady = ref(false)
 const videoFault = ref(false)
@@ -36,9 +38,10 @@ const status = computed(() => {
 const fault = computed(() => !!props.parentError || videoFault.value || stage.value === 'fault')
 const retryIndex = ref(0)
 const videoAttempt = ref(0)
-let limit: number | undefined
 let cachedSpeech: Blob | null = null
+let preferOfflineAfterFault = false
 let retryAudio: Blob | null = null
+let endpointedAt = 0
 let key = ''
 let delivered = false
 
@@ -58,21 +61,29 @@ watch([video, () => props.stream, videoAttempt], async ([el, stream], _, cleanup
   try { await el.play(); if (current) videoReady.value = true } catch { if (current) failed() }
 }, { flush: 'post' })
 
-async function recordingLimit(signal: AbortSignal) {
-  if (limit !== undefined) return limit
-  const options = { signal, _silent: true, timeout: 10000 }
-  const { data } = await request.get<unknown, ApiEnvelope<{ transcription: boolean; max_recording_seconds: number }>>(
-    '/ai/defense/speech-capabilities', options)
-  signal.throwIfAborted()
-  if (!data.transcription) throw new Error('请在系统设置绑定语音转写服务')
-  limit = Math.max(1, Math.min(90, Math.floor(data.max_recording_seconds || 90)))
-  return limit
-}
-
-async function ask(path: string, question: string, signal: AbortSignal) {
-  const started = () => { stage.value = 'speaking' }
+async function ask(path: string, question: string, signal: AbortSignal, serverSpeech: boolean) {
+  let reported = false
+  const started = () => {
+    stage.value = 'speaking'
+    if (!reported) emit('audioStart')
+    reported = true
+  }
+  // A verified device-local Mandarin voice avoids the round trip for a full WAV.
+  // An unverified or cloud-backed system voice never receives student-specific questions.
+  const hasLocalMandarin = window.speechSynthesis?.getVoices().some(v => v.localService && /^(zh|cmn)/i.test(v.lang))
+  const localFirst = !serverSpeech || hasLocalMandarin || preferOfflineAfterFault
+  if (localFirst) {
+    try {
+      await speakLocally(question, signal, started)
+      return
+    } catch (error) {
+      signal.throwIfAborted()
+      if (!serverSpeech || reported) throw error
+      preferOfflineAfterFault = false
+    }
+  }
   try {
-    const options = { responseType: 'blob' as const, _silent: true, _retryOralRateLimit: true, signal, timeout: 70000 }
+    const options = { responseType: 'blob' as const, _silent: true, signal, timeout: 10000 }
     const audio = cachedSpeech || await request.get<Blob, Blob>(path + '/speech', options)
     signal.throwIfAborted()
     await playQuestionAudio(audio, signal, started)
@@ -81,9 +92,12 @@ async function ask(path: string, question: string, signal: AbortSignal) {
   } catch (error) {
     signal.throwIfAborted()
     const status = (error as { response?: { status?: number } }).response?.status
-    if (status && status >= 400 && status < 500) throw error
+    // Ownership/configuration errors stay errors. A synthesis-only rate limit
+    // needn't pause playback: this turn already came from the authorized server.
+    if (localFirst || reported || (status && status >= 400 && status < 500 && status !== 429)) throw error
     // Only device-local and same-origin offline voices may receive the question.
     await speakLocally(question, signal, started)
+    if (!signal.aborted) preferOfflineAfterFault = true
   }
 }
 
@@ -104,15 +118,18 @@ async function transcribe(path: string, wav: Blob, signal: AbortSignal) {
 
 async function conduct(sid: number, turn: number, question: string, stream: MediaStream, signal: AbortSignal) {
   const path = `/ai/defense/sessions/${sid}/turns/${turn}`
-  const maxSeconds = await recordingLimit(signal)
+  const caps = await props.getCapabilities()
   signal.throwIfAborted()
-  if (!retryAudio) await ask(path, question, signal)
+  if (!caps.transcription) throw new Error('请在系统设置绑定语音转写服务')
+  const maxSeconds = Math.max(1, Math.min(90, Math.floor(caps.max_recording_seconds || 90)))
+  if (!retryAudio) await ask(path, question, signal, caps.speech)
   for (let attempt = 0; attempt < 3; attempt++) {
     signal.throwIfAborted()
     if (!retryAudio) {
       const context = await activeContext(signal)
       const wav = await recordAnswer(stream, context, maxSeconds, signal, () => { stage.value = 'listening' })
       signal.throwIfAborted()
+      endpointedAt = performance.now()
       retryAudio = wav
     }
     if (retryAudio) {
@@ -123,7 +140,7 @@ async function conduct(sid: number, turn: number, question: string, stream: Medi
       if (text) {
         delivered = true
         stage.value = 'waiting'
-        emit('answer', text)
+        emit('answer', text, endpointedAt)
         return
       }
     }
@@ -151,13 +168,20 @@ watch([() => props.sessionId, () => props.turnNo, () => props.question, () => pr
   cleanup(() => controller.abort())
   try {
     await conduct(sid, turn, question, stream, controller.signal)
-  } catch {
+  } catch (error) {
     if (!controller.signal.aborted) {
       stage.value = 'fault'
-      void speakLocally('语音暂时中断，请点击重试。', controller.signal).catch(() => {})
+      const spokenError = capsErrorMessage(error)
+      void speakLocally(spokenError, controller.signal).catch(() => {})
     }
   }
 }, { immediate: true })
+
+function capsErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message.startsWith('请在系统设置'))
+    return '语音转写还没有设置好，请联系管理员。'
+  return '语音暂时中断，请点击重试。'
+}
 
 watch(parentGuidance, (message, _, cleanup) => {
   if (!message || document.hidden) return
