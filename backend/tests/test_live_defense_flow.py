@@ -115,6 +115,17 @@ class LiveDialogueTest(unittest.TestCase):
         self.assertEqual(draft.text, output["question"])
         self.assertEqual(snapshot(draft.evidence)["rubric"][0]["expectation"], "q.popleft()")
 
+    def test_spoken_code_documentation_keeps_the_fact_without_python_string_delimiters(self):
+        fact = "每册书维护一个预约队列，使用读者借阅证标识预约"
+        code = {"chunk_id": 11, "document_id": 22, "document_type": "SOURCE_CODE",
+                "excerpt": '"""' + fact + '。"""'}
+        with patch("app.ai.defense.dialogue.LLMFactory.get", side_effect=BusinessException("慢", 50303)):
+            draft = choose_question(title="预约", sources=[code], question="", answer="", asked=[], used=set(),
+                                    may_follow=False, may_advance=True)
+        self.assertNotIn('"""', draft.text)
+        self.assertIn("预约", draft.text)
+        self.assertEqual(snapshot(draft.evidence)["rubric"][0]["expectation"], fact)
+
     def test_no_authorized_evidence_rejects_opening_even_when_answer_sounds_specific(self):
         with self.assertRaises(BusinessException):
             choose_question(title="预约", sources=[], question="", answer="Redis权限缓存", asked=[], used=set(),

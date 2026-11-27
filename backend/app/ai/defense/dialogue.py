@@ -37,7 +37,8 @@ _FOCUS = (
 
 
 def usable_question(text, asked) -> bool:
-    return (oral_question(text) and len(text) <= 90 and text.count("？") + text.count("?") <= 1
+    return (oral_question(text) and not re.search(r"""["']{3}""", text)
+            and len(text) <= 90 and text.count("？") + text.count("?") <= 1
             and not _GENERIC.search(text) and not ((first := _ASK.search(text)) and _MULTI.search(text, first.end()))
             and question_key(text) not in asked)
 
@@ -82,7 +83,7 @@ def _passages(source):
     # Code and filenames may be grading evidence, but only complete natural-language clauses are spoken.
     for line in source["excerpt"].splitlines():
         for clause in re.split(r"[。！？；;]", line):
-            fact = clause.strip(" \t。")
+            fact = re.sub(r"""^["']{3}|["']{3}$""", "", clause.strip(" \t。")).strip()
             if 6 <= len(fact) <= 68 and not re.search(r"[#<>{}\[\]\\/=:：\x60]|\w+\.\w+|\w+_\w+", fact):
                 if len(re.findall(r"[\u3400-\u9fff]", fact)) >= 5 and usable_quote(source, fact):
                     yield fact
