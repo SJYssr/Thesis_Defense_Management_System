@@ -7,7 +7,7 @@ import wave
 from unittest.mock import AsyncMock, patch
 
 import httpx
-from fastapi import UploadFile
+from fastapi import FastAPI, Request, UploadFile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,7 @@ from app.ai import providers
 from app.ai.runtime_config import AISlot, invalidate_ai_config
 from app.ai.speech import SpeechFactory, SpeechService
 from app.core.exceptions import BusinessException, ResourceNotFoundException
+from app.core.middleware import attach_request_context
 from app.core.permissions import CurrentUser
 from app.db.base import Base
 from app.models import all as _models  # noqa: F401
@@ -83,8 +84,8 @@ class PracticeSpeechTest(unittest.TestCase):
             with self.assertRaises(ResourceNotFoundException):
                 _authorized_question(10, turn, user, self.db)
         factory.assert_not_called()
-        res = asyncio.run(read_question_aloud(AsyncMock(is_disconnected=AsyncMock(return_value=False)),
-                                               _authorized_question(10, 2, self.owner, self.db)))
+        request = Request({"type": "http"}, receive=asyncio.Event().wait)
+        res = asyncio.run(read_question_aloud(request, _authorized_question(10, 2, self.owner, self.db)))
         self.assertEqual((res.media_type, res.body), ("audio/wav", audio))
         service.synthesize.assert_called_once_with("为什么选择这个方案？")
 
@@ -167,6 +168,10 @@ class SpeechClientTest(unittest.IsolatedAsyncioTestCase):
     async def test_browser_disconnect_closes_running_upstream_request(self):
         started = asyncio.Event()
         cancelled = asyncio.Event()
+        app = FastAPI()
+        attach_request_context(app)
+        app.add_api_route("/speech", read_question_aloud, methods=["GET"])
+        app.dependency_overrides[_authorized_question] = lambda: (self.service, "为什么？")
 
         async def upstream(_):
             started.set()
@@ -175,11 +180,22 @@ class SpeechClientTest(unittest.IsolatedAsyncioTestCase):
             finally:
                 cancelled.set()
 
-        request = AsyncMock()
-        request.is_disconnected.side_effect = lambda: started.is_set()
+        messages = asyncio.Queue()
+        messages.put_nowait({"type": "http.request", "body": b"", "more_body": False})
+        scope = {"type": "http", "http_version": "1.1", "method": "GET", "scheme": "http",
+                 "path": "/speech", "raw_path": b"/speech", "query_string": b"", "headers": []}
+
         with self.with_upstream(upstream):
-            response = await asyncio.wait_for(read_question_aloud(request, (self.service, "为什么？")), 2)
-        self.assertEqual(response.status_code, 499)
+            response = AsyncMock()
+            request = asyncio.create_task(app(scope, messages.get, response))
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                messages.put_nowait({"type": "http.disconnect"})
+                await asyncio.wait_for(request, 2)
+            finally:
+                request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+        self.assertEqual(response.await_args_list[0].args[0]["status"], 499)
         self.assertTrue(cancelled.is_set())
 
     async def test_invalid_or_truncated_speech_response_is_503(self):

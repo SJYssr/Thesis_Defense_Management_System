@@ -410,22 +410,31 @@ def _authorized_question(session_id: int, turn_no: int, user: CurrentUser = Depe
     return voice, question
 
 
+async def _wait_for_speech_disconnect(request: Request) -> None:
+    # The request-context middleware wraps ASGI receive. Keep listening across
+    # its async checkpoints so that an actual disconnect reaches the route.
+    while True:
+        message = await request.receive()
+        if message["type"] == "http.disconnect":
+            return
+
+
 @defense.get("/sessions/{session_id}/turns/{turn_no}/speech", response_class=Response,
              responses={200: {"content": {"audio/wav": {}}}})
 async def read_question_aloud(request: Request, authorized=Depends(_authorized_question)):
     voice, question = authorized
     work = asyncio.create_task(voice.synthesize(question))
+    disconnect = asyncio.create_task(_wait_for_speech_disconnect(request))
     try:
-        # A browser can switch to its prepared offline voice or leave mid-synthesis.
-        # Close the outgoing HTTP stream so the local provider can free its sole CPU slot.
-        while not work.done():
-            if await request.is_disconnected():
-                return Response(status_code=499)
-            await asyncio.wait({work}, timeout=0.1)
+        done, _ = await asyncio.wait({work, disconnect}, return_when=asyncio.FIRST_COMPLETED)
+        if disconnect in done:
+            disconnect.result()
+            return Response(status_code=499)
         return Response(work.result(), media_type="audio/wav", headers={"Cache-Control": "private, no-store"})
     finally:
         work.cancel()
-        await asyncio.gather(work, return_exceptions=True)
+        disconnect.cancel()
+        await asyncio.gather(work, disconnect, return_exceptions=True)
 
 
 @defense.post("/sessions/{session_id}/answer")
