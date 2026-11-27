@@ -55,6 +55,31 @@ class LiveDialogueTest(unittest.TestCase):
             self.assertNotIn("权限", unrelated.text)
             self.assertIsNone(choose("我没有做测试", may_advance=False))
 
+    def test_queue_retry_evidence_crosses_sentences_within_the_same_project_paragraph(self):
+        auth = "Redis 保存借阅证的权限缓存，缓存键包含账户及授权版本。管理员变更读者角色时递增授权版本并删除旧缓存，下一次访问重新从权限表读取，从而立即撤销旧权限。"
+        queue = "Redis 也承载图书到馆通知任务队列。每个任务持有唯一通知编号，消费者发送前先查询处理记录。若网络失败则重试，同一编号处理成功后便跳过后续重复发送。"
+        prior = "每个读者凭有效借阅证加入队列，缺少借阅证的申请直接拒绝。重复预约只返回原位置。"
+        material = auth + "\n" + queue
+        with patch("app.ai.defense.dialogue.LLMFactory.get") as provider:
+            provider.return_value.live_complete.return_value = json.dumps({
+                "action": "next", "id": 2, "quote": auth.split("。")[1], "topic": "旧缓存",
+                "question": "管理员怎样删除旧缓存？"})
+            draft = choose("我们用 Redis 做任务队列。", passages=[prior, material])
+            self.assertTrue(draft.follow)
+            self.assertIn("重复执行", draft.text)
+            point, = snapshot(draft.evidence)["rubric"]
+            self.assertEqual(point["source_ids"], [2])
+            self.assertIn(point["expectation"], queue)
+            self.assertIn("唯一通知编号", point["expectation"])
+            self.assertIn("跳过后续重复发送", point["expectation"])
+            # Another mechanism, paragraph or document cannot fill in a missing queue rule.
+            for fragments in ([prior], [queue.split("。")[0], queue.split("。")[2]],
+                              [queue.split("。")[0] + "\n" + queue.split("。")[2]],
+                              ["此处使用任务队列。权限缓存发生变更时，使用重试机制更新权限。"]):
+                result = choose("我们用 Redis 做任务队列。", passages=fragments)
+                self.assertFalse(result and result.follow)
+            self.assertIn("旧的权限缓存", choose("我们用 Redis 做权限缓存。", passages=[material]).text)
+
     def test_model_must_return_personal_evidence_and_answer_anchor(self):
         class Examiner:
             def live_complete(self, _, payload):

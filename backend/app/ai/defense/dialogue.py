@@ -31,7 +31,7 @@ _VAGUE = {"系统", "项目", "方案", "设计", "实现", "功能", "代码", 
 _FOCUS = (
     (r"权限|授权|角色", r"缓存|cache", r"失效|删除|清除|过期|撤销|更新|刷新|撤回|invalidat|evict|delete|expire",
      "权限发生变化后，你怎样避免继续读到旧的权限缓存？"),
-    (r"队列|任务", r"队列|任务|queue|task", r"重试|重投|重复|幂等|去重|retry|dedup|idempoten",
+    (r"任务|工作队列|消息队列|通知队列|消费者|投递|worker|task|job", r"队列|任务|queue|task|投递", r"重试|重投|重复|幂等|去重|retry|dedup|idempoten",
      "任务失败又被投递时，你怎么避免它被重复执行？"),
 )
 
@@ -55,7 +55,7 @@ _BEHAVIOR = re.compile(r"采用|使用|通过|要求|选择|拒绝|允许|只有
                        r"发生|超过|低于|返回|按照|按.{2,15}(?:办理|计算|处理|顺序|分组|排序)|"
                        r"后[，,]|时[，,]|当.{2,12}时|因此|因为|防止|避免|记录.{1,12}以便|"
                        r"每(?:当|次|日|天)|遇到|发现|用于|负责|写入|删除|清除|触发|发出|取出|"
-                       r"保存|保留|不能|不可|淘汰|失效|默认|限制|只允许|可同时|可重复|校验|按日|独立维护|更新|忽略|过滤|合并|重复.{0,6}(?:不|只)|至少|优先|等于|大于|小于|"
+                       r"保存|保留|持有|先查询|重试|跳过|去重|不能|不可|淘汰|失效|默认|限制|只允许|可同时|可重复|校验|按日|独立维护|更新|忽略|过滤|合并|重复.{0,6}(?:不|只)|至少|优先|等于|大于|小于|"
                        r"比.{1,12}(?:高|低|快|慢)|[0-9]+(?:%|％|毫秒|秒|倍|次|条)")
 
 
@@ -106,6 +106,30 @@ def _fallback(sources, asked, used):
     return None
 
 
+def _focus_passages(source, focus):
+    # Chinese reports often name a mechanism in one sentence and describe its
+    # behavior in the next. Preserve the exact contiguous quote, including punctuation.
+    matches = []
+    for paragraph in source["excerpt"].splitlines():
+        sentences = list(re.finditer(r"[^。！？；;]+[。！？；;]?", paragraph))
+        for i, first in enumerate(sentences):
+            context = first.group()
+            if not (re.search(focus[0], context, re.I) and re.search(focus[1], context, re.I)):
+                continue
+            for last in sentences[i:i + 3]:
+                clause = last.group()
+                if any(other != focus and re.search(other[0], clause, re.I) and
+                       re.search(other[1], clause, re.I) for other in _FOCUS):
+                    break
+                quote = paragraph[first.start():last.end()].strip()
+                if len(quote) > 220:
+                    break
+                if re.search(focus[2], clause, re.I) and usable_quote(source, quote):
+                    matches.append(quote)
+                    break
+    return sorted(dict.fromkeys(matches), key=len)
+
+
 def choose_question(*, title, sources, question, answer, asked, used, may_follow, may_advance, cached=None):
     keys = {question_key(q) for q in asked}
     if not sources:
@@ -116,11 +140,7 @@ def choose_question(*, title, sources, question, answer, asked, used, may_follow
     supported = []
     if focus and may_follow and not re.search(r"删除|清除|过期后|令牌版本|幂等键|去重|对照组", answer):
         for source in sources:
-            # Require the context and mechanism to occur in the same local passage.
-            for sentence in re.split(r"[。！？\n]", source["excerpt"]):
-                if (2 <= len(sentence.strip()) <= 220 and re.search(focus[0], sentence)
-                        and re.search(focus[1], sentence, re.I) and re.search(focus[2], sentence, re.I)):
-                    supported.append((source, sentence.strip()))
+            supported.extend((source, fact) for fact in _focus_passages(source, focus))
     payload = {"项目": title, "材料": [{"id": s["chunk_id"], "原文": s["excerpt"]} for s in sources],
                "本轮问题": question, "最新回答": answer[:1800], "最近问过": asked[-8:],
                "可追问": may_follow, "可换题": may_advance}
@@ -141,7 +161,7 @@ def choose_question(*, title, sources, question, answer, asked, used, may_follow
                     return draft
             if (action == "follow_up" and may_follow and isinstance(anchor, str) and 2 <= len(anchor) <= 32
                     and anchor not in _VAGUE and anchor in answer and anchor in text and (not focus or
-                    any(source == s and quote in fact and re.search(focus[2], text, re.I)
+                    any(source == s and quote in fact and re.search(focus[2], quote, re.I) and re.search(focus[2], text, re.I)
                         for s, fact in supported))):
                 draft = _ground(text, True, source, quote)
                 if draft:
