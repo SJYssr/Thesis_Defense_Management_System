@@ -1,9 +1,10 @@
 """AI 模块路由: 文档索引/RAG检索/AI模拟答辩/PPT大纲/进度分析/SSE流式问答(roadmap 六十五章)."""
+import asyncio
 import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, UploadFile
+from fastapi import APIRouter, Depends, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -368,9 +369,8 @@ def speech_capabilities(_: CurrentUser = Depends(require_student), db: Session =
     })
 
 
-@defense.post("/sessions/{session_id}/turns/{turn_no}/transcription")
-def transcribe_answer(session_id: int, turn_no: int, file: UploadFile,
-                      user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+def _authorized_recording(session_id: int, turn_no: int, file: UploadFile,
+                          user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     turn = db.execute(select(AIDefenseTurn.turn_no, AIDefenseTurn.student_answer, AIDefenseSession.status)
                       .join(AIDefenseSession).where(AIDefenseSession.id == session_id,
                                                     AIDefenseSession.student_id == user.profile_id)
@@ -386,13 +386,17 @@ def transcribe_answer(session_id: int, turn_no: int, file: UploadFile,
     audio, _, _, size, _ = read_upload(file, min(MAX_RECORDING_MB, max_upload_size_mb(db)))
     ensure_daily_quota(db, user.id, size)
     db.rollback()
-    return ResponseUtil.success({"text": voice.transcribe(audio)})
+    return voice, audio
 
 
-@defense.get("/sessions/{session_id}/turns/{turn_no}/speech", response_class=Response,
-             responses={200: {"content": {"audio/wav": {}}}})
-def read_question_aloud(session_id: int, turn_no: int, user: CurrentUser = Depends(require_student),
-                        db: Session = Depends(get_db)):
+@defense.post("/sessions/{session_id}/turns/{turn_no}/transcription")
+async def transcribe_answer(recording=Depends(_authorized_recording)):
+    voice, audio = recording
+    return ResponseUtil.success({"text": await voice.transcribe(audio)})
+
+
+def _authorized_question(session_id: int, turn_no: int, user: CurrentUser = Depends(require_student),
+                         db: Session = Depends(get_db)):
     question = db.scalar(select(AIDefenseTurn.question).join(AIDefenseSession).where(
         AIDefenseSession.id == session_id, AIDefenseSession.student_id == user.profile_id,
         AIDefenseTurn.turn_no == turn_no))
@@ -403,7 +407,25 @@ def read_question_aloud(session_id: int, turn_no: int, user: CurrentUser = Depen
     _check_ai_rate(user, db, bucket="synthesis")
     voice = SpeechFactory.get(db)
     db.rollback()  # 读事务结束后再等待模型合成。
-    return Response(voice.synthesize(question), media_type="audio/wav", headers={"Cache-Control": "private, no-store"})
+    return voice, question
+
+
+@defense.get("/sessions/{session_id}/turns/{turn_no}/speech", response_class=Response,
+             responses={200: {"content": {"audio/wav": {}}}})
+async def read_question_aloud(request: Request, authorized=Depends(_authorized_question)):
+    voice, question = authorized
+    work = asyncio.create_task(voice.synthesize(question))
+    try:
+        # A browser can switch to its prepared offline voice or leave mid-synthesis.
+        # Close the outgoing HTTP stream so the local provider can free its sole CPU slot.
+        while not work.done():
+            if await request.is_disconnected():
+                return Response(status_code=499)
+            await asyncio.wait({work}, timeout=0.1)
+        return Response(work.result(), media_type="audio/wav", headers={"Cache-Control": "private, no-store"})
+    finally:
+        work.cancel()
+        await asyncio.gather(work, return_exceptions=True)
 
 
 @defense.post("/sessions/{session_id}/answer")

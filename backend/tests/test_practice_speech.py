@@ -1,9 +1,10 @@
 """答辩语音的材料归属、临时转写、数据库绑定及供应商音频契约。"""
+import asyncio
 import io
 import json
 import unittest
 import wave
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from fastapi import UploadFile
@@ -18,7 +19,13 @@ from app.core.permissions import CurrentUser
 from app.db.base import Base
 from app.models import all as _models  # noqa: F401
 from app.models.ai import AIDefenseSession, AIDefenseTurn, AIProvider
-from app.modules.ai.router import read_question_aloud, speech_capabilities, transcribe_answer
+from app.modules.ai.router import (
+    _authorized_question,
+    _authorized_recording,
+    read_question_aloud,
+    speech_capabilities,
+    transcribe_answer,
+)
 
 
 def wav(rate=16000, seconds=1):
@@ -71,12 +78,13 @@ class PracticeSpeechTest(unittest.TestCase):
         factory = self.enterContext(patch("app.modules.ai.router.SpeechFactory.get"))
         service = factory.return_value
         audio = wav()
-        service.synthesize.return_value = audio
+        service.synthesize = AsyncMock(return_value=audio)
         for user, turn in [(self.other, 2), (self.owner, 99)]:
             with self.assertRaises(ResourceNotFoundException):
-                read_question_aloud(10, turn, user, self.db)
+                _authorized_question(10, turn, user, self.db)
         factory.assert_not_called()
-        res = read_question_aloud(10, 2, self.owner, self.db)
+        res = asyncio.run(read_question_aloud(AsyncMock(is_disconnected=AsyncMock(return_value=False)),
+                                               _authorized_question(10, 2, self.owner, self.db)))
         self.assertEqual((res.media_type, res.body), ("audio/wav", audio))
         service.synthesize.assert_called_once_with("为什么选择这个方案？")
 
@@ -95,7 +103,7 @@ class PracticeSpeechTest(unittest.TestCase):
         self.db.get(AIDefenseTurn, 102).question = "## 请根据 backend/app/ai/llm/factory.py"
         self.db.commit()
         with self.assertRaises(BusinessException) as exc:
-            read_question_aloud(10, 2, self.owner, self.db)
+            _authorized_question(10, 2, self.owner, self.db)
         self.assertEqual(exc.exception.code, 40900)
         factory.assert_not_called()
         self.assertEqual(AnswerRequest(question="是否需要借阅证？", answer="  是  ").answer, "是")
@@ -105,31 +113,31 @@ class PracticeSpeechTest(unittest.TestCase):
     def test_transcription_only_for_latest_unanswered_turn_does_not_submit(self):
         factory = self.enterContext(patch("app.modules.ai.router.SpeechFactory.get"))
         service = factory.return_value
-        service.transcribe.return_value = "我选择这个方案。"
+        service.transcribe = AsyncMock(return_value="我选择这个方案。")
         audio = wav()
         def record():
             return UploadFile(filename="answer.wav", file=io.BytesIO(audio))
         for user, turn in [(self.other, 2), (self.owner, 1), (self.owner, 3)]:
             with self.assertRaises(BusinessException):
-                transcribe_answer(10, turn, record(), user, self.db)
+                _authorized_recording(10, turn, record(), user, self.db)
         factory.assert_not_called()
-        response = transcribe_answer(10, 2, record(), self.owner, self.db)
+        response = asyncio.run(transcribe_answer(_authorized_recording(10, 2, record(), self.owner, self.db)))
         self.assertEqual(json.loads(response.body)["data"]["text"], "我选择这个方案。")
         service.transcribe.assert_called_once_with(audio)
         self.assertIsNone(self.db.get(AIDefenseTurn, 102).student_answer)
 
 
-class SpeechClientTest(unittest.TestCase):
+class SpeechClientTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.service = SpeechService(AISlot("speech", "openai", True, 20, "本机", "http://127.0.0.1:18285/v1",
                                             "", "local-model"))
 
     def with_upstream(self, handler):
-        real_client = httpx.Client
-        return patch("app.ai.speech.httpx.Client",
+        real_client = httpx.AsyncClient
+        return patch("app.ai.speech.httpx.AsyncClient",
                      side_effect=lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
 
-    def test_local_service_receives_only_saved_text_and_wav_request(self):
+    async def test_local_service_receives_only_saved_text_and_wav_request(self):
         audio = wav()
         def handle(req):
             self.assertEqual(req.url.path, "/v1/audio/speech")
@@ -138,14 +146,14 @@ class SpeechClientTest(unittest.TestCase):
                                                       "voice": "default", "response_format": "wav"})
             return httpx.Response(200, content=audio)
         with self.with_upstream(handle) as client:
-            self.assertEqual(self.service.synthesize("题目"), audio)
+            self.assertEqual(await self.service.synthesize("题目"), audio)
         self.assertFalse(client.call_args.kwargs["trust_env"])
 
-    def test_temporary_wav_requires_format_and_duration(self):
+    async def test_temporary_wav_requires_format_and_duration(self):
         with patch.object(self.service, "_request") as request:
             for invalid in (b"bad wav", wav(8000), wav(seconds=91), wav()[:-1]):
                 with self.assertRaises(BusinessException) as exc:
-                    self.service.transcribe(invalid)
+                    await self.service.transcribe(invalid)
                 self.assertEqual(exc.exception.code, 42200)
             request.assert_not_called()
         def handle(req):
@@ -154,10 +162,28 @@ class SpeechClientTest(unittest.TestCase):
             self.assertIn(b"local-model", req.content)
             return httpx.Response(200, json={"text": "  样例答案 "})
         with self.with_upstream(handle):
-            self.assertEqual(self.service.transcribe(wav()), "样例答案")
+            self.assertEqual(await self.service.transcribe(wav()), "样例答案")
 
-    def test_invalid_or_truncated_speech_response_is_503(self):
+    async def test_browser_disconnect_closes_running_upstream_request(self):
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def upstream(_):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        request = AsyncMock()
+        request.is_disconnected.side_effect = lambda: started.is_set()
+        with self.with_upstream(upstream):
+            response = await asyncio.wait_for(read_question_aloud(request, (self.service, "为什么？")), 2)
+        self.assertEqual(response.status_code, 499)
+        self.assertTrue(cancelled.is_set())
+
+    async def test_invalid_or_truncated_speech_response_is_503(self):
         for value in (b"<html>error</html>", wav()[:-1]):
             with self.with_upstream(lambda req: httpx.Response(200, content=value)), self.assertRaises(BusinessException) as exc:
-                self.service.synthesize("题目")
+                await self.service.synthesize("题目")
             self.assertEqual(exc.exception.code, 50303)
