@@ -9,13 +9,18 @@ logger = logging.getLogger("app.tasks")
 try:
     from celery import Celery
     from celery.schedules import crontab
+    from kombu.utils.url import as_url
 
     from app.core.config import settings
 
+    def _redis_url(db: int) -> str:
+        return as_url("redis", settings.redis_host, settings.redis_port,
+                      password=settings.redis_password, path=str(db))
+
     celery_app = Celery(
         "graduation",
-        broker=f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db + 1}",
-        backend=f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db + 2}",
+        broker=_redis_url(settings.redis_db + 1),
+        backend=_redis_url(settings.redis_db + 2),
     )
     celery_app.conf.update(
         task_track_started=True, task_time_limit=1800, timezone="Asia/Shanghai",
