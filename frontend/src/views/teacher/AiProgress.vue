@@ -111,7 +111,7 @@
         <div class="chart-card">
           <div class="card-head">
             <div class="head-title"><i class="head-ai" />AI 建议与行动方案</div>
-            <el-button v-if="analysis?.suggestions?.length" size="small" class="gen-btn" @click="useSuggestion">
+            <el-button v-if="suggestedReminder" size="small" class="gen-btn" @click="useSuggestion">
               <el-icon><Promotion /></el-icon>&nbsp;生成提醒
             </el-button>
           </div>
@@ -180,7 +180,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import echarts, { type ECharts } from '@/utils/echarts'
 import { ElMessage } from 'element-plus'
 import { MagicStick, Promotion } from '@element-plus/icons-vue'
@@ -310,28 +310,57 @@ async function load() {
 
 /* ---------- AI 分析 ---------- */
 const selectedId = ref<number>()
-const analysis = ref<any>(null)
-const analysisTime = ref('')
-const busy = ref(false)
+const analysisResult = ref<{ studentId: number; data: any; time: string }>()
+const displayedResult = computed(() =>
+  analysisResult.value?.studentId === selectedId.value ? analysisResult.value : undefined,
+)
+const analysis = computed(() => displayedResult.value?.data)
+const analysisTime = computed(() => displayedResult.value?.time)
+const suggestedReminder = computed(() => {
+  const text = analysis.value?.recommended_reminder
+  return typeof text === 'string' ? text.trim() : ''
+})
+let requestVersion = 0
+const activeRequest = ref<number>()
+const busy = computed(() => activeRequest.value !== undefined)
+
+function discardAnalysis() {
+  ++requestVersion
+  activeRequest.value = undefined
+  analysisResult.value = undefined
+}
+
+// Invalidate immediately, including an A → B → A switch before the next render.
+watch(selectedId, discardAnalysis, { flush: 'sync' })
 
 async function analyse(id?: number) {
-  if (id) selectedId.value = id
-  if (!selectedId.value) return
-  busy.value = true
+  if (id !== undefined) selectedId.value = id
+  const studentId = selectedId.value
+  if (studentId === undefined || busy.value) return
+  const version = ++requestVersion
+  activeRequest.value = version
+  analysisResult.value = undefined
   try {
-    analysis.value = (await aiApi.analyseProgress(selectedId.value)).data
-    analysisTime.value = new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    const { data } = await aiApi.analyseProgress(studentId)
+    if (version !== requestVersion || selectedId.value !== studentId) return
+    analysisResult.value = {
+      studentId,
+      data,
+      time: new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
+    }
   } catch {
     /* 已提示 */
   } finally {
-    busy.value = false
+    if (activeRequest.value === version) activeRequest.value = undefined
   }
 }
 
 function useSuggestion() {
-  if (!analysis.value) return
-  const target = students.value.find(s => s.student_id === selectedId.value)
-  if (target) remind(target, analysis.value.recommended_reminder)
+  const result = displayedResult.value
+  const preset = suggestedReminder.value
+  if (!result || !preset) return
+  const target = students.value.find(s => s.student_id === result.studentId)
+  if (target) remind(target, preset)
 }
 
 /* ---------- 发送提醒 ---------- */
@@ -341,6 +370,7 @@ const remindTarget = ref<any>(null)
 const reminderForm = reactive({ title: '', content: '' })
 
 function remind(row: any, preset?: string) {
+  if (reminding.value) return
   remindTarget.value = row
   reminderForm.title = '毕业设计进度提醒'
   reminderForm.content = preset || `您当前处于「${row.current_stage_cn || '选题'}」阶段，请按计划推进毕设任务。`
@@ -348,9 +378,11 @@ function remind(row: any, preset?: string) {
 }
 
 async function sendReminder() {
+  const target = remindTarget.value
+  if (!target || !reminderVisible.value || reminding.value) return
   reminding.value = true
   try {
-    await progressApi.sendReminder(remindTarget.value.student_id, { ...reminderForm })
+    await progressApi.sendReminder(target.student_id, { ...reminderForm })
     ElMessage.success('提醒已发送')
     reminderVisible.value = false
   } catch {
@@ -362,6 +394,7 @@ async function sendReminder() {
 
 onMounted(load)
 onBeforeUnmount(() => {
+  discardAnalysis()
   if (resizeHandler) window.removeEventListener('resize', resizeHandler)
   charts.forEach(c => c.dispose())
 })
