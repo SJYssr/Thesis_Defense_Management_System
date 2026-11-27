@@ -292,14 +292,15 @@ class MockLLM(BaseLLMService):
         answer = ctx.get("学生回答") or ctx.get("student_answer") or ctx.get("answer") or ""
 
         # 场景识别依据 System Prompt 中的 JSON schema 关键词, 分支条件互斥且顺序敏感
+        if "为给定问题选择" in system:
+            return json.dumps({"rubric": [{"expectation": c["excerpt"][:50].strip(),
+                                           "source_ids": [c["chunk_id"]]} for c in chunks[:1]]}, ensure_ascii=False)
+
         if "accuracy" in system:  # 回答评价
             length = len(answer)
             base = max(60, min(90, 55 + length // 8))
-            deferred = "你只负责事后点评" in system
+            deferred = "口试结束后的评分" in system
             rubric = ctx.get("rubric", [])
-            if deferred and chunks and chunks[0].get("excerpt"):
-                rubric = [{"id": 1, "expectation": chunks[0]["excerpt"][:50].strip(),
-                           "source_ids": [chunks[0]["chunk_id"]]}]
             return json.dumps({
                 "accuracy": int(base * 0.35), "logic": int(base * 0.25),
                 "clarity": int(base * 0.2), "depth": int(max(50, base - 12) * 0.2),

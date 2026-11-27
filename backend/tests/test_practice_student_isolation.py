@@ -99,6 +99,25 @@ class SameTopicPracticeTest(unittest.TestCase):
                 with self.assertRaises(BusinessException):
                     self.service.get_report(other, sid)
 
+    def test_live_opening_and_frozen_rubric_stay_private_on_provider_timeout(self):
+        from sqlalchemy import select
+
+        from app.ai.defense.rubric import snapshot
+        from app.models.ai import AIDefenseTurn
+
+        with patch("app.ai.defense.dialogue.LLMFactory.get", side_effect=BusinessException("慢", 50303)):
+            for student in self.rules:
+                first = self.service.start_live(student, "identical-retry-id", 3)
+                self.assertIn(self.rules[student][0], first["question"])
+                self.assertNotIn(self.rules[3 - student][0], first["question"])
+                self.assertEqual(first, self.service.start_live(student, "identical-retry-id", 3))
+                with self.assertRaises(BusinessException):
+                    self.service.advance_live(3 - student, first["session_id"], 1, "我按预约顺序处理")
+                turn = self.db.scalar(select(AIDefenseTurn).where(AIDefenseTurn.session_id == first["session_id"]))
+                data = snapshot(turn.reference_chunks)
+                self.assertIn(self.rules[student][0], data["rubric"][0]["expectation"])
+                self.assertTrue({s["document_id"] for s in data["sources"]} <= self.docs[student])
+
     def assert_private(self, student, text):
         self.assertTrue(any(rule in text for rule in self.rules[student]), text)
         for foreign_rule in self.rules[3 - student]:

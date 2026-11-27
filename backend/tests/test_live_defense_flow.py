@@ -1,6 +1,7 @@
 """Exercise the live API and out-of-band grading with a synthetic student/project."""
 import json
 import unittest
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -12,83 +13,120 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from test_ai_defense import _enable_sqlite_autoincrement, _NoopRedis
 
-from app.ai.defense.dialogue import OPENER, choose_question
+from app.ai.defense.dialogue import choose_question
+from app.ai.defense.rubric import snapshot
 from app.ai.defense.service import DefenseService
 from app.ai.llm.factory import MockLLM
 from app.ai.rag.rag_service import RAGService
-from app.ai.rag.retriever import RetrievedChunk
 from app.core.exceptions import BusinessException, register_exception_handlers
 from app.core.permissions import CurrentUser, require_student
 from app.db.base import Base
 from app.db.mysql import get_db
-from app.models.ai import AIDefenseSession, AIDefenseTurn, AIUsageLog
+from app.models.ai import AIDefenseSession, AIDefenseTurn, AIDocumentChunk, AIUsageLog
 from app.models.business import GraduationCycle, GraduationTopic, TopicSelection
 from app.modules.ai.router import defense
 from app.tasks.practice_reports import process_one
 
+FACTS = ["权限变更后，服务清除Redis缓存中的旧权限。", "任务队列在重试前核对业务编号，避免重复执行。",
+         "审批令牌只能用一次，过期后会拒绝请求。", "发起审批后，系统将申请交给负责人确认。"]
 
-def choose(answer, *, may_follow=True, may_advance=True):
-    return choose_question(title="进度管理系统", excerpts=["系统通过Redis管理权限缓存"], question=OPENER,
-                           answer=answer, asked=[OPENER], main_index=1, may_follow=may_follow,
-                           may_advance=may_advance)
+
+def source(text, cid):
+    return {"chunk_id": cid, "document_id": 21, "document_type": "THESIS", "excerpt": text}
+
+
+def choose(answer, *, may_follow=True, may_advance=True, passages=None):
+    return choose_question(title="权限审批", sources=[source(x, i + 1) for i, x in enumerate(passages or FACTS)],
+                           question="权限变更后如何处理？", answer=answer, asked=["权限变更后如何处理？"], used=set(),
+                           may_follow=may_follow, may_advance=may_advance)
 
 
 class LiveDialogueTest(unittest.TestCase):
-    def test_failure_fallback_remains_answer_specific(self):
+    def test_slow_model_can_only_ask_about_supported_answer_specific_facts(self):
         with patch("app.ai.defense.dialogue.LLMFactory.get", side_effect=BusinessException("慢", 50303)):
             cache = choose("我用Redis做权限缓存")
             queue = choose("我用Redis来做任务队列")
-            metric = choose("混合检索的召回提高12%")
-            incomplete = choose("我没有做测试", may_advance=False)
-        self.assertTrue(cache[1])
-        self.assertTrue(queue[1])
-        self.assertIn("旧数据怎么失效", cache[0])
-        self.assertIn("重复执行", queue[0])
-        self.assertIn("12%", metric[0])
-        self.assertIsNone(incomplete)
+            self.assertTrue(cache.follow and queue.follow)
+            self.assertIn("旧的权限缓存", cache.text)
+            self.assertIn("重复执行", queue.text)
+            self.assertNotEqual(snapshot(cache.evidence)["rubric"], snapshot(queue.evidence)["rubric"])
+            unrelated = choose("我用Redis做权限缓存", passages=[FACTS[1]])
+            self.assertFalse(unrelated.follow)
+            self.assertNotIn("权限", unrelated.text)
+            self.assertIsNone(choose("我没有做测试", may_advance=False))
 
-    def test_latest_answer_validation_rejects_stacking_invented_and_repeated_anchor(self):
+    def test_model_must_return_personal_evidence_and_answer_anchor(self):
         class Examiner:
-            def __init__(self, question, anchor):
-                self.question, self.anchor = question, anchor
-
             def live_complete(self, _, payload):
                 self.latest = json.loads(payload)["最新回答"]
-                return json.dumps({"action": "follow_up", "question": self.question, "anchor": self.anchor})
+                return json.dumps(self.data)
 
-        answer = "我加了审批令牌"
-        candidate = Examiner("你说加了审批令牌，你怎么验证它过期后不能用？", "审批令牌")
-        with patch("app.ai.defense.dialogue.LLMFactory.get", return_value=candidate):
-            self.assertEqual(choose(answer), (candidate.question, True))
-            self.assertEqual(candidate.latest, answer)
-            self.assertFalse(choose(answer, may_follow=False)[1])
-            candidate.question = "审批令牌为什么会过期，并说说你怎么测试？"
-            self.assertFalse(choose(answer)[1])
-            candidate.anchor, candidate.question = "前端令牌", "前端令牌怎么失效？"
-            self.assertFalse(choose(answer)[1])
+        answer, provider = "我加了审批令牌", Examiner()
+        provider.data = {"action": "follow_up", "question": "审批令牌过期后如何处理？", "anchor": "审批令牌",
+                         "topic": "审批令牌", "id": 3, "quote": FACTS[2].rstrip("。")}
+        with patch("app.ai.defense.dialogue.LLMFactory.get", return_value=provider):
+            result = choose(answer)
+            self.assertTrue(result.follow)
+            self.assertEqual(result.text, provider.data["question"])
+            self.assertEqual(provider.latest, answer)
+            self.assertFalse(choose(answer, may_follow=False).follow)
+            for override in ({"question": "审批令牌为什么会过期，并说说你怎么测试？"},
+                             {"quote": "其他学生的审批设计"}, {"anchor": "前端令牌"}):
+                with patch.dict(provider.data, override):
+                    self.assertFalse(choose(answer).follow)
+            provider.data = {"action": "follow_up", "question": "Redis与权限缓存有什么关系？",
+                             "anchor": "Redis", "topic": "缓存", "id": 1, "quote": FACTS[0]}
+            self.assertIn("旧的权限缓存", choose("我用Redis做权限缓存").text)
+
+    def test_code_only_model_translates_a_cited_line_without_speaking_the_identifier(self):
+        code = {"chunk_id": 11, "document_id": 22, "document_type": "SOURCE_CODE",
+                "excerpt": "def notify_next(q): return q.popleft()"}
+        output = {"action": "next", "id": 11, "quote": "q.popleft()", "topic": "队首",
+                  "question": "从队首取出预约者会怎样影响等候顺序？"}
+        with patch("app.ai.defense.dialogue.LLMFactory.get") as provider:
+            provider.return_value.live_complete.return_value = json.dumps(output)
+            draft = choose_question(title="预约", sources=[code], question="", answer="", asked=[], used=set(),
+                                    may_follow=False, may_advance=True)
+        self.assertEqual(draft.text, output["question"])
+        self.assertEqual(snapshot(draft.evidence)["rubric"][0]["expectation"], "q.popleft()")
+
+    def test_no_authorized_evidence_rejects_opening_even_when_answer_sounds_specific(self):
+        with self.assertRaises(BusinessException):
+            choose_question(title="预约", sources=[], question="", answer="Redis权限缓存", asked=[], used=set(),
+                            may_follow=False, may_advance=True)
+
+    def test_long_heading_cannot_supply_a_fallback_or_a_model_mark(self):
+        for heading in ("基于微服务架构的图书预约管理系统设计与实现", "第四章 预约队列缓存机制的总体设计"):
+            with patch("app.ai.defense.dialogue.LLMFactory.get") as provider:
+                provider.return_value.live_complete.return_value = json.dumps({
+                    "action": "next", "question": "预约的设计有什么依据？", "quote": heading, "id": 1, "topic": "预约"})
+                self.assertIsNone(choose("我使用了预约", may_follow=False, passages=[heading]))
+        with patch("app.ai.defense.dialogue.LLMFactory.get", side_effect=BusinessException("慢", 50303)):
+            draft = choose("", may_follow=False, passages=["读者归还书籍后，系统通知队首的预约者。"])
+            self.assertIn("归还书籍", draft.text)
 
     def test_complete_answer_can_advance_without_forced_followup(self):
-        answer = "我用Redis做权限缓存，用修改权限后的对照组证明读取了新权限。"
         with patch("app.ai.defense.dialogue.LLMFactory.get", return_value=MockLLM()):
-            self.assertFalse(choose(answer)[1])
+            self.assertFalse(choose("我用Redis做权限缓存，权限变更后删除缓存。").follow)
 
 
 class LiveDefenseApiTest(unittest.TestCase):
     def setUp(self):
         self.engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         Base.metadata.create_all(self.engine)
-        for model in (AIDefenseSession, AIDefenseTurn, AIUsageLog):
+        for model in (AIDefenseSession, AIDefenseTurn, AIDocumentChunk, AIUsageLog):
             _enable_sqlite_autoincrement(model)
         self.factory = sessionmaker(self.engine, autoflush=False, expire_on_commit=False)
         self.addCleanup(self.engine.dispose)
         for target in ("app.ai.prompts.redis_client", "app.shared.sysconfig.redis_client"):
             self.enterContext(patch(target, _NoopRedis()))
         self.enterContext(patch("app.modules.ai.router._check_ai_rate"))
-        self.enterContext(patch.object(RAGService, "practice_documents", return_value=[SimpleNamespace(id=21)]))
-        self.hit = RetrievedChunk(1, 21, "THESIS", "测试", "服务采用权限校验防止旧授权被复用。", 1,
-                                  extra={"document_name": "练习报告"})
+        self.enterContext(patch.object(RAGService, "practice_documents", return_value=[SimpleNamespace(id=21, document_type="THESIS", document_name="练习报告")]))
         self.owner = 31
         with self.factory.begin() as db:
+            db.add_all([AIDocumentChunk(id=i, student_id=self.owner, document_id=21, scope="STUDENT",
+                                        document_type="THESIS", chunk_index=i, content=fact)
+                        for i, fact in enumerate(FACTS, 1)])
             db.add_all([GraduationTopic(id=4, teacher_id=1, title="权限审批系统"),
                         GraduationCycle(id=8, student_id=self.owner, topic_id=4, academic_year="2026-2027", status="ACTIVE"),
                         TopicSelection(id=11, student_id=self.owner, cycle_id=8, topic_id=4, teacher_id=1,
@@ -112,10 +150,11 @@ class LiveDefenseApiTest(unittest.TestCase):
         return response.json()["data"]
 
     def test_end_to_end_scoring_is_deferred_with_retry_isolation(self):
-        with patch("app.ai.defense.service.LLMFactory.get", side_effect=AssertionError("opening must not call LLM")):
+        with patch("app.ai.defense.service.LLMFactory.get", return_value=MockLLM()):
             key = uuid4()
             start = self._start(key)
-            self.assertEqual(start["question"], OPENER)
+            self.assertIn("权限", start["question"])
+            self.assertEqual(start["sources"][0]["chunk_id"], 1)
             self.assertEqual(self._start(key)["session_id"], start["session_id"])
         session = start["session_id"]
         path = f"/ai/defense/sessions/{session}"
@@ -130,7 +169,7 @@ class LiveDefenseApiTest(unittest.TestCase):
             second = advance(1, answer)
             self.assertEqual(second["turn_no"], 2)
             self.assertTrue(second["is_follow_up"])
-            self.assertIn("旧数据", second["question"])
+            self.assertIn("旧的权限缓存", second["question"])
             self.assertEqual(advance(1, answer), second)
             self.assertEqual(self.client.post(path + "/next").json()["data"], second)
             self.assertEqual(self.client.post(path + "/live/advance",
@@ -154,12 +193,12 @@ class LiveDefenseApiTest(unittest.TestCase):
         self.assertEqual(self.client.post(path + "/report/retry").status_code, 404)
         self.owner -= 1
 
-        with patch.object(RAGService, "retrieve_practice", return_value=[self.hit]) as retrieval, \
+        with patch.object(RAGService, "retrieve_practice", side_effect=AssertionError("must grade pinned facts")) as retrieval, \
                 patch("app.ai.defense.service.LLMFactory.get", return_value=MockLLM()):
             for _ in range(5):
                 self.assertTrue(process_one(self.factory))
             self.assertFalse(process_one(self.factory))
-        self.assertTrue(all(call.kwargs["document_ids"] == [21] for call in retrieval.call_args_list))
+        retrieval.assert_not_called()
         final = self.client.get(path + "/report").json()["data"]
         self.assertEqual(final["report_status"], "ready")
         self.assertEqual(final["score_basis"], "main_questions")
@@ -169,8 +208,53 @@ class LiveDefenseApiTest(unittest.TestCase):
         self.assertEqual(final["overall_score"], round(sum(main) / len(main)))
 
     def test_stale_report_token_cannot_publish(self):
-        session_id = self._start()["session_id"]
+        with patch("app.ai.defense.dialogue.LLMFactory.get", return_value=MockLLM()):
+            session_id = self._start()["session_id"]
         with self.factory() as db:
             with self.assertRaises(BusinessException) as rejected:
                 DefenseService(db).build_live_report(session_id, "no-current-lease")
             self.assertEqual(rejected.exception.code, 40900)
+
+    def test_old_recording_freezes_verified_anchors_before_retriable_grading(self):
+        answer = "我会清除旧权限"
+        with self.factory.begin() as db:
+            session = AIDefenseSession(student_id=self.owner, topic_id=4, status="FINISHED", live_request_id=str(uuid4()),
+                                       report_status="pending", report_claim="lease",
+                                       report_lease_until=datetime.now() + timedelta(minutes=5))
+            db.add(session)
+            db.flush()
+            turn = AIDefenseTurn(session_id=session.id, turn_no=1, question="权限变更后如何处理？", student_answer=answer,
+                                 reference_chunks=json.dumps([source(FACTS[0], 1)]))
+            db.add(turn)
+            db.flush()
+            sid, tid = session.id, turn.id
+
+        transcripts = []
+        grade = {"accuracy": 29, "logic": 20, "clarity": 18, "depth": 12, "feedback": "说明了失效操作。",
+                 "source_ids": [1], "assessment": []}
+
+        def model(_system, user):
+            data = json.loads(user)
+            transcripts.append(data)
+            if len(transcripts) == 1:
+                self.assertNotIn("student_answer", data)
+                return json.dumps({"rubric": [{"expectation": FACTS[0], "source_ids": [1]}]})
+            self.assertEqual(data["rubric"][0]["expectation"], FACTS[0])
+            if len(transcripts) == 3:
+                grade["assessment"] = [{"id": 1, "verdict": "supported", "answer_quote": "清除旧权限", "reason": "符合材料。"}]
+            return json.dumps(grade)
+
+        with patch.object(RAGService, "retrieve_practice", return_value=[]) as retrieval, \
+                patch("app.ai.defense.service.LLMFactory.get", return_value=SimpleNamespace(name="probe", complete=model)):
+            with self.factory() as db:
+                with self.assertRaises(BusinessException):
+                    DefenseService(db).score_live_turn(sid, "lease", tid)
+            with self.factory() as db:
+                saved = snapshot(db.get(AIDefenseTurn, tid).reference_chunks)["rubric"]
+                self.assertEqual([FACTS[0]], [r["expectation"] for r in saved])
+                self.assertIsNone(db.get(AIDefenseTurn, tid).total_score)
+                DefenseService(db).score_live_turn(sid, "lease", tid)
+                self.assertEqual(saved, snapshot(db.get(AIDefenseTurn, tid).reference_chunks)["rubric"])
+                self.assertEqual(db.get(AIDefenseTurn, tid).accuracy_score, 35)
+            self.assertEqual(len(transcripts), 3)
+            retrieval.assert_called_once()

@@ -181,6 +181,19 @@ PROMPT_SPECS: dict[str, PromptSpec] = {
                    _DEFENSE_QUESTION_CORE, untrusted=True),
         PromptSpec("DEFENSE_EVALUATE_ANSWER", "回答评价", "按准确性/逻辑/表达/深度四维评分并决定是否追问",
                    _DEFENSE_EVALUATE_CORE, untrusted=True),
+        PromptSpec("DEFENSE_LEGACY_RUBRIC", "历史口试评分要点",
+                   "从学生材料中为旧题选出可核对的原文要点",
+                   """为给定问题选择一至三个可核对的事实。只读 chunks 和题目，每个要点直接摘录一个 excerpt 内连续的 2 至 220 个字符。
+每条摘录应能用来判断考生是否回答了问题；保留原文的标点、空格和大小写。只输出 JSON 对象
+{"rubric":[{"expectation":"逐字摘录","source_ids":[该条摘录的chunk_id]}]}。""", untrusted=True),
+        PromptSpec("DEFENSE_OFFLINE_GRADE", "视频口试逐轮评阅",
+                   "按本题固定的原文和实际转写逐项评分",
+                   """你负责毕业设计口试结束后的评分。输入 rubric 是本题已核定的材料要点，逐个评价，不增删或修改。
+输出 JSON 对象，包含整数 accuracy (0..35)、logic (0..25)、clarity (0..20)、depth (0..20)，
+feedback（一段有依据的中文反馈）、source_ids（1至5个真实 chunk_id）及 assessment 数组。
+每个要点返回 {"id":输入要点的整数编号,"verdict":"判定","reason":"具体理由","answer_quote":"学生回答中的连续原文"}。
+verdict 仅用 supported、partial、missing、contradicted、insufficient_evidence。前两种及 contradicted 须引用学生连续原话，
+保持拼写、空格和标点；未提到的要点用 missing 并将 answer_quote 置为空字符串。语义正确即可计分。""", untrusted=True),
         PromptSpec("DEFENSE_REPORT", "答辩报告", "整场模拟答辩结束后的五维报告生成",
                    _DEFENSE_REPORT_CORE),
         PromptSpec("PPT_OUTLINE", "PPT 大纲生成", "12~15页答辩PPT大纲(含页面目标/要点/讲稿/建议图表)",
