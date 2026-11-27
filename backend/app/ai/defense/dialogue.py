@@ -26,6 +26,7 @@ SYSTEM = """你是中文毕业答辩老师。只围绕本次给出的个人材�
 _GENERIC = re.compile(r"对应关系|有何关联|有什么关系|结合.{0,6}材料|进一步说明|详细说明一下|项目主要解决|你独立完成|你最想改进哪里")
 _ASK = re.compile(r"为什么|为何|怎么|如何|什么|哪些|能否|是否|怎样|说说|讲讲|请(?:解释|说明|介绍)")
 _MULTI = re.compile(r"(?:[，,；;]|并且?|以及|另外|同时|再)(?:那|再|也|还|你|请|能)?(?:说说|讲讲|解释|说明|告诉|介绍|为什么|怎么|如何|用什么|有什么|有哪些|能否|是否)")
+_QUESTION_WORD = re.compile(r"为什么|为何|怎么|如何|什么|哪[个些种位里]|能否|是否|怎样|多少")
 _VAGUE = {"系统", "项目", "方案", "设计", "实现", "功能", "代码", "材料", "处理", "测试", "这个", "验证"}
 # Answer, matching evidence, grading-relevant mechanism, recovery question.
 _FOCUS = (
@@ -36,10 +37,22 @@ _FOCUS = (
 )
 
 
+def _multiple_questions(text: str) -> bool:
+    # Count independent questions even if the speaker names a new subject after the comma.
+    # A conditional such as “无论读者选择哪种方式” only sets the scene.
+    clauses = re.split(r"[，,；;。]", text)
+    direct = [clause.strip() for clause in clauses if not re.match(r"\s*(?:无论|不论|不管)", clause)
+              and not re.fullmatch(r"\s*(?:当|如果|若|在).+(?:时|后|前|情况下)", clause)]
+    direct_text = "，".join(direct)
+    first = _ASK.search(direct_text)
+    return (sum(bool(_QUESTION_WORD.search(clause)) for clause in direct) > 1
+            or bool(first and _MULTI.search(direct_text, first.end())))
+
+
 def usable_question(text, asked) -> bool:
     return (oral_question(text) and not re.search(r"""["']{3}""", text)
             and len(text) <= 90 and text.count("？") + text.count("?") <= 1
-            and not _GENERIC.search(text) and not ((first := _ASK.search(text)) and _MULTI.search(text, first.end()))
+            and not _GENERIC.search(text) and not _multiple_questions(text)
             and question_key(text) not in asked)
 
 

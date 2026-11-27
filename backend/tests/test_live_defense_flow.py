@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from test_ai_defense import _enable_sqlite_autoincrement, _NoopRedis
 
-from app.ai.defense.dialogue import choose_question
+from app.ai.defense.dialogue import choose_question, usable_question
 from app.ai.defense.rubric import snapshot
 from app.ai.defense.service import DefenseService
 from app.ai.llm.factory import MockLLM
@@ -42,6 +42,12 @@ def choose(answer, *, may_follow=True, may_advance=True, passages=None):
 
 
 class LiveDialogueTest(unittest.TestCase):
+    def test_live_question_cannot_ask_two_subjects_in_one_turn(self):
+        question = "当这本书没有任何预约者时，取书通知会返回什么，调用方如何识别无人可取？"
+        self.assertFalse(usable_question(question, set()))
+        self.assertTrue(usable_question("当这本书没有任何预约者时，取书通知会返回什么？", set()))
+        self.assertTrue(usable_question("无论读者选择哪种预约方式，系统如何核实身份？", set()))
+
     def test_grounded_mechanism_followup_does_not_wait_for_remote_provider(self):
         with patch("app.ai.defense.dialogue.LLMFactory.get") as provider:
             draft = choose("我用Redis做权限缓存")
