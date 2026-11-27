@@ -44,6 +44,14 @@ for (const sampleRate of [16000, 44100, 48000]) {
   assert.equal(frames.length, 3, 'finished speech is submitted once after silence')
   assert.ok(frames[2].length < 8 * 16000, 'exclude thinking time before speech')
   assert.ok(frames[2].some(value => value > 4000), 'include speech after the pause')
+  const answer = frames[2]
+  const endOfSpeech = answer.findLastIndex(value => value > 4000) + 1
+  assert.ok(Math.abs((answer.length - endOfSpeech) * 2 - 16000) <= 2,
+    'the WAV keeps 0.5 seconds of trailing 16 kHz PCM16 (16,000 bytes)')
+  const firstWord = answer.findIndex(value => value > 1000)
+  const firstPause = answer.subarray(firstWord).findIndex(value => value === 0) + firstWord
+  const nextWord = answer.subarray(firstPause).findIndex(value => value > 4000)
+  assert.ok(firstWord >= 0 && nextWord >= 1.99 * 16000, 'retain the full pause between words')
 
   const quiet = capture(15)
   feed(quiet, 20, 0)
@@ -51,5 +59,10 @@ for (const sampleRate of [16000, 44100, 48000]) {
   feed(quiet, 21, 0)
   assert.equal(frames.length, 4)
   assert.equal(frames[3].length, 0, 'silence and brief transients cannot become an answer')
+  const limited = capture(2)
+  feed(limited, 1, 0.15)
+  feed(limited, 1.2, 0)
+  assert.equal(frames[4].byteLength, 2 * 16000 * 2,
+    'reaching the duration cap without a silence endpoint retains all PCM bytes')
 }
 console.log('PASS — 16/44.1/48 kHz capture, 16 kHz PCM16, voice onset, thinking pauses, automatic endpoint and silence timeout')

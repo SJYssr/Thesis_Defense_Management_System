@@ -14,9 +14,12 @@ class AnswerRecorder extends AudioWorkletProcessor {
     this.port.onmessage = ({ data }) => { if (data === 'finish') this.finish() }
   }
 
-  finish() {
+  finish(endedBySilence = false) {
     if (this.done) return
     this.done = true
+    // Keep the whole pause when deciding whether the student has finished. Only the WAV
+    // sent to ASR drops excess trailing silence, retaining half a second for quiet endings.
+    if (endedBySilence) this.length -= this.quietSamples - Math.round(0.5 * sampleRate)
     const ratio = sampleRate / 16000
     const pcm = new Int16Array(this.started ? Math.floor(this.length / ratio) : 0)
     for (let i = 0; i < pcm.length; i++) {
@@ -56,8 +59,9 @@ class AnswerRecorder extends AudioWorkletProcessor {
     const take = Math.min(mono.length, this.input.length - this.length)
     this.input.set(mono.subarray(0, take), this.length)
     this.length += take
-    if (this.length === this.input.length || this.quietSamples >= sampleRate * 3 ||
-        (!this.started && this.waited >= sampleRate * 40)) this.finish()
+    const endedBySilence = this.quietSamples >= sampleRate * 3
+    if (this.length === this.input.length || endedBySilence ||
+        (!this.started && this.waited >= sampleRate * 40)) this.finish(endedBySilence)
     return !this.done
   }
 }
