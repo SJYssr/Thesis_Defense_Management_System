@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.ai.defense.dialogue import OPENER, choose_question
 from app.ai.defense.oral import offers_choices, oral_question, question_key
 from app.ai.defense.rubric import accuracy_from_evidence, assess_points, mark_snapshot, marking_points, snapshot
 from app.ai.llm.factory import LLMFactory, extract_json
@@ -275,6 +276,107 @@ class DefenseService:
         self.db.commit()
         return {"session_id": session.id, "question_count": len(selected), "available_questions": len(available)}
 
+    def start_live(self, student_id: int, request_id: str, question_count: int) -> dict:
+        # A browser reuses request_id on retry; serialize creation only, never model I/O.
+        self.db.execute(select(StudentProfile.id).where(StudentProfile.id == student_id).with_for_update())
+        session = self.db.scalar(select(AIDefenseSession).where(
+            AIDefenseSession.student_id == student_id, AIDefenseSession.live_request_id == request_id
+        ).with_for_update())
+        if session is not None:
+            result = self._live_current(session)
+            self.db.commit()
+            return result
+        topic = self._get_topic(student_id)
+        docs = self.rag.practice_documents(student_id)
+        if not docs:
+            raise BusinessException("当前毕业流程没有已索引的材料，请先在个人知识准备中上传")
+        session = AIDefenseSession(student_id=student_id, topic_id=topic.id, status="CREATED",
+                                   question_count=question_count, live_request_id=request_id,
+                                   live_document_ids=json.dumps([d.id for d in docs]))
+        self.db.add(session)
+        self.db.flush()
+        transition(self.db, PRACTICE_SESSION, session, "start", None)
+        session.started_at = datetime.now()
+        turn = AIDefenseTurn(session_id=session.id, turn_no=1, question=OPENER, is_follow_up=0)
+        self.db.add(turn)
+        self.db.flush()
+        result = {"session_id": session.id, "finished": False, **self._turn_item(turn)}
+        self.db.commit()
+        return result
+
+    def _live_current(self, session: AIDefenseSession) -> dict:
+        if session.status == "FINISHED":
+            return {"session_id": session.id, "finished": True}
+        turn = self.db.scalar(select(AIDefenseTurn).where(
+            AIDefenseTurn.session_id == session.id, AIDefenseTurn.student_answer.is_(None)
+        ).order_by(AIDefenseTurn.turn_no.desc()).limit(1))
+        if turn is None:
+            raise BusinessException("没有可继续的问答轮次", 40900)
+        return {"session_id": session.id, "finished": False, **self._turn_item(turn)}
+
+    def _live_answer(self, session: AIDefenseSession, turn_no: int, answer: str, *, lock: bool = False):
+        if not session.live_request_id:
+            raise BusinessException("该练习不是实时答辩，请通过原有流程继续", 40900)
+        query = select(AIDefenseTurn).where(AIDefenseTurn.session_id == session.id,
+                                            AIDefenseTurn.turn_no == turn_no)
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        turn = self.db.scalar(query)
+        if turn is None:
+            raise BusinessException("回答与当前轮次不一致", 40900)
+        if turn.student_answer == answer:
+            return None  # Idempotent replay, including a lost last-turn response.
+        if turn.student_answer is not None or session.status != "RUNNING":
+            raise BusinessException("该轮已结束，请继续当前问题", 40900)
+        return turn
+
+    def advance_live(self, student_id: int, session_id: int, turn_no: int, answer: str) -> dict:
+        session = self._own_session(student_id, session_id)
+        turn = self._live_answer(session, turn_no, answer)
+        if turn is None:
+            return self._live_current(session)
+        asked = list(self.db.scalars(select(AIDefenseTurn.question).where(
+            AIDefenseTurn.session_id == session_id).order_by(AIDefenseTurn.turn_no)))
+        main_index = (session.answered_count or 0) + int(not turn.is_follow_up)
+        may_advance, may_follow = main_index < session.question_count, not turn.is_follow_up
+        decision = None
+        if may_advance or may_follow:
+            topic = self.db.get(GraduationTopic, session.topic_id)
+            # Only currently authorized documents selected for this session; no embedding/model in this query.
+            allowed = {d.id for d in self.rag.practice_documents(student_id)}
+            doc_ids = sorted(allowed.intersection(json.loads(session.live_document_ids or "[]")))[:12]
+            head_chunks = self.db.scalars(select(func.min(AIDocumentChunk.id)).where(
+                AIDocumentChunk.document_id.in_(doc_ids), AIDocumentChunk.student_id == student_id,
+                AIDocumentChunk.scope == "STUDENT"
+            ).group_by(AIDocumentChunk.document_id).order_by(AIDocumentChunk.document_id).limit(4)) if doc_ids else []
+            excerpts = [hit.content[:360] for hit in self.rag.practice_chunks(student_id, list(head_chunks))]
+            title, question = topic.title if topic else "", turn.question
+            self.db.rollback()  # release connection/transaction before the bounded provider call
+            decision = choose_question(title=title, excerpts=excerpts, question=question, answer=answer,
+                                       asked=asked, main_index=main_index, may_follow=may_follow,
+                                       may_advance=may_advance)
+        # Commit the answer and its successor (or completion) together. Recheck after model I/O.
+        session = self._own_session(student_id, session_id, lock=True)
+        turn = self._live_answer(session, turn_no, answer, lock=True)
+        if turn is not None:
+            turn.student_answer = answer
+            if not turn.is_follow_up:
+                session.answered_count = (session.answered_count or 0) + 1
+            if decision is None:
+                session.finished_at = datetime.now()
+                session.report_status = "pending"
+                transition(self.db, PRACTICE_SESSION, session, "finish", None)
+            else:
+                question, is_follow_up = decision
+                if is_follow_up:
+                    turn.follow_up_question = question
+                self.db.add(AIDefenseTurn(session_id=session_id, turn_no=turn_no + 1,
+                                          is_follow_up=int(is_follow_up), question=question))
+            self.db.flush()
+        result = self._live_current(session)
+        self.db.commit()
+        return result
+
     def start_session(self, student_id: int, session_id: int) -> dict:
         session = self._own_session(student_id, session_id, lock=True)
         transition(self.db, PRACTICE_SESSION, session, "start", None)
@@ -402,8 +504,8 @@ class DefenseService:
 
     def evaluate_answer(self, student_id: int, session_id: int, question: str, answer: str, user_id: int) -> dict:
         session = self._own_session(student_id, session_id, lock=True)
-        if session.status != "RUNNING":
-            raise BusinessException("会话不在进行中")
+        if session.live_request_id or session.status != "RUNNING":
+            raise BusinessException("会话不在原有评分流程中", 40900)
         answer = answer.strip()
         turn = self.db.scalar(select(AIDefenseTurn).where(AIDefenseTurn.session_id == session_id)
                               .order_by(AIDefenseTurn.id.desc()).limit(1))
@@ -416,6 +518,37 @@ class DefenseService:
                 return {**self._turn_item(turn), "feedback": turn.ai_feedback, "finished": False}
             raise BusinessException("此轮已评分，请查看反馈并继续下一题", 40900)
 
+        self._grade(session, turn, answer, user_id)
+        self.db.commit()
+        return {**self._turn_item(turn), "feedback": turn.ai_feedback, "finished": False}
+
+    def _claimed(self, session_id: int, claim: str, *, lock: bool = False) -> AIDefenseSession:
+        query = select(AIDefenseSession).where(AIDefenseSession.id == session_id,
+            AIDefenseSession.status == "FINISHED", AIDefenseSession.report_status == "pending",
+            AIDefenseSession.report_claim == claim, AIDefenseSession.report_lease_until > datetime.now())
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        session = self.db.scalar(query)
+        if session is None:
+            raise BusinessException("当前评分任务的租约已失效", 40900)
+        return session
+
+    def score_live_turn(self, session_id: int, claim: str, turn_id: int) -> None:
+        session = self._claimed(session_id, claim)
+        turn = self.db.scalar(select(AIDefenseTurn).where(AIDefenseTurn.id == turn_id,
+            AIDefenseTurn.session_id == session_id, AIDefenseTurn.student_answer.is_not(None)))
+        if turn is None:
+            raise ResourceNotFoundException("评分轮次不存在")
+        if turn.total_score is not None:
+            return
+        user_id = self.db.scalar(select(StudentProfile.user_id).where(StudentProfile.id == session.student_id))
+        self._grade(session, turn, turn.student_answer, user_id, claim=claim)
+        self.db.commit()
+
+    def _grade(self, session: AIDefenseSession, turn: AIDefenseTurn, answer: str, user_id: int | None,
+               *, claim: str | None = None) -> None:
+        student_id, session_id, turn_id = session.student_id, session.id, turn.id
+        deferred = claim is not None
         pinned = _stored_sources(turn.reference_chunks)
         if pinned:
             hits = self.rag.practice_chunks(student_id, [s["chunk_id"] for s in pinned])
@@ -424,7 +557,8 @@ class DefenseService:
                 raise BusinessException("本题的材料已更新或移除，请使用最新材料重新生成练习")
         else:
             # 兼容升级前已在进行中的练习。无已授权的真实材料时保留待答状态。
-            hits = self.rag.retrieve_practice(turn.question, student_id, top_k=4)
+            document_ids = json.loads(session.live_document_ids or "[]") if deferred else None
+            hits = self.rag.retrieve_practice(turn.question, student_id, top_k=4, document_ids=document_ids)
         if not hits:
             raise BusinessException("缺少可核对的报告或源码，请先完成材料索引再作答")
         sources = [_source(hit) for hit in hits]
@@ -433,8 +567,9 @@ class DefenseService:
         seen = {s["chunk_id"] for s in sources}
         sources.extend(_source(hit) for hit in further if hit.chunk_id not in seen)
         previous = self.db.scalars(select(AIDefenseTurn).where(
-            AIDefenseTurn.session_id == session_id, AIDefenseTurn.student_answer.is_not(None)
-        ).order_by(AIDefenseTurn.id.desc()).limit(4)).all()
+            AIDefenseTurn.session_id == session_id, AIDefenseTurn.student_answer.is_not(None),
+            AIDefenseTurn.turn_no < turn.turn_no
+        ).order_by(AIDefenseTurn.turn_no.desc()).limit(4)).all()
         history = "\n".join(f"问：{t.question[:100]}\n答：{t.student_answer[:200]}" for t in reversed(previous))
         topic = self.db.get(GraduationTopic, session.topic_id)
         rubric = snapshot(turn.reference_chunks).get("rubric", [])
@@ -442,8 +577,14 @@ class DefenseService:
             raise BusinessException("本题材料与已固定的要点发生变化，请使用最新材料重新生成练习")
         prompt = defense_evaluate_prompt(topic.title if topic else "", turn.question, answer, sources, history, rubric)
         llm = LLMFactory.get()
+        system = resolve_system_prompt(self.db, "DEFENSE_EVALUATE_ANSWER")
+        if deferred:
+            system += ('\n你只负责事后点评。本轮之后的现场问题已确定；follow_up_needed 返回 false，follow_up_question 返回 null。'
+                       '按题意另输出 rubric 数组，每项含 expectation（引文中连续原文，2 至 220 字）与 source_ids，'
+                       '只选择直接相关的 1 至 3 项；assessment 按 rubric 顺序使用从 1 开始的 id，并引用学生真正说过的话。')
+            self.db.rollback()
         started = datetime.now()
-        raw = llm.complete(resolve_system_prompt(self.db, "DEFENSE_EVALUATE_ANSWER"), prompt)
+        raw = llm.complete(system, prompt)
         try:
             payload = extract_json(raw)
             evaluation = _Evaluation.model_validate(payload)
@@ -452,9 +593,13 @@ class DefenseService:
         cited = _citations(evaluation.source_ids, {s["chunk_id"]: s for s in sources})
         if not cited:
             raise BusinessException("AI 反馈未引用本题可核对的材料，请重试", 50302)
+        if deferred:
+            rubric = marking_points(payload.get("rubric"), cited)
+            if not rubric:
+                raise BusinessException("没有取得与本轮问题可核对的材料要点", 50302)
         assessment = assess_points(payload.get("assessment"), rubric, answer) if rubric else []
         next_rubric = []
-        if evaluation.follow_up_needed and not turn.is_follow_up:
+        if not deferred and evaluation.follow_up_needed and not turn.is_follow_up:
             next_rubric = marking_points(payload.get("follow_up_rubric"), cited)
             if rubric and not next_rubric:
                 raise BusinessException("追问缺少可核对的专属材料要点，请重试", 50302)
@@ -469,6 +614,13 @@ class DefenseService:
         cited_ids = {s["chunk_id"] for s in cited}
         cited.extend(s for s in sources if s["chunk_id"] in needed - cited_ids)
         accuracy = accuracy_from_evidence(assessment) if rubric else evaluation.accuracy
+        if deferred:
+            claimed_session = self._claimed(session_id, claim, lock=True)
+            turn = self.db.get(AIDefenseTurn, turn_id, populate_existing=True)
+            if turn.total_score is not None:
+                return
+            claimed_session.report_attempts = 0
+            claimed_session.report_claim = claimed_session.report_lease_until = None
         turn.student_answer = answer
         turn.ai_feedback = evaluation.feedback
         turn.accuracy_score = accuracy
@@ -477,18 +629,18 @@ class DefenseService:
         turn.depth_score = evaluation.depth
         turn.total_score = turn.accuracy_score + evaluation.logic + evaluation.clarity + evaluation.depth
         turn.reference_chunks = mark_snapshot(cited, rubric, assessment=assessment, follow_up_rubric=next_rubric)
-        if evaluation.follow_up_needed and not turn.is_follow_up:
+        if not deferred and evaluation.follow_up_needed and not turn.is_follow_up:
             turn.follow_up_question = evaluation.follow_up_question
-        if not turn.is_follow_up:
+        if not deferred and not turn.is_follow_up:
             session.answered_count = (session.answered_count or 0) + 1
         self.db.add(AIUsageLog(user_id=user_id, scene="DEFENSE_QA", model=llm.name,
                                input_tokens=len(prompt), output_tokens=len(raw),
                                latency_ms=int((datetime.now() - started).total_seconds() * 1000)))
-        self.db.commit()
-        return {**self._turn_item(turn), "feedback": turn.ai_feedback, "finished": False}
 
     def next_question(self, student_id: int, session_id: int) -> dict:
         session = self._own_session(student_id, session_id, lock=True)
+        if session.live_request_id:
+            return self._live_current(session)
         if session.status == "FINISHED":
             return {"finished": True, "report": json.loads(session.summary)}
         if session.status != "RUNNING":
@@ -520,13 +672,41 @@ class DefenseService:
         session = self._own_session(student_id, session_id, lock=True)
         if session.status == "FINISHED":
             return json.loads(session.summary)
+        data = self._compose_report(session)
+        session.finished_at = datetime.now()
+        session.overall_score = data["overall_score"]
+        session.summary = json.dumps(data, ensure_ascii=False)
+        transition(self.db, PRACTICE_SESSION, session, "finish", None)
+        self.db.commit()
+        return data
+
+    def build_live_report(self, session_id: int, claim: str) -> None:
+        session = self._claimed(session_id, claim)
+        data = self._compose_report(session, deferred=True)
+        session = self._claimed(session_id, claim, lock=True)
+        session.overall_score = data["overall_score"]
+        session.summary = json.dumps(data, ensure_ascii=False)
+        session.report_status = "ready"
+        session.report_attempts = 0
+        session.report_claim = session.report_lease_until = None
+        self.db.commit()
+
+    def _compose_report(self, session: AIDefenseSession, *, deferred: bool = False) -> dict:
+        student_id, session_id = session.student_id, session.id
         turns = self.db.scalars(select(AIDefenseTurn).where(
             AIDefenseTurn.session_id == session_id, AIDefenseTurn.student_answer.is_not(None)
-        ).order_by(AIDefenseTurn.id)).all()
+        ).order_by(AIDefenseTurn.turn_no)).all()
         if not turns or any(t.total_score is None for t in turns):
             raise BusinessException("当前会话尚无完整的评分记录")
         topic = self.db.get(GraduationTopic, session.topic_id)
-        overall_score = round(sum(t.total_score for t in turns) / len(turns))
+        # New practice sessions use a fixed set of main questions for the composite.
+        # Adaptive follow-ups retain their own scores without moving the main-question baseline.
+        scored = [t for t in turns if not t.is_follow_up] if deferred else turns
+        overall_score = round(sum(t.total_score for t in scored) / len(scored))
+        fallback = _scored_report(scored)
+        if deferred:
+            fallback["summary"] = (f"AI 文字总评暂不可用。本次完成 {len(scored)} 道正题、{len(turns) - len(scored)} 道追问。"
+                                   "综合分及维度分仅基于正题，追问得分单独展示。")
         records = [{"turn_no": t.turn_no, "question": t.question, "student_answer": t.student_answer[:1100],
                     "feedback": (t.ai_feedback or "")[:500], "total_score": t.total_score,
                     "scores": {"accuracy": t.accuracy_score, "logic": t.logic_score,
@@ -535,6 +715,9 @@ class DefenseService:
                                 for s in _stored_sources(t.reference_chunks)]} for t in turns]
         system = resolve_system_prompt(self.db, "DEFENSE_REPORT")
         prompt = defense_report_prompt(topic.title if topic else "", records, overall_score)
+        user_id = self.db.scalar(select(StudentProfile.user_id).where(StudentProfile.id == student_id))
+        if deferred:
+            self.db.rollback()
         started = datetime.now()
         llm, raw = None, ""
         try:
@@ -544,27 +727,36 @@ class DefenseService:
             data["summary_source"] = "model"
         except (ValueError, TypeError):
             logger.warning("模拟答辩文字总评格式无效，保留逐轮评分汇总 session_id=%s", session_id)
-            data = _scored_report(turns)
+            data = fallback
         except BusinessException as exc:
             if exc.code not in (50301, 50303):
                 raise
             logger.warning("模拟答辩文字总评服务不可用 session_id=%s code=%s", session_id, exc.code)
-            data = _scored_report(turns)
+            data = fallback
         if llm is not None:
-            user_id = self.db.scalar(select(StudentProfile.user_id).where(StudentProfile.id == student_id))
             self.db.add(AIUsageLog(user_id=user_id, scene="DEFENSE_REPORT", model=llm.name,
                                    input_tokens=len(prompt), output_tokens=len(raw),
                                    latency_ms=int((datetime.now() - started).total_seconds() * 1000)))
         data["overall_score"] = overall_score
-        session.finished_at = datetime.now()
-        session.overall_score = overall_score
-        session.summary = json.dumps(data, ensure_ascii=False)
-        transition(self.db, PRACTICE_SESSION, session, "finish", None)
-        self.db.commit()
+        if deferred:
+            data["dimension_scores"] = fallback["dimension_scores"]
         return data
+
+    def retry_live_report(self, student_id: int, session_id: int) -> dict:
+        session = self._own_session(student_id, session_id, lock=True)
+        if session.status != "FINISHED" or session.report_status is None:
+            raise BusinessException("没有可以重试的实时答辩报告", 40900)
+        if session.report_status == "failed":
+            session.report_status = "pending"
+            session.report_attempts = 0
+            session.report_claim = session.report_lease_until = None
+        self.db.commit()
+        return {"session_id": session_id, "report_status": session.report_status}
 
     def get_report(self, student_id: int, session_id: int) -> dict:
         session = self._own_session(student_id, session_id)
+        if session.status == "FINISHED" and session.report_status in {"pending", "failed"}:
+            return {"session_id": session_id, "report_status": session.report_status}
         if session.status != "FINISHED" or not session.summary:
             raise BusinessException("该会话尚未结束, 暂无答辩报告")
         turns = self.db.execute(
@@ -572,6 +764,9 @@ class DefenseService:
                                         AIDefenseTurn.student_answer.is_not(None)).order_by(AIDefenseTurn.id)
         ).scalars().all()
         report = json.loads(session.summary)
+        if session.report_status == "ready":
+            report["report_status"] = "ready"
+            report["score_basis"] = "main_questions"
         report["turns"] = [self._turn_item(t) for t in turns]
         report["observation_counts"] = self._observation_counts(session.id)
         report["session_id"] = session.id
@@ -586,7 +781,7 @@ class DefenseService:
         ).scalars().all()
         return [{
             "id": s.id, "status": s.status, "question_count": s.question_count,
-            "answered_count": s.answered_count, "overall_score": s.overall_score,
+            "answered_count": s.answered_count, "overall_score": s.overall_score, "report_status": s.report_status,
             "started_at": s.started_at.isoformat() if s.started_at else None,
             "finished_at": s.finished_at.isoformat() if s.finished_at else None,
         } for s in sessions]
@@ -598,6 +793,7 @@ class DefenseService:
         ).scalars().all()
         return {
             "id": session.id, "status": session.status, "question_count": session.question_count,
+            "live": bool(session.live_request_id),
             "answered_count": session.answered_count,
             "turns": [self._turn_item(t) for t in turns],
         }
@@ -637,7 +833,8 @@ class DefenseService:
         context = self.rag.build_context(chunks)
         last_session = self.db.execute(
             select(AIDefenseSession).where(AIDefenseSession.student_id == student_id,
-                                           AIDefenseSession.status == "FINISHED")
+                                           AIDefenseSession.status == "FINISHED",
+                                           AIDefenseSession.summary.is_not(None))
             .order_by(AIDefenseSession.id.desc())
         ).scalars().first()
         defense_summary = ""

@@ -168,6 +168,10 @@ class BaseLLMService(ABC):
     def stream(self, system: str, user: str, history: list[dict] | None = None, temperature: float = 0.5) -> Generator[str, None, None]:
         """流式补全, 逐段 yield 文本."""
 
+    def live_complete(self, system: str, user: str) -> str:
+        """Override for providers with a live examiner transport; never use the slow bulk path."""
+        return "{}"
+
     def structured(self, system: str, user: str, temperature: float = 0.1) -> dict:
         """要求 JSON 结构化输出: 优先用模型 JSON 模式, 失败则正则提取."""
         raw = self.complete(system, user, temperature)
@@ -220,6 +224,14 @@ class OpenAICompatibleLLM(BaseLLMService):
                 model=self.model, messages=self._messages(system, user), temperature=temperature,
             )
             return resp.choices[0].message.content or ""
+
+    def live_complete(self, system: str, user: str) -> str:
+        # Do not retry on the conversational path. Slow/invalid output uses an oral fallback.
+        with provider_errors("答辩提问"):
+            response = self.client.with_options(timeout=3.0, max_retries=0).chat.completions.create(
+                model=self.model, messages=self._messages(system, user), temperature=0.2, max_tokens=180,
+            )
+            return response.choices[0].message.content or ""
 
     def stream(self, system: str, user: str, history: list[dict] | None = None, temperature: float = 0.5):
         with provider_errors("对话模型"):
@@ -283,16 +295,22 @@ class MockLLM(BaseLLMService):
         if "accuracy" in system:  # 回答评价
             length = len(answer)
             base = max(60, min(90, 55 + length // 8))
+            deferred = "你只负责事后点评" in system
+            rubric = ctx.get("rubric", [])
+            if deferred and chunks and chunks[0].get("excerpt"):
+                rubric = [{"id": 1, "expectation": chunks[0]["excerpt"][:50].strip(),
+                           "source_ids": [chunks[0]["chunk_id"]]}]
             return json.dumps({
                 "accuracy": int(base * 0.35), "logic": int(base * 0.25),
                 "clarity": int(base * 0.2), "depth": int(max(50, base - 12) * 0.2),
                 "assessment": [{"id": p["id"], "verdict": "partial", "answer_quote": answer[:40],
-                                "reason": "请对照本题原文进一步说明回答的依据。"} for p in ctx.get("rubric", [])],
+                                "reason": "请对照本题原文进一步说明回答的依据。"} for p in rubric],
+                "rubric": rubric,
                 "follow_up_rubric": [{"expectation": c["excerpt"][:50], "source_ids": [c["chunk_id"]]}
                                      for c in chunks[:1]],
                 "feedback": f"练习反馈：你的回答提到“{answer[:48]}”。请用材料中具体的实现或测试结果支撑这个说法。",
                 "source_ids": [c["chunk_id"] for c in chunks[:1] if "chunk_id" in c],
-                "follow_up_needed": length < 120,
+                "follow_up_needed": not deferred and length < 120,
                 "follow_up_question": f"你刚才提到“{answer[:48]}”，材料中的哪处实现或测试能验证这个说法？" if length < 120 else None,
             }, ensure_ascii=False)
 

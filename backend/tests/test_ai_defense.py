@@ -103,9 +103,13 @@ class _RecordingPipe:
         self.calls.append(("incr", dict(key=key, **kwargs)))
         return self
 
+    def ttl(self, key):
+        self.calls.append(("ttl", dict(key=key)))
+        return self
+
     def execute(self):
         self.calls.append(("execute", {}))
-        return [True, 1]
+        return [True, 1, 37]
 
 
 class _RecordingRedis:
@@ -245,7 +249,7 @@ class AiDefenseBoundaryTest(unittest.TestCase):
 
         self.assertEqual(recorder.pipeline_kwargs.get("transaction"), True, "必须用事务型 pipeline")
         names = [name for name, _ in recorder.pipe.calls]
-        self.assertEqual(names, ["set", "incr", "execute"], "顺序必须是 set → incr → execute")
+        self.assertEqual(names, ["set", "incr", "ttl", "execute"], "计数和剩余时间在同一事务中获取")
         set_kwargs = recorder.pipe.calls[0][1]
         self.assertIs(set_kwargs.get("nx"), True, "首次写入必须是 NX, 不能覆盖已有 TTL")
         self.assertEqual(set_kwargs.get("ex"), 60, "TTL 必须与限流窗口一致(60s)")
@@ -278,8 +282,11 @@ class AiDefenseBoundaryTest(unittest.TestCase):
                 def incr(self, *a, **k):
                     return self
 
+                def ttl(self, *a):
+                    return self
+
                 def execute(self):
-                    return [True, current]
+                    return [True, current, 37]
 
             return mock.Mock(pipeline=lambda **k: _P())
 
@@ -303,13 +310,17 @@ class AiDefenseBoundaryTest(unittest.TestCase):
             def incr(self, *a, **k):
                 return self
 
+            def ttl(self, *a):
+                return self
+
             def execute(self):
-                return [True, 5]
+                return [True, 5, 11]
 
         with mock.patch("app.modules.ai.router.redis_client", mock.Mock(pipeline=lambda **k: _Pipe())):
             with self.assertRaises(BusinessException) as ctx:
                 _check_ai_rate(_fake_user(), self.db)
         self.assertEqual(ctx.exception.code, 42901)
+        self.assertEqual(ctx.exception.headers["Retry-After"], "11")
 
     # ---------- D51: 两轮题型策略 ----------
 

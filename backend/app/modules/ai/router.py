@@ -48,7 +48,7 @@ router = APIRouter(prefix="/ai", tags=["AI"])
 STATUS_CN = {"WAITING": "待处理", "PROCESSING": "处理中", "SUCCESS": "已完成", "FAILED": "失败"}
 
 
-def _check_ai_rate(user: CurrentUser, db: Session, *, speech: bool = False) -> None:
+def _check_ai_rate(user: CurrentUser, db: Session, *, bucket: str = "") -> None:
     """AI 总开关 + 每分钟限流, 阈值均来自系统配置(roadmap 七十七/八十五章).
 
     D41: 计数与过期时间放进同一事务型 pipeline 原子提交(SET NX EX 打底 + INCR),
@@ -68,19 +68,21 @@ def _check_ai_rate(user: CurrentUser, db: Session, *, speech: bool = False) -> N
     except (TypeError, ValueError):
         limit = settings.ai_rate_limit_per_minute
     key = RedisKeys.RATE_AI.format(user_id=user.id)
-    if speech:
-        key += ":speech"  # 朗读和答题共用配置阈值，独立计数，避免重听影响提交。
+    if bucket:
+        key += ":" + bucket  # 转写、合成、现场对话互不消耗对方额度。
     try:
         pipe = redis_client.pipeline(transaction=True)
         pipe.set(key, 0, nx=True, ex=60)  # 仅首次请求生效: 原子建立计数与 60s 过期
         pipe.incr(key)
-        _, current = pipe.execute()
+        pipe.ttl(key)
+        _, current, ttl = pipe.execute()
         current = int(current)
     except Exception as exc:  # noqa: BLE001 — Redis 故障只降级限流, 不阻断 AI 功能
         logger.warning("AI 限流计数失败, 本次放行: %s", exc)
         return
     if current > limit:
-        raise BusinessException(f"AI 接口调用过于频繁(每分钟限 {limit} 次)", 42901)
+        raise BusinessException(f"AI 接口调用过于频繁(每分钟限 {limit} 次)", 42901,
+                                headers={"Retry-After": str(max(1, ttl) if ttl >= 0 else 60)})
 
 
 # ---------- 文档索引 ----------
@@ -313,6 +315,31 @@ class AnswerRequest(BaseModel):
     answer: str = Field(min_length=1, max_length=8000)
 
 
+class LiveStart(BaseModel):
+    request_id: UUID
+    question_count: int = Field(default=8, ge=3, le=8)
+
+
+class LiveAnswer(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    turn_no: int = Field(ge=1, le=16)
+    answer: str = Field(min_length=1, max_length=8000)
+
+
+@defense.post("/live/start")
+def start_live(body: LiveStart, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+    _check_ai_rate(user, db, bucket="live-start")
+    return ResponseUtil.success(DefenseService(db).start_live(user.profile_id, str(body.request_id), body.question_count))
+
+
+@defense.post("/sessions/{session_id}/live/advance")
+def advance_live(session_id: int, body: LiveAnswer, user: CurrentUser = Depends(require_student),
+                 db: Session = Depends(get_db)):
+    _check_ai_rate(user, db, bucket="live-advance")
+    return ResponseUtil.success(DefenseService(db).advance_live(user.profile_id, session_id, body.turn_no, body.answer))
+
+
 class PracticeObservations(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -352,7 +379,7 @@ def transcribe_answer(session_id: int, turn_no: int, file: UploadFile,
         raise ResourceNotFoundException("未找到可作答的答辩题目")
     if turn.turn_no != turn_no or turn.student_answer is not None or turn.status != "RUNNING":
         raise BusinessException("仅当前尚未作答的题目可以转写录音，请刷新练习", 40900)
-    _check_ai_rate(user, db, speech=True)
+    _check_ai_rate(user, db, bucket="transcription")
     voice = SpeechFactory.get(db, "transcription")
     if pathlib_suffix(file.filename) != ".wav":
         raise BusinessException("回答录音需要使用 WAV 格式", 42200)
@@ -373,7 +400,7 @@ def read_question_aloud(session_id: int, turn_no: int, user: CurrentUser = Depen
         raise ResourceNotFoundException("未找到可朗读的答辩题目")
     if not oral_question(question):
         raise BusinessException("这道旧题需要更新，请继续练习以获取口头问题", 40900)
-    _check_ai_rate(user, db, speech=True)
+    _check_ai_rate(user, db, bucket="synthesis")
     voice = SpeechFactory.get(db)
     db.rollback()  # 读事务结束后再等待模型合成。
     return Response(voice.synthesize(question), media_type="audio/wav", headers={"Cache-Control": "private, no-store"})
@@ -407,6 +434,12 @@ def session_detail(session_id: int, user: CurrentUser = Depends(require_student)
 @defense.get("/sessions/{session_id}/report")
 def get_report(session_id: int, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
     return ResponseUtil.success(DefenseService(db).get_report(user.profile_id, session_id))
+
+
+@defense.post("/sessions/{session_id}/report/retry")
+def retry_live_report(session_id: int, user: CurrentUser = Depends(require_student), db: Session = Depends(get_db)):
+    _check_ai_rate(user, db, bucket="live-report")
+    return ResponseUtil.success(DefenseService(db).retry_live_report(user.profile_id, session_id))
 
 
 # ---------- PPT 大纲 ----------
