@@ -123,7 +123,7 @@
     </div>
 
     <!-- 详情: 弹窗展示（不再常驻右侧占位） -->
-    <el-dialog v-model="detailVisible" title="学生详细信息" width="780px" append-to-body destroy-on-close class="detail-dialog" @closed="detail = null">
+    <el-dialog v-model="detailVisible" title="学生详细信息" width="780px" append-to-body destroy-on-close class="detail-dialog">
       <template v-if="detail">
           <div class="panel-body">
             <div class="sec-title"><i class="sec-icon blue" />基本信息</div>
@@ -210,7 +210,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, Refresh, Promotion } from '@element-plus/icons-vue'
 import { progressApi } from '@/api/business'
@@ -303,21 +303,38 @@ const detail = ref<any>(null)
 const detailVisible = ref(false)
 const analysis = ref<any>(null)
 const analysing = ref(false)
+let detailRequest = 0
+
+function clearDetail() {
+  detailRequest++
+  detail.value = null
+  analysis.value = null
+  analysing.value = false
+}
+watch(detailVisible, visible => { if (!visible) clearDetail() }, { flush: 'sync' })
+onBeforeUnmount(clearDetail)
 
 async function openDetail(row: any) {
-  detail.value = (await progressApi.teacherStudentDetail(row.student_id)).data
-  analysis.value = null
-  detailVisible.value = true
+  clearDetail()
+  const request = detailRequest
+  const { data } = await progressApi.teacherStudentDetail(row.student_id)
+  if (request === detailRequest) {
+    detail.value = data
+    detailVisible.value = true
+  }
 }
 
 async function analyse() {
+  if (!detail.value || analysing.value) return
+  const request = detailRequest
   analysing.value = true
   try {
-    analysis.value = (await aiApi.analyseProgress(detail.value.student_id)).data
+    const { data } = await aiApi.analyseProgress(detail.value.student_id)
+    if (request === detailRequest) analysis.value = data
   } catch {
     /* 已提示 */
   } finally {
-    analysing.value = false
+    if (request === detailRequest) analysing.value = false
   }
 }
 

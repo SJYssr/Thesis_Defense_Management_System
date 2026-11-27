@@ -93,3 +93,35 @@ await unmounted
 assert.equal(view.suggestedReminder.value, '')
 assert.equal(view.busy.value, false)
 console.log('教师 AI 进度分析：切换、失败、乱序、回切、卸载和收件人绑定回归通过')
+
+const detailSource = readFileSync(new URL('../src/views/teacher/StudentProgress.vue', import.meta.url), 'utf8')
+const detailSetup = detailSource.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '')
+const details = []
+const analyses = []
+const detailPage = runInNewContext(stripTypeScriptTypes(detailSetup) +
+  ';({ openDetail, analyse, detail, detailVisible, analysis, analysing })', {
+  ref, computed, watch, reactive, onMounted() {}, onBeforeUnmount() {},
+  progressApi: { teacherStudentDetail: () => new Promise(resolve => details.push(resolve)) },
+  aiApi: { analyseProgress: () => new Promise(resolve => analyses.push(resolve)) },
+})
+const detailA = detailPage.openDetail(studentA)
+const detailB = detailPage.openDetail(studentB)
+details[1]({ data: studentB })
+await detailB
+details[0]({ data: studentA })
+await detailA
+assert.equal(detailPage.detail.value.student_id, 102)
+const analysingB = detailPage.analyse()
+detailPage.detailVisible.value = false
+const reopenA = detailPage.openDetail(studentA)
+details[2]({ data: studentA })
+await reopenA
+const analysingA = detailPage.analyse()
+analyses[0]({ data: { summary: '乙的概览' } })
+await analysingB
+assert.equal(detailPage.analysing.value, true)
+assert.equal(detailPage.analysis.value, null)
+analyses[1]({ data: { summary: '甲的概览' } })
+await analysingA
+assert.equal(detailPage.analysis.value.summary, '甲的概览')
+console.log('教师学生详情：连续选人、关闭重开和迟到分析回包回归通过')
